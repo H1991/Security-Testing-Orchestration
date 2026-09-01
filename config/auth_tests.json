@@ -1,0 +1,28 @@
+{
+  "tests": [
+    {
+      "id": "AUTH-001",
+      "name": "Session Fixation",
+      "module": "auth_tests",
+      "enabled": true,
+      "payloads": ["JSESSIONID=FIXED123"],
+      "severity": "High"
+    },
+    {
+      "id": "AUTH-003",
+      "name": "JWT alg:none accepted",
+      "module": "jwt_tests",
+      "enabled": true,
+      "payloads": [],
+      "severity": "High"
+    },
+    {
+      "id": "AUTH-007",
+      "name": "Session not invalidated after logout",
+      "module": "auth_tests",
+      "enabled": true,
+      "payloads": [],
+      "severity": "High"
+    }
+  ]
+}

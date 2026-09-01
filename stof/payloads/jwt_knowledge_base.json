@@ -1,0 +1,106 @@
+{
+  "_meta": {
+    "purpose": "STOF JWT Vulnerability Knowledge Base -- real-world attack patterns for stof/modules/jwt_tests.py, drawn from PortSwigger's authoritative JWT attack documentation and disclosed bug-bounty writeups.",
+    "sources": [
+      "PortSwigger Web Security Academy -- JWT authentication bypass via algorithm confusion, via jku header injection",
+      "Multiple 2025/2026 JWT vulnerability roundups (Intigriti, PentesterLab, JWTAuditor) -- alg:none, weak-secret brute force, algorithm confusion (RS256->HS256), kid parameter injection (path traversal/SQLi/command injection), jku/jwk header injection"
+    ],
+    "generated_for": "STOF stof/modules/jwt_tests.py",
+    "key_finding": "jwt_tests.py already covers the three most fundamental JWT attack classes: mismatched signature (TC-057.1), alg:none (TC-057.2), and weak HMAC secret brute-force (TC-057.3). The clearest remaining gap, ranked by real-world impact and how cleanly it fits this module's existing shape: Algorithm Confusion (RS256->HS256), where a server that trusts the client-supplied 'alg' header can be tricked into verifying an HS256-signed token using its own RS256 PUBLIC key as the HMAC secret -- critical severity, well-documented, and architecturally a close sibling of the already-built weak-secret technique (same verification-bypass shape, the 'guessed' key is the server's own discoverable public key instead of a brute-forced unknown). kid/jku header injection are real but need app-specific backend behavior (a vulnerable key-lookup path) or an OOB-capable jku host to fully confirm -- lower-certainty to build generically, noted but not built this wave."
+  },
+  "patterns": [
+    {
+      "id": "mismatched_signature",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-057.1"
+        ]
+      }
+    },
+    {
+      "id": "alg_none",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-057.2"
+        ]
+      }
+    },
+    {
+      "id": "weak_hmac_secret",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-057.3"
+        ]
+      }
+    },
+    {
+      "id": "algorithm_confusion",
+      "generalized_transformation": "For a server issuing RS256 (asymmetric) JWTs, obtain the server's PUBLIC key (from a discovered /jwks.json, /.well-known/jwks.json, or a public cert), then craft a new token with the edited claim, `alg` header changed to `HS256`, and sign it using that public key's raw bytes as the HMAC secret. A server that dynamically trusts the `alg` header and looks up a 'the same key either way' verification function will accept it as validly signed, because RS256 verification and HS256 verification with the public-key-as-secret both 'succeed' under the confused code path.",
+      "abstracted_endpoint_pattern": "Any endpoint validating a JWT whose algorithm is RS256/RS384/RS512, where a JWKS or public key is independently discoverable.",
+      "evidence_signal": "The confused HS256-signed token, carrying the attacker's edited role/claim, is accepted (the same signal the existing TC-057.1-.3 techniques already check for: the request succeeds as the edited role rather than being rejected).",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-057.4"
+        ],
+        "notes": "Implemented in jwt_tests.py's `_technique_algorithm_confusion`, following `_technique_weak_secret`'s exact shape. Only proceeds when the token's own header declares RS256/RS384/RS512 (SKIPs cleanly for HS256-issued tokens -- no confusion surface). Discovers a JWKS-shaped endpoint from crawled endpoints via a small local hint-list (/.well-known/jwks.json, /jwks.json, or similar path hints -- SKIPs with a clear, non-error reason if none is discoverable, a common outcome for RS256 deployments that don't expose their JWKS publicly). Uses the first RSA key's modulus ('n') raw decoded bytes as the HMAC-SHA256 signing key -- a deliberate simplification of the technique (some real-world implementations instead use the full PEM-encoded public key as the secret) chosen to avoid pulling in a new crypto dependency, consistent with this codebase's stdlib-only hmac/hashlib usage; noted here as a known limitation rather than left implicit. Same evidence bar as TC-057.1-.3: the tampered request must actually succeed as the elevated role, not just return 200. Fully unit-tested against synthetic RS256 tokens + a synthetic JWKS fixture (FAIL, PASS, SKIPPED-no-JWKS, SKIPPED-already-HS256); live validation against this project's real target (demo.testfire.net) isn't possible, same limitation as the module's pre-existing techniques, since that target authenticates via cookies, not JWTs (no `auth_type: jwt` role configured) -- jwt_tests reports its existing, correct 'not applicable' outcome for this target, unchanged by this addition."
+      }
+    },
+    {
+      "id": "kid_jku_header_injection",
+      "generalized_transformation": "Manipulate the `kid` header to redirect key lookup (path traversal to a known-empty/predictable file, or SQL/command injection if the value flows into a query/shell unsanitized) so verification effectively uses an attacker-known key; or manipulate `jku`/`jwk` to point key retrieval at an attacker-hosted JWKS.",
+      "abstracted_endpoint_pattern": "Any endpoint validating a JWT whose signature verification resolves a server-side key via the client-controlled `kid` (Key ID) header (RFC 7515 4.1.4 -- `kid` is a hint sent BY the client, never server-derived).",
+      "evidence_signal": "(a) path traversal: a token whose header `kid` is set to a relative path traversal onto a predictable, effectively-empty file (`../../../../dev/null`, or the deeper `../../../../../../../../dev/null` on Windows-style deploys) and re-signed HS256 with that file's presumed-empty content as the HMAC secret is accepted by the endpoint. (b) SQLi signal: a token whose header `kid` is a syntax-breaking probe string produces a database-error fingerprint in the response, proving `kid` flows unsanitized into a query during key lookup.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-057.8"
+        ],
+        "notes": "Implemented in jwt_tests.py's `_technique_kid_header_injection` + `forge_kid_path_traversal_token`/`forge_kid_injection_token`. Only the `kid` half of this pattern is built (the `jku`/`jwk` half remains the noted gap below -- it needs an attacker-reachable JWKS hosting point, e.g. an OOB callback, a genuinely separate design this wave deliberately didn't fold in). The path-traversal variant forges alg:HS256 + a traversal `kid` and signs with the empty bytestring (the presumed content of /dev/null) as the HMAC secret -- accepted only by a server whose key-resolution code reads a client-controlled `kid` off the filesystem unsanitized (CWE-22), same shape as `forge_algorithm_confusion_token`'s existing HMAC-key-substitution primitive, just with the key source swapped for a known-empty file instead of a discovered JWKS. The SQLi-signal variant reuses `looks_like_sql_error()` (promoted from `sqli_tests.py` to `_injection_shared.py` so both modules share the one fingerprint oracle rather than duplicating it) against a `kid` set to a syntax-breaking string -- pure error-fingerprint detection, never claims exploitation, identical evidence bar to every other SQLi-shaped technique in this codebase, and deliberately left ungated by `allow_state_changing_probes` since it is read-only (matches TC-057.6's own ungated precedent for a non-destructive probe). Fully unit-tested against synthetic HS256 fixtures for the accepted-path-traversal / SQL-error-fingerprint / both-rejected / role-claim-absent cases in `tests/unit/test_jwt_tests_techniques.py`; Live-validated against demo.testfire.net on 2026-08-28: both configured roles (admin, normal) authenticate via form_login, not jwt, so the module correctly reported 'not applicable to this target (no role configured with auth_type: \"jwt\")' -- the honest, expected outcome for this target, not a failure of this technique.",
+        "gap": "The `jku`/`jwk` half of this pattern (pointing key retrieval at an attacker-hosted JWKS) is still not covered -- it needs an attacker-reachable hosting point to confirm generically and safely, the same class of need as an OOB-style SSRF callback, and stays a separate, deliberate future design rather than folded into this technique."
+      }
+    },
+    {
+      "id": "claim_validation_bypass",
+      "generalized_transformation": "RFC 7519 (JWT) defines `exp`, `nbf`, `iat`, `iss`, `aud` as claims whose SEMANTICS (not merely presence) a relying party must enforce; several real-world implementations decode and trust a JWT's payload without actually checking these -- a token issued minutes ago (or years ago) still works after its `exp` has passed, or a token minted for one audience/service (`aud`) is silently accepted by another. The honest evidence bar for this is subtle: tampering a claim while leaving the original (now-mismatched) signature intact -- the same shape as `mismatched_signature` above -- can't distinguish 'rejected because the claim is invalid' from 'rejected because the signature no longer matches, for any reason.' A credible test needs a claim-tampered token whose signature is still cryptographically VALID, so a rejection can only be attributed to claim enforcement.",
+      "abstracted_endpoint_pattern": "Any endpoint validating a JWT that carries at least one of exp/nbf/iat/iss/aud, where a signing capability is independently recoverable (a weak/default HMAC secret, or an RS256->HS256 algorithm-confusion key from a discoverable JWKS).",
+      "evidence_signal": "A token re-signed with a recovered secret/key, carrying a single tampered standard claim (expired `exp`, future `nbf`/`iat`, or an unexpected `aud`/`iss`) and otherwise unchanged, is accepted by the endpoint despite the claim's own semantics being violated.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-057.5"
+        ],
+        "notes": "Implemented in jwt_tests.py's `_technique_claim_validation` + `_recover_signing_forger`. Deliberately does NOT reuse TC-057.1's mismatched-signature shape -- that would be indistinguishable from a generic signature-rejection result, which is the exact ambiguity this pattern's evidence bar calls out. Instead reuses whichever validly-signing capability this run already has (TC-057.3's weak-secret recovery for HS256 tokens, or TC-057.4's RS256->HS256 JWKS-confusion key for RS256 tokens) and calls the SAME `forge_role_claim_token_signed`/`forge_algorithm_confusion_token` forgers already proven for role-claim tampering, just pointed at exp/nbf/iat/iss/aud instead of the role claim -- no new forging primitive needed, since both were already claim-path-generic. SKIPs honestly (not a weaker PASS) when no signing capability is recoverable, or when none of the five standard claims are present in this token's payload. Fully unit-tested against synthetic HS256 fixtures for FAIL/PASS/both-skip-reasons in `tests/unit/test_jwt_tests_techniques.py`; Live-validated against demo.testfire.net on 2026-08-27 (scan_id c1b384b6): the crawler discovered 68 endpoints and both configured roles (admin, normal) authenticate via form_login, not jwt, so the module correctly reported 'not applicable to this target (no role configured with auth_type: \"jwt\")' -- the honest, expected outcome for this target, not a failure of this technique."
+      }
+    },
+    {
+      "id": "token_replay_after_revocation",
+      "generalized_transformation": "A stateless JWT is, by design, valid until its own `exp` claim is reached -- unless the server maintains a separate revocation/blacklist check. The well-documented real-world failure mode is a logout endpoint that only tells the CLIENT to discard its token (clear localStorage, drop the Authorization header) without ever recording server-side that the token itself should be rejected, so a previously-captured token keeps working for its full original lifetime even after the user 'logs out'. This is the JWT-specific sibling of this codebase's existing TC-129.2 (cookie session survives logout) -- same underlying question, different credential shape.",
+      "abstracted_endpoint_pattern": "A JWT-authenticated target that exposes a logout mechanism (a configured logout endpoint/URL) reachable independently of clearing the client-held token.",
+      "evidence_signal": "A token captured before logout is still accepted by a protected endpoint after logout is triggered.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-057.6"
+        ],
+        "notes": "Implemented in jwt_tests.py's `_technique_replay_after_logout`. Unlike TC-129.2 (which auto-discovers a logout link via DOM click-through, meaningful for a cookie session with a visible logout button), no generic JWT logout/revocation mechanism exists anywhere in this codebase to auto-discover -- a bearer token has no session cookie a DOM 'logout' click would clear, and neither `JWTAuthProvider` nor `SessionManager` exposes a server-side JWT revocation call (confirmed: `SessionManager.invalidate()` is purely local bookkeeping, never calls a server endpoint). This technique therefore requires an explicit `JwtTestConfig.logout_url` and SKIPs honestly, rather than fabricate a check, when none is configured -- exactly the target/config gap this project's real target hits. Deliberately left ungated by `allow_state_changing_probes`, matching TC-129.2's own precedent (that technique also triggers a real logout ungated) -- logging out the test session itself is not a destructive action against target data. Fully unit-tested with synthetic HS256 fixtures for the configured/unconfigured and accepted/rejected-after-logout cases; Live-validated against demo.testfire.net on 2026-08-27 (scan_id c1b384b6): the crawler discovered 68 endpoints and both configured roles (admin, normal) authenticate via form_login, not jwt, so the module correctly reported 'not applicable to this target (no role configured with auth_type: \"jwt\")' -- the honest, expected outcome for this target, not a failure of this technique."
+      }
+    },
+    {
+      "id": "jwt_exposure",
+      "generalized_transformation": "A JWT can leak through a channel that has nothing to do with its own cryptographic strength: placed in a URL (query string or path), it gets written to server access logs, browser history, and any intermediate proxy log; stored in `localStorage`/`sessionStorage` for client-side convenience, it becomes readable by any JavaScript running on the page -- including an attacker's, via even an unrelated XSS elsewhere on the same origin. Both are widely disclosed real-world bug-bounty patterns distinct from any signature/claim weakness in the token itself.",
+      "abstracted_endpoint_pattern": "Any discovered endpoint URL, or any page a JWT-authenticated session can navigate to, examined passively -- no attack payload is sent.",
+      "evidence_signal": "A JWT-shaped substring (base64url header segment starting with the JSON-object prefix `eyJ`, followed by two further base64url segments) found in a crawled endpoint's URL, or in a `localStorage`/`sessionStorage` key read via a read-only `page.evaluate()`.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-057.7"
+        ],
+        "notes": "Implemented in jwt_tests.py's `_technique_jwt_exposure` + the pure `find_jwt_in_text()` helper (module-level regex, false-positive-guarded against short dot-separated strings like a semver or hostname by requiring the `eyJ` header prefix and long-enough segments). Entirely passive: scans already-discovered endpoint URLs and reads (never writes) `localStorage`/`sessionStorage` from a real Playwright `Page` via `page.evaluate()`. Severity set to Medium (CVSS 5.3), lower than the Critical role-manipulation/claim-bypass techniques in this module, since exposure alone is a contributing weakness rather than a direct authorization bypass on its own. Fully unit-tested (URL exposure, storage exposure, and the clean/PASS case) in `tests/unit/test_jwt_tests_techniques.py`; Live-validated against demo.testfire.net on 2026-08-27 (scan_id c1b384b6): the crawler discovered 68 endpoints and both configured roles (admin, normal) authenticate via form_login, not jwt, so the module correctly reported 'not applicable to this target (no role configured with auth_type: \"jwt\")' -- the honest, expected outcome for this target, not a failure of this technique."
+      }
+    }
+  ]
+}

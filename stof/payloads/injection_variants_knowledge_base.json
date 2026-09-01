@@ -1,0 +1,42 @@
+{
+  "_meta": {
+    "purpose": "STOF Injection Variants Knowledge Base -- OWASP WSTG/CWE-grounded reference patterns for stof/modules/injection_variants_tests.py (TC-134).",
+    "sources": [
+      "OWASP Web Security Testing Guide -- WSTG-INPV-04 'Testing for HTTP Parameter Pollution'",
+      "PortSwigger Web Security Academy -- HTTP Parameter Pollution research (secondary support)",
+      "OWASP CSV Injection Cheat Sheet / CWE-1236 'Improper Neutralization of Formula Elements in a CSV File'"
+    ],
+    "generated_for": "STOF stof/modules/injection_variants_tests.py",
+    "key_finding": "Two distinct, previously-uncovered injection-variant shapes: (1) HTTP Parameter Pollution, where duplicate parameter names cause different layers of the request-processing stack (WAF vs application logic) to disagree about which value 'wins' -- a genuinely different bug class from the single-value SQLi/XSS injection points sqli_tests.py/xss_tests.py already cover, and (2) CSV/Formula injection, where a stored free-text value beginning with =, +, -, or @ can execute as a formula if the data is later opened in a spreadsheet application -- a precondition STOF can plant and verify (does the value survive unescaped into storage) but cannot itself confirm exploitation of (no spreadsheet export exists to open). Both techniques deliberately hold a conservative evidence bar: HPP requires the differential to diverge from BOTH single-value baselines or reflect both values together, never a bare 'something changed'; CSV injection is framed as a precondition finding, never a confirmed CSV injection."
+  },
+  "patterns": [
+    {
+      "id": "http_parameter_pollution",
+      "generalized_transformation": "Submit the SAME parameter name twice in one request (query string or form body) with two distinct benign values, after first taking a single-value baseline for EACH value separately. Compare the polluted response against both baselines.",
+      "abstracted_endpoint_pattern": "Any discovered GET or POST endpoint carrying at least one known parameter (query string or form body) -- the duplicate is injected into whichever location the parameter already lives in.",
+      "real_example": "WSTG-INPV-04's own documented pattern: a front-end WAF/validation layer inspects only the FIRST occurrence of a duplicated parameter while the back-end application framework uses the LAST (or vice versa), letting an attacker craft a request that passes the WAF's check on one value while the application acts on a different, unvalidated one.",
+      "evidence_signal": "The polluted response either reflects BOTH submitted values together (proof some layer processed the duplicate unexpectedly), or matches NEITHER the first-value-only baseline NOR the last-value-only baseline (SequenceMatcher similarity below 0.95 against both) -- a response that simply matches one of the two expected baselines is the normal, unremarkable outcome and is never flagged.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-134.1"
+        ],
+        "notes": "Implemented as injection_variants_tests.py's _technique_hpp: two single-value baselines (send_probe, existing _injection_shared.py helper) taken first, then a duplicate-key request built directly via urlencode over an explicit list of (name, value) pairs (_send_duplicated_param) since a dict-based params mapping cannot express a repeated key. Gated behind allow_state_changing_probes since the POST variant resubmits a discovered form -- write-adjacent by this project's own conservative-by-default convention, even though the GET variant alone is read-only."
+      }
+    },
+    {
+      "id": "csv_formula_injection",
+      "generalized_transformation": "Plant a harmless, formula-shaped marker payload (a value beginning with =, +, -, or @, e.g. '=1+1+\"<unique marker>\"') into a discovered free-text POST field via a low-privilege authenticated context, then check via a SEPARATE, higher-privileged GET context whether the stored value is later returned verbatim -- no leading apostrophe/quote-escape, no stripped leading character.",
+      "abstracted_endpoint_pattern": "Two-act, same shape as xss_tests.py's TC-128.4 and sqli_tests.py's TC-127.6: Endpoint A stores the value (a comment/feedback/profile free-text field); Endpoint B (a listing/detail/admin-review page) later renders it back, which is also the shape a CSV/Excel export of that same stored data would draw from.",
+      "real_example": "OWASP's own CSV Injection Cheat Sheet PoC shape (=1+1, =cmd|'/c calc'!A1) and the broader CWE-1236 class: any application that lets a user-controlled field reach a CSV/Excel export unescaped is vulnerable to a formula executing in the recipient's spreadsheet application when they open it.",
+      "evidence_signal": "The planted marker appears as a byte-for-byte substring of the verify-phase response with its leading =/+/-/@ character intact and NOT immediately preceded by a single-quote/apostrophe character in the response body -- the standard mitigation (force-text prefix) that would otherwise make the raw substring match a false positive.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-134.2"
+        ],
+        "notes": "Implemented as injection_variants_tests.py's _technique_csv_formula_injection, reusing _second_order_plant_candidates/_second_order_verify_candidates from _injection_shared.py unchanged (same free-text field heuristics as TC-127.6/TC-128.4). Framed honestly in the Finding description as a precondition only: STOF has no way to confirm a spreadsheet export of the stored data actually exists, so a hit means 'this value would survive into a CSV/Excel export unescaped IF one exists', never a confirmed CSV injection. Gated behind allow_state_changing_probes since the plant phase is a real POST."
+      }
+    }
+  ]
+}

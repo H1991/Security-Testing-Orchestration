@@ -1,0 +1,408 @@
+"""Unit tests for Layer 4 — stof.auth.form_login."""
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from stof.auth.base import AuthExpiredError, AuthFailedError
+from stof.auth.form_login import DEFAULT_SESSION_LIFETIME, FormLoginProvider, _dismiss_overlays
+from stof.config.schema import UserConfig
+
+LOGIN_URL = "https://demo.testfire.net/login.jsp"
+
+
+def _user(auth_type: str = "form_login") -> UserConfig:
+    return UserConfig(
+        id="admin-01",
+        role="admin",
+        username="admin",
+        password="s3cr3t",
+        auth_type=auth_type,
+    )
+
+
+def _page(url: str, cookies: list[dict] | None = None) -> AsyncMock:
+    page = AsyncMock()
+    page.url = url
+    page.context.cookies = AsyncMock(return_value=cookies or [])
+    # `_first_matching()` probes `page.locator(selector).count()` --
+    # these tests only ever configure exactly-matching selectors, so a
+    # fixed "found" count is all the mock needs to provide.
+    locator = AsyncMock()
+    locator.count = AsyncMock(return_value=1)
+    page.locator = MagicMock(return_value=locator)
+    # `_form_scope_selector()` calls this to find the password field's
+    # <form> ancestor -- these generic tests don't model real DOM
+    # structure, so it degrades to "no form found," matching this
+    # module's pre-scoping behavior exactly (page-wide candidates only).
+    page.eval_on_selector = AsyncMock(return_value=None)
+    return page
+
+
+# ---------------------------------------------------------------------------
+# Happy path
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_authenticate_with_success_selector_captures_cookies():
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#uid",
+        password_selector="#passw",
+        submit_selector="#login-btn",
+        success_selector="text=Welcome",
+    )
+    page = _page("https://demo.testfire.net/bank/main.jsp", cookies=[{"name": "JSESSIONID", "value": "abc"}])
+
+    session = await provider.authenticate(_user(), page)
+
+    assert session.user_id == "admin-01"
+    assert session.role == "admin"
+    assert session.auth_type == "form_login"
+    assert session.cookies == {"JSESSIONID": "abc"}
+    page.goto.assert_awaited_once_with(LOGIN_URL)
+    page.fill.assert_any_await("#uid", "admin")
+    page.fill.assert_any_await("#passw", "s3cr3t")
+    page.wait_for_selector.assert_awaited_once_with("text=Welcome", timeout=10000)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_sets_a_real_expiry_not_none():
+    """Regression: a form_login session used to get `expires_at=None`,
+    which Layer 5's `needs_refresh()` treats as "never expires" --
+    confirmed live, this let `stof test` silently keep reusing an
+    hours-old, server-side-expired session forever, returning 0
+    findings with no error at all. See module docstring."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#login-btn",
+    )
+    page = _page("https://demo.testfire.net/bank/main.jsp")
+
+    before = datetime.now(timezone.utc)
+    session = await provider.authenticate(_user(), page)
+    after = datetime.now(timezone.utc)
+
+    assert session.expires_at is not None
+    assert before + DEFAULT_SESSION_LIFETIME <= session.expires_at <= after + DEFAULT_SESSION_LIFETIME
+
+
+@pytest.mark.asyncio
+async def test_authenticate_respects_custom_session_lifetime():
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#login-btn",
+        session_lifetime=timedelta(minutes=1),
+    )
+    page = _page("https://demo.testfire.net/bank/main.jsp")
+
+    session = await provider.authenticate(_user(), page)
+
+    assert session.expires_at <= datetime.now(timezone.utc) + timedelta(minutes=1, seconds=5)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_without_success_selector_uses_url_change_fallback():
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#uid",
+        password_selector="#passw",
+        submit_selector="#login-btn",
+    )
+    page = _page("https://demo.testfire.net/bank/main.jsp")
+
+    session = await provider.authenticate(_user(), page)
+
+    assert session.auth_type == "form_login"
+    page.wait_for_url.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Failure cases
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_authenticate_raises_when_success_selector_never_appears():
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#uid",
+        password_selector="#passw",
+        submit_selector="#login-btn",
+        success_selector="text=Welcome",
+    )
+    page = _page(LOGIN_URL)
+    page.wait_for_selector = AsyncMock(side_effect=TimeoutError("timed out"))
+
+    with pytest.raises(AuthFailedError, match="login failed"):
+        await provider.authenticate(_user(), page)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_raises_when_still_on_login_page_with_no_selector_configured():
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#uid",
+        password_selector="#passw",
+        submit_selector="#login-btn",
+    )
+    page = _page(LOGIN_URL)  # bounced back to the same login page
+    page.wait_for_url = AsyncMock(side_effect=TimeoutError("timed out"))
+
+    with pytest.raises(AuthFailedError, match="still on the login page"):
+        await provider.authenticate(_user(), page)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_retries_click_with_force_when_intercepted():
+    """A persistent decorative overlay (e.g. a corner ribbon link,
+    confirmed live) can occupy the submit button's bounding box
+    without visually covering it -- Playwright's normal click
+    correctly refuses to click through it. The provider must retry
+    with force=True rather than giving up."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#email", password_selector="#password", submit_selector="#loginButton",
+    )
+    page = _page("https://x/after-login")
+    page.click = AsyncMock(side_effect=[TimeoutError("intercepted by overlay"), None])
+
+    await provider.authenticate(_user(), page)
+
+    assert page.click.await_count == 2
+    page.click.assert_awaited_with("#loginButton", force=True)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_tries_candidate_selectors_in_order():
+    """A target with no explicit TargetConfig selectors gets a
+    candidate list -- the provider must pick whichever one the live
+    page actually has, not assume the first is always right."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector=["#username", "#email"],
+        password_selector="#password",
+        submit_selector="#loginButton",
+    )
+    page = _page("https://x/after-login")
+
+    def _locator(selector: str):
+        locator = AsyncMock()
+        locator.count = AsyncMock(return_value=0 if selector == "#username" else 1)
+        return locator
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    await provider.authenticate(_user(), page)
+
+    page.fill.assert_any_await("#email", "admin")
+
+
+@pytest.mark.asyncio
+async def test_authenticate_raises_when_no_candidate_selector_matches():
+    """The password field is located FIRST (it anchors form-scoping --
+    see `_form_scope_selector()`), so when nothing on the page matches
+    anything at all, that's the field the failure is reported against."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector=["#username", "#email"],
+        password_selector="#password",
+        submit_selector="#loginButton",
+    )
+    page = _page(LOGIN_URL)
+    no_match = AsyncMock()
+    no_match.count = AsyncMock(return_value=0)
+    page.locator = MagicMock(return_value=no_match)
+
+    with pytest.raises(AuthFailedError, match="password"):
+        await provider.authenticate(_user(), page)
+
+
+# ---------------------------------------------------------------------------
+# Form-scoped candidate matching (multi-form false-match fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_authenticate_prefers_form_scoped_candidate_over_page_wide_match():
+    """A page with a header search box (also `input[type='text']`)
+    AND a real login form: the password field anchors a form-scope
+    selector, and the scoped username candidate must win over the
+    generic page-wide one that would otherwise match the search box."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="input[type='text']",
+        password_selector="#password",
+        submit_selector="#loginButton",
+    )
+    page = _page("https://x/after-login")
+    page.eval_on_selector = AsyncMock(return_value='[data-stof-scope="stof-scope-abc123"]')
+
+    def _locator(selector: str):
+        locator = AsyncMock()
+        # The unscoped password lookup (run first, before scoping is
+        # even computed) and the form-scoped username candidate match;
+        # the bare page-wide username candidate (what pre-scoping code
+        # would have used, and would wrongly hit the search box) does not.
+        matches = selector == "#password" or selector.startswith("[data-stof-scope")
+        locator.count = AsyncMock(return_value=1 if matches else 0)
+        return locator
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    await provider.authenticate(_user(), page)
+
+    page.fill.assert_any_await('[data-stof-scope="stof-scope-abc123"] input[type=\'text\']', "admin")
+
+
+@pytest.mark.asyncio
+async def test_authenticate_falls_back_to_page_wide_when_scoped_candidate_absent():
+    """A form ancestor exists, but the username field happens to sit
+    OUTSIDE it (an unusual but real SPA pattern) -- the scoped
+    candidate finds nothing, so the page-wide candidate must still be
+    tried rather than failing outright."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#username",
+        password_selector="#password",
+        submit_selector="#loginButton",
+    )
+    page = _page("https://x/after-login")
+    page.eval_on_selector = AsyncMock(return_value='[data-stof-scope="stof-scope-xyz789"]')
+
+    def _locator(selector: str):
+        locator = AsyncMock()
+        locator.count = AsyncMock(return_value=0 if selector.startswith("[data-stof-scope") else 1)
+        return locator
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    await provider.authenticate(_user(), page)
+
+    page.fill.assert_any_await("#username", "admin")
+
+
+@pytest.mark.asyncio
+async def test_authenticate_unscoped_when_password_field_has_no_form_ancestor():
+    """`eval_on_selector` returning None (no <form> ancestor at all)
+    must behave exactly like this module did before scoping existed --
+    page-wide candidates, no scoping prefix."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#username",
+        password_selector="#password",
+        submit_selector="#loginButton",
+    )
+    page = _page("https://x/after-login")  # eval_on_selector -> None via the shared fixture
+
+    await provider.authenticate(_user(), page)
+
+    page.fill.assert_any_await("#username", "admin")
+
+
+@pytest.mark.asyncio
+async def test_dismiss_overlays_clicks_a_matching_selector():
+    """A cookie-consent/welcome overlay confirmed live to intercept
+    every click on the real login button underneath it -- dismissing
+    known overlay patterns first must click through to the actual
+    element, not just probe it."""
+    page = AsyncMock()
+    clicked: list[str] = []
+
+    def _locator(selector: str):
+        locator = AsyncMock()
+        matches = selector == "#cookieconsent-container button"
+        locator.count = AsyncMock(return_value=1 if matches else 0)
+        locator.first = AsyncMock()
+        locator.first.click = AsyncMock(side_effect=lambda **kw: clicked.append(selector))
+        return locator
+
+    page.locator = MagicMock(side_effect=_locator)
+
+    await _dismiss_overlays(page)
+
+    assert clicked == ["#cookieconsent-container button"]
+
+
+@pytest.mark.asyncio
+async def test_dismiss_overlays_does_nothing_when_none_present():
+    page = AsyncMock()
+    no_match = AsyncMock()
+    no_match.count = AsyncMock(return_value=0)
+    page.locator = MagicMock(return_value=no_match)
+
+    await _dismiss_overlays(page)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_dismiss_overlays_survives_a_click_failure():
+    """Best-effort only -- an overlay that matched but couldn't actually
+    be clicked (e.g. already gone by the time we act) must never block
+    login from proceeding."""
+    page = AsyncMock()
+    locator = AsyncMock()
+    locator.count = AsyncMock(return_value=1)
+    locator.first = AsyncMock()
+    locator.first.click = AsyncMock(side_effect=RuntimeError("element not attached"))
+    page.locator = MagicMock(return_value=locator)
+
+    await _dismiss_overlays(page)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_refresh_always_raises_auth_expired_error():
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#uid",
+        password_selector="#passw",
+        submit_selector="#login-btn",
+    )
+    from stof.session.models import Session
+
+    session = Session(user_id="admin-01", role="admin", auth_type="form_login")
+
+    with pytest.raises(AuthExpiredError, match="cannot be refreshed"):
+        await provider.refresh(session, _page(LOGIN_URL))
+
+
+# ---------------------------------------------------------------------------
+# Input validation — is_authenticated()
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_is_authenticated_true_when_cookies_still_match():
+    from stof.session.models import Session
+
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn"
+    )
+    session = Session(user_id="admin-01", role="admin", auth_type="form_login", cookies={"JSESSIONID": "abc"})
+    page = _page("https://demo.testfire.net/bank/main.jsp", cookies=[{"name": "JSESSIONID", "value": "abc"}])
+
+    assert await provider.is_authenticated(session, page) is True
+
+
+@pytest.mark.asyncio
+async def test_is_authenticated_false_when_cookie_value_changed():
+    from stof.session.models import Session
+
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn"
+    )
+    session = Session(user_id="admin-01", role="admin", auth_type="form_login", cookies={"JSESSIONID": "abc"})
+    page = _page("https://demo.testfire.net/login.jsp", cookies=[{"name": "JSESSIONID", "value": "different"}])
+
+    assert await provider.is_authenticated(session, page) is False
+
+
+@pytest.mark.asyncio
+async def test_is_authenticated_false_when_session_already_marked_invalid():
+    from stof.session.models import Session
+
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn"
+    )
+    session = Session(user_id="admin-01", role="admin", auth_type="form_login", is_valid=False)
+    page = _page("https://demo.testfire.net/bank/main.jsp")
+
+    assert await provider.is_authenticated(session, page) is False
+    page.context.cookies.assert_not_awaited()

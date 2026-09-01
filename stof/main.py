@@ -1,0 +1,1102 @@
+"""Layer 2 (CLI entry point) — `stof/main.py`, per CLAUDE.md's CLI
+Interface section.
+
+`crawl`, `test`, and `scan` are implemented -- CLAUDE.md's documented
+shape almost exactly:
+
+    stof crawl --config config/config.json --output data/endpoints.json
+    stof test --module jwt_tests --endpoints data/endpoints.json --output data/reports/
+    stof scan --config config/config.json --users config/users.json --output data/reports/
+
+`scan` (added once enough vulnerability modules existed to make "every
+implemented module" a meaningful default) is the one-command pipeline:
+dependency check, crawl, every implemented module, reports -- it calls
+`_run_crawl()` then `_run_test()` in sequence rather than duplicating
+either. `record`/`modules list`/`report --last` from CLAUDE.md's CLI
+section still aren't built.
+
+Target-agnostic by design: login form selectors, IDOR candidate IDs,
+and login role/auth_type all come from `config.json`/`users.json` as
+configured, with generic app-agnostic fallbacks (see
+`stof.auth.form_login`) when a target doesn't set them explicitly --
+this file must never bake in one specific target's DOM or ID scheme,
+since the whole point is to point it at a different app and re-run.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import subprocess
+import sys
+import time
+import uuid
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import click
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import async_playwright
+
+from stof.auth import FormLoginProvider, JWTAuthProvider
+from stof.config import ConfigError, load_config, load_dotenv, load_users
+from stof.core.console import DEFAULT_LOG_DIR, ScanConsole, attach_file_logging, detach_file_logging
+from stof.core.logger import get_logger
+from stof.core.test_orchestrator import build_test_plan
+from stof.crawler.crawler import CrawlerConfig, verify_auth_required
+from stof.crawler.crawler import crawl as run_crawler
+from stof.crawler.endpoint_store import load as load_endpoints
+from stof.crawler.endpoint_store import merge as merge_endpoints
+from stof.crawler.endpoint_store import write_endpoints
+from stof.engine.burp_controller import BurpApiError, BurpController
+from stof.engine.multi_session import SessionPool
+from stof.engine.playwright_engine import PlaywrightEngine
+from stof.evidence import EvidenceCollector
+from stof.findings.burp_normalizer import normalize_burp_issues
+from stof.findings.store import write_findings
+from stof.modules.auth_tests import AuthTestConfig, AuthTestsModule
+from stof.modules.business_logic_tests import BusinessLogicTestConfig, BusinessLogicTestsModule
+from stof.modules.cache_tests import CacheTestConfig, CacheTestsModule
+from stof.modules.configuration_tests import ConfigurationTestConfig, ConfigurationTestsModule
+from stof.modules.csrf_tests import CsrfTestConfig, CsrfTestsModule
+from stof.modules.deserialization_tests import DeserializationTestConfig, DeserializationTestsModule
+from stof.modules.disclosure_tests import DisclosureTestConfig, DisclosureTestsModule
+from stof.modules.graphql_tests import GraphQLTestConfig, GraphQLTestsModule
+from stof.modules.idor_tests import IdorTestConfig, IdorTestsModule
+from stof.modules.injection_variants_tests import InjectionVariantsTestConfig, InjectionVariantsTestsModule
+from stof.modules.jwt_tests import JwtTestConfig, JwtTestsModule
+from stof.modules.results import extract_findings, summarize
+from stof.modules.sqli_tests import SqliTestConfig, SqliTestsModule
+from stof.modules.ssrf_tests import SsrfTestConfig, SsrfTestsModule
+from stof.modules.xss_tests import XssTestConfig, XssTestsModule
+from stof.passive.engine import PassiveEngine
+from stof.recon import run_recon, write_recon_report
+from stof.reporting import generate_reports
+from stof.reporting.walkthrough_runner import build_walkthroughs
+from stof.session import SessionManager, SessionStore
+from stof.workflows.repository import WorkflowRepository
+from stof.workflows.runner import WorkflowRunner
+
+_log = get_logger("core.main")
+
+# Generic, app-agnostic default: most simple apps' own object IDs are
+# small sequential integers. A target with a different ID scheme (e.g.
+# a specific known-valid range) should set `target.idor_candidate_ids`
+# in config.json instead of this file hardcoding any one app's range.
+_GENERIC_IDOR_CANDIDATE_IDS = [str(i) for i in range(1, 21)]
+
+
+_KNOWN_MODULES = ("idor_tests", "jwt_tests", "auth_tests", "configuration_tests", "disclosure_tests", "graphql_tests", "deserialization_tests", "sqli_tests", "ssrf_tests", "xss_tests", "csrf_tests", "injection_variants_tests", "cache_tests", "business_logic_tests")
+
+
+def _jwt_roles(users_by_role: dict) -> list[str]:
+    # jwt_tests only has real surface against roles actually configured
+    # as `auth_type: "jwt"` -- a target with none (e.g. a purely
+    # cookie-based app) legitimately yields an empty role list rather
+    # than probing a role that was never JWT-authenticated to begin with.
+    return [role for role, user in users_by_role.items() if user.auth_type == "jwt"]
+
+
+def _resolve_module_names(explicit: list[str] | None, config) -> list[str]:
+    """`--module` always wins when passed explicitly. Otherwise the
+    modules actually enabled under config.json's own "modules" block
+    are the default -- config-driven selective execution via Layer 8's
+    `build_test_plan()`, instead of a second, disconnected "run every
+    implemented module" default that ignored config.json entirely (the
+    bug that made toggling "idor_tests": false in config.json silently
+    do nothing)."""
+    if explicit:
+        unknown = [m for m in explicit if m not in _KNOWN_MODULES]
+        if unknown:
+            raise click.ClickException(f"Unknown module(s): {', '.join(unknown)}. Available: {', '.join(_KNOWN_MODULES)}")
+        return explicit
+
+    plan = build_test_plan(config)
+    resolved = [m for m in plan.enabled_modules if m in _KNOWN_MODULES]
+    if not resolved:
+        raise click.ClickException(
+            "No vulnerability modules are enabled. Set at least one to `true` under "
+            "\"modules\" in your config.json, or pass --module explicitly."
+        )
+    return resolved
+
+
+def _apply_application_profile(
+    module_names: list[str], endpoints: list, jwt_roles: list[str]
+) -> tuple[list[str], list[str]]:
+    """Post-crawl "what kind of application is this" pass, applied on
+    top of whatever `_resolve_module_names()` already selected -- not a
+    replacement for it. Deliberately narrow: only skips a module when
+    its required surface is *provably absent* from what was actually
+    discovered (no role configured with `auth_type: "jwt"` at all, no
+    URL containing "graphql" anywhere in the crawl), the exact same
+    standard each of these modules' own techniques already use
+    internally to report SKIPPED one-by-one -- this just decides it
+    once, before the module runs at all, instead of after every
+    technique individually reaches the same conclusion. Never guesses
+    at richer "app type" categories (SPA vs. server-rendered, REST vs.
+    traditional) to decide relevance for modules like idor_tests/
+    auth_tests/configuration_tests -- those apply to virtually any HTTP
+    application, and a wrong guess there would silently skip real
+    coverage, which is a worse failure than a handful of SKIP lines."""
+    skips: list[str] = []
+    filtered = list(module_names)
+    if "jwt_tests" in filtered and not jwt_roles:
+        filtered.remove("jwt_tests")
+        skips.append('jwt_tests (no role configured with auth_type: "jwt")')
+    if "graphql_tests" in filtered and not any("graphql" in e.url.lower() for e in endpoints):
+        filtered.remove("graphql_tests")
+        skips.append("graphql_tests (no GraphQL endpoint discovered)")
+    return filtered, skips
+
+
+def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict) -> dict:
+    idor_ids = config.target.idor_candidate_ids or _GENERIC_IDOR_CANDIDATE_IDS
+    jwt_config_kwargs = {}
+    if config.target.jwt_role_claim is not None:
+        jwt_config_kwargs["role_claim"] = config.target.jwt_role_claim
+
+    # Same generic "admin"/"normal" convention `IdorTestsModule` itself
+    # defaults to -- a target using different role names overrides these
+    # by naming its own roles that way in users.json (the modules take
+    # whatever roles are actually configured, not literal string matches).
+    high_priv_role = "admin" if "admin" in users_by_role else next(iter(users_by_role), None)
+    low_priv_role = "normal" if "normal" in users_by_role else next(
+        (r for r in users_by_role if r != high_priv_role), high_priv_role
+    )
+    test_user = users_by_role.get(low_priv_role)
+    victim_user = users_by_role.get(high_priv_role)
+
+    allow_state_changing_probes = config.testing.allow_state_changing_probes
+
+    auth_config = AuthTestConfig(
+        login_json_endpoint=config.target.jwt_token_url,
+        change_password_url=config.target.change_password_url,
+        reset_password_request_url=config.target.reset_password_request_url,
+        reset_password_complete_url=config.target.reset_password_complete_url,
+        logout_url=config.target.logout_url,
+        test_role=low_priv_role,
+        test_username=test_user.username if test_user else None,
+        test_current_password=test_user.password if test_user else None,
+        victim_email=victim_user.username if victim_user else None,
+        allow_state_changing_probes=allow_state_changing_probes,
+    )
+
+    csrf_config = CsrfTestConfig(
+        test_role=low_priv_role,
+        role_auth_type=test_user.auth_type if test_user else None,
+        victim_role=high_priv_role,
+        victim_role_auth_type=victim_user.auth_type if victim_user else None,
+        allow_state_changing_probes=allow_state_changing_probes,
+    )
+
+    return {
+        "idor_tests": lambda: IdorTestsModule(config=IdorTestConfig(candidate_ids=idor_ids, allow_state_changing_probes=allow_state_changing_probes)),
+        "jwt_tests": lambda: JwtTestsModule(roles=jwt_roles, config=JwtTestConfig(**jwt_config_kwargs)),
+        "auth_tests": lambda: AuthTestsModule(config=auth_config),
+        "csrf_tests": lambda: CsrfTestsModule(config=csrf_config),
+        "configuration_tests": lambda: ConfigurationTestsModule(config=ConfigurationTestConfig(base_url=config.target.base_url)),
+        "disclosure_tests": lambda: DisclosureTestsModule(config=DisclosureTestConfig(high_priv_role=high_priv_role or "admin")),
+        "graphql_tests": lambda: GraphQLTestsModule(config=GraphQLTestConfig(
+            high_priv_role=high_priv_role or "admin", low_priv_role=low_priv_role or "normal",
+            test_username=test_user.username if test_user else None,
+            allow_state_changing_probes=allow_state_changing_probes,
+        )),
+        "deserialization_tests": lambda: DeserializationTestsModule(config=DeserializationTestConfig(high_priv_role=high_priv_role or "admin")),
+        "sqli_tests": lambda: SqliTestsModule(config=SqliTestConfig(
+            low_priv_role=low_priv_role or "normal", high_priv_role=high_priv_role or "admin",
+            allow_state_changing_probes=allow_state_changing_probes,
+        )),
+        "xss_tests": lambda: XssTestsModule(config=XssTestConfig(
+            low_priv_role=low_priv_role or "normal", high_priv_role=high_priv_role or "admin",
+            allow_state_changing_probes=allow_state_changing_probes,
+        )),
+        "ssrf_tests": lambda: SsrfTestsModule(config=SsrfTestConfig(
+            low_priv_role=low_priv_role or "normal", collaborator_url=config.burp.collaborator_url,
+        )),
+        "injection_variants_tests": lambda: InjectionVariantsTestsModule(config=InjectionVariantsTestConfig(
+            low_priv_role=low_priv_role or "normal", high_priv_role=high_priv_role or "admin",
+            allow_state_changing_probes=allow_state_changing_probes,
+        )),
+        "cache_tests": lambda: CacheTestsModule(config=CacheTestConfig(
+            base_url=config.target.base_url, test_role=low_priv_role or "normal",
+            allow_state_changing_probes=allow_state_changing_probes,
+        )),
+        "business_logic_tests": lambda: BusinessLogicTestsModule(config=BusinessLogicTestConfig(
+            allow_state_changing_probes=allow_state_changing_probes,
+        )),
+    }
+
+
+def _build_form_login_provider(config) -> FormLoginProvider:
+    kwargs = {}
+    for field in ("username_selector", "password_selector", "submit_selector", "success_selector"):
+        value = getattr(config.target, field)
+        if value is not None:
+            kwargs[field] = value
+    return FormLoginProvider(login_url=config.target.login_url, **kwargs)
+
+
+def _existing_json(path: Path) -> dict:
+    """Tolerant read for `configure`'s "merge over what's already
+    there" behavior -- a missing or unparseable file just means "start
+    from nothing" rather than a hard failure, since `configure` is the
+    command that's supposed to get someone UNSTUCK from a bad config."""
+    if not path.is_file():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _write_dotenv_value(path: Path, key: str, value: str) -> None:
+    """Upserts one `KEY=VALUE` line in a `.env` file, preserving every
+    other line untouched (comments, unrelated vars, ordering) -- the
+    writer-side counterpart to `load_dotenv()`'s reader."""
+    lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+    prefix = f"{key}="
+    for i, line in enumerate(lines):
+        if line.strip().startswith(prefix):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@click.group()
+def cli() -> None:
+    """STOF — Security Testing Orchestration Framework."""
+
+
+@cli.command()
+@click.option("--config", "config_path", default="config/config.json", show_default=True, type=click.Path())
+@click.option("--users", "users_path", default="config/users.json", show_default=True, type=click.Path())
+@click.option("--env-file", "env_path", default=".env", show_default=True, type=click.Path())
+def configure(config_path: str, users_path: str, env_path: str) -> None:
+    """Interactive setup wizard for a target and its credentials.
+
+    Replaces hand-editing config.json + users.json + a matching .env in
+    three separate files with matching `{{env:VAR}}` token names -- the
+    thing that made first-time setup (and re-pointing at a different
+    target) fiddly and error-prone. Prompts for the target URL(s),
+    admin/normal credentials, and which vulnerability modules to run by
+    default, then writes all three files and validates the result
+    immediately (same `load_config`/`load_users` this project's own
+    commands use, so a mistake is caught here, not mid-scan).
+
+    Passwords are written ONLY to `.env` -- config.json/users.json only
+    ever get a `{{env:VAR}}` token, never a literal password, matching
+    this project's existing credential-handling rule. Re-run any time
+    to repoint at a different target or rotate credentials; existing
+    browser/output/burp settings in config.json are preserved as-is."""
+    config_path, users_path, env_path = Path(config_path), Path(users_path), Path(env_path)
+    existing_config = _existing_json(config_path)
+    existing_target = existing_config.get("target", {})
+
+    click.echo("STOF target & credential setup")
+    click.echo("-" * 40)
+
+    base_url = click.prompt("Target base URL", default=existing_target.get("base_url") or None).strip()
+    parts = urlsplit(base_url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise click.ClickException(f"'{base_url}' doesn't look like a valid http(s) URL (expected e.g. https://example.com)")
+    origin = f"{parts.scheme}://{parts.netloc}"
+
+    login_url = click.prompt("Login page URL", default=existing_target.get("login_url") or f"{origin}/login").strip()
+
+    wants_jwt = click.confirm("Does this target also expose a JWT/API token login endpoint?", default=bool(existing_target.get("jwt_token_url")))
+    jwt_token_url = None
+    if wants_jwt:
+        jwt_token_url = click.prompt("JWT token endpoint URL", default=existing_target.get("jwt_token_url") or f"{origin}/api/login").strip()
+
+    click.echo()
+    click.echo("Credentials (passwords go to .env only -- never written to config.json/users.json)")
+    admin_username = click.prompt("Admin (high-privilege) username/email")
+    admin_password = click.prompt("Admin password", hide_input=True)
+    normal_username = click.prompt("Normal (low-privilege) username/email")
+    normal_password = click.prompt("Normal password", hide_input=True)
+    wants_jwt_role = wants_jwt and click.confirm("Also authenticate the normal user via JWT (for jwt_tests)?", default=True)
+
+    click.echo()
+    click.echo("Vulnerability modules to run by default (used when `stof scan`/`stof test` run without --module):")
+    existing_modules = existing_config.get("modules", {})
+    module_flags = {name: click.confirm(f"  enable {name}?", default=existing_modules.get(name, True)) for name in _KNOWN_MODULES}
+
+    _write_dotenv_value(env_path, "ADMIN_PASSWORD", admin_password)
+    _write_dotenv_value(env_path, "USER_PASSWORD", normal_password)
+
+    users_doc = {"users": [
+        {"id": "admin-01", "role": "admin", "username": admin_username, "password": "{{env:ADMIN_PASSWORD}}", "auth_type": "form_login"},
+        {"id": "user-01", "role": "normal", "username": normal_username, "password": "{{env:USER_PASSWORD}}", "auth_type": "form_login"},
+    ]}
+    if wants_jwt_role:
+        users_doc["users"].append({"id": "user-01-jwt", "role": "jwt_user", "username": normal_username, "password": "{{env:USER_PASSWORD}}", "auth_type": "jwt"})
+    users_path.parent.mkdir(parents=True, exist_ok=True)
+    users_path.write_text(json.dumps(users_doc, indent=2) + "\n", encoding="utf-8")
+
+    target_block = dict(existing_target)
+    target_block["base_url"] = base_url
+    target_block["login_url"] = login_url
+    if jwt_token_url:
+        target_block["jwt_token_url"] = jwt_token_url
+    else:
+        target_block.pop("jwt_token_url", None)
+
+    modules_block = dict(existing_modules)
+    modules_block["crawler"] = True
+    modules_block.update(module_flags)
+
+    config_doc = {
+        "target": target_block,
+        "browser": existing_config.get("browser") or {"headless": True, "slowmo_ms": 0, "proxy": None},
+        "modules": modules_block,
+        "output": existing_config.get("output") or {"reports_dir": "data/reports", "evidence_dir": "data/evidence"},
+        # api_key ships as "" (not a {{env:...}} token) so validation
+        # never demands BURP_API_KEY be set for a target that isn't
+        # using Burp integration -- set it (and burp.enabled) by hand
+        # in config.json if/when you turn that on.
+        "burp": existing_config.get("burp") or {"enabled": False, "api_url": "http://127.0.0.1:1337", "api_key": "", "scan_timeout_s": 1800, "poll_interval_s": 5},
+    }
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(json.dumps(config_doc, indent=2) + "\n", encoding="utf-8")
+
+    click.echo()
+    load_dotenv(env_path)
+    try:
+        load_config(config_path)
+        load_users(users_path)
+    except ConfigError as exc:
+        raise click.ClickException(f"wrote {config_path} and {users_path}, but validation failed: {exc}") from exc
+
+    click.echo(f"Wrote {config_path}, {users_path}, {env_path} -- configuration is valid.")
+    click.echo(f"Next: stof scan --config {config_path} --users {users_path}")
+
+
+@cli.command()
+@click.option("--module", default=None, help=f"Comma-separated module name(s). Defaults to whatever is enabled under config.json's \"modules\" block. Available: {', '.join(_KNOWN_MODULES)}.")
+@click.option("--endpoints", default="data/endpoints.json", show_default=True, type=click.Path())
+@click.option("--config", "config_path", default="config/config.json", show_default=True, type=click.Path())
+@click.option("--users", "users_path", default="config/users.json", show_default=True, type=click.Path())
+@click.option("--output", default=None, help="Reports output dir. Defaults to config.output.reports_dir.")
+@click.option("--log-dir", default=str(DEFAULT_LOG_DIR), show_default=True, type=click.Path(), help="Per-scan log file directory.")
+@click.option("--headless/--headed", default=None, help="Overrides config.browser.headless.")
+def test(module: str | None, endpoints: str, config_path: str, users_path: str, output: str | None, log_dir: str, headless: bool | None) -> None:
+    """Run one or more vulnerability modules against already-discovered
+    endpoints and produce HTML/JSON/Excel reports -- the single command
+    for this project's IDOR/Privilege-Escalation MVP demo."""
+    module_names = [m.strip() for m in module.split(",") if m.strip()] if module else None
+    exit_code = asyncio.run(_run_test(module_names, endpoints, config_path, users_path, output, headless, log_dir=log_dir))
+    raise SystemExit(exit_code)
+
+
+@cli.command()
+@click.option("--config", "config_path", default="config/config.json", show_default=True, type=click.Path())
+@click.option("--users", "users_path", default="config/users.json", show_default=True, type=click.Path())
+@click.option("--role", default=None, help="Configured user role to crawl as. Defaults to crawling as EVERY configured role and merging the results (single-role targets crawl once, unchanged).")
+@click.option("--output", "output_path", default="data/endpoints.json", show_default=True, type=click.Path())
+@click.option("--max-depth", default=3, show_default=True)
+@click.option("--max-pages", default=100, show_default=True)
+@click.option("--headless/--headed", default=None, help="Overrides config.browser.headless.")
+def crawl(config_path: str, users_path: str, role: str | None, output_path: str, max_depth: int, max_pages: int, headless: bool | None) -> None:
+    """Authenticated BFS crawl of `config.json`'s configured target --
+    writes a fresh `endpoints.json` for `stof test` to run against.
+    Re-run this whenever the target changes to a different app; `test`
+    never crawls on its own, it only reads whatever this last wrote."""
+    exit_code = asyncio.run(_run_crawl(config_path, users_path, role, output_path, max_depth, max_pages, headless))
+    raise SystemExit(exit_code)
+
+
+def _chromium_installed() -> bool:
+    cache_dir = Path.home() / ".cache" / "ms-playwright"
+    return cache_dir.is_dir() and any(cache_dir.glob("chromium-*"))
+
+
+def _ensure_dependencies_installed() -> None:
+    """`scan` is meant to be the one command a fresh checkout runs --
+    if this project's own declared dependencies (Pillow in particular,
+    added for evidence-image rendering) aren't installed yet, install
+    them now rather than failing deep inside a module with an
+    ImportError. Deliberately narrow: only `pip install -e .[dev]` of
+    *this* project's own pyproject.toml, never anything network-wide
+    or version-changing -- and skipped entirely once satisfied, so a
+    normal run pays no extra cost.
+
+    Playwright's browser binary (a real, ~150-300MB one-time download)
+    IS auto-installed too, at explicit user request -- but always with
+    a visible `[SCAN]` message first, never silently, so a slow first
+    run is explained rather than just... slow."""
+    try:
+        import PIL.Image  # noqa: F401
+        import playwright  # noqa: F401
+        import pydantic  # noqa: F401
+    except ImportError as exc:
+        click.echo("[SCAN] Installing missing Python dependencies (pip install -e \".[dev]\")...")
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "-e", ".[dev]", "-q"],
+            cwd=Path(__file__).resolve().parent.parent, check=False,
+        )
+        if result.returncode != 0:
+            raise click.ClickException("dependency install failed -- run `pip install -e \".[dev]\"` manually and retry") from exc
+        click.echo("[SCAN] Python dependencies installed.")
+
+    if not _chromium_installed():
+        click.echo("[SCAN] Installing Playwright's Chromium browser (one-time, ~150-300MB download)...")
+        result = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=False)
+        if result.returncode != 0:
+            raise click.ClickException("Chromium install failed -- run `python3 -m playwright install chromium` manually and retry")
+        click.echo("[SCAN] Chromium installed.")
+
+
+@cli.command()
+@click.option("--config", "config_path", default="config/config.json", show_default=True, type=click.Path())
+@click.option("--users", "users_path", default="config/users.json", show_default=True, type=click.Path())
+@click.option("--role", default=None, help="Configured user role to crawl as. Defaults to crawling as EVERY configured role and merging the results (single-role targets crawl once, unchanged).")
+@click.option("--endpoints", "endpoints_path", default="data/endpoints.json", show_default=True, type=click.Path())
+@click.option("--max-depth", default=3, show_default=True)
+@click.option("--max-pages", default=100, show_default=True)
+@click.option("--module", default=None, help=f"Comma-separated module name(s). Defaults to whatever is enabled under config.json's \"modules\" block. Available: {', '.join(_KNOWN_MODULES)}.")
+@click.option("--output", default=None, help="Reports output dir. Defaults to config.output.reports_dir.")
+@click.option("--log-dir", default=str(DEFAULT_LOG_DIR), show_default=True, type=click.Path(), help="Per-scan log file directory.")
+@click.option("--headless/--headed", default=None, help="Overrides config.browser.headless.")
+@click.option("--recrawl/--no-recrawl", default=True, show_default=True, help="Re-crawl before testing (default), or reuse the existing --endpoints file as-is.")
+@click.option("--scan-id", "scan_id", default=None, help="Override the auto-generated scan id (used by stof/ui's backend to correlate a launched process with its log/report files before either exists on disk).")
+@click.option("--workflow", default=None, help="Comma-separated recorded workflow id(s) (see `stof record` / data/workflows/) to replay once each, early in the scan, before vulnerability testing starts. Extends reachable attack surface past what the crawler alone finds (a checkout flow, a signup wizard, ...) -- not yet fed into any module's own detection logic beyond that, see the REPLAYING RECORDED WORKFLOWS phase's own log output for exactly what happened.")
+def scan(config_path: str, users_path: str, role: str | None, endpoints_path: str, max_depth: int, max_pages: int,
+         module: str | None, output: str | None, log_dir: str, headless: bool | None, recrawl: bool, scan_id: str | None,
+         workflow: str | None) -> None:
+    """The one-command full pipeline: install missing dependencies,
+    launch a browser and authenticate against the target (crawl +
+    endpoint discovery), then run every vulnerability module enabled in
+    config.json -- printing `[TEST] PASS/FAIL/SKIP/N/A` for every
+    technique -- and generate the HTML/JSON/Excel reports plus a
+    persistent per-scan log file. This is CLAUDE.md's own documented
+    `stof scan` command."""
+    _ensure_dependencies_installed()
+    module_names = [m.strip() for m in module.split(",") if m.strip()] if module else None
+    workflow_ids = [w.strip() for w in workflow.split(",") if w.strip()] if workflow else None
+
+    exit_code = asyncio.run(_run_scan(config_path, users_path, role, endpoints_path, max_depth, max_pages, module_names, output, headless, recrawl, log_dir=log_dir, scan_id=scan_id, workflow_ids=workflow_ids))
+    raise SystemExit(exit_code)
+
+
+async def _with_retry(coro_fn, attempts: int = 3):
+    """This sandbox's connection to demo.testfire.net has repeatedly
+    shown transient `net::ERR_NETWORK_CHANGED` failures during page
+    navigation throughout this project's development (see
+    tests/integration/*_demo.py, which needed manual retries for the
+    same reason) -- not a code bug, but real enough to make the one
+    command unreliable for a live demo without handling it here.
+    `coro_fn` is a zero-arg callable returning an awaitable, so each
+    retry attempt gets a fresh coroutine rather than re-awaiting a
+    already-consumed one."""
+    last_exc: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            return await coro_fn()
+        except PlaywrightError as exc:
+            last_exc = exc
+            click.echo(f"[STOF]  transient network error on attempt {attempt}/{attempts}: {exc}. Retrying...")
+            await asyncio.sleep(2)
+    raise last_exc
+
+
+_JWT_NOTE_NO_ROLE_CONFIGURED = (
+    "Not applicable -- no configured user in users.json has auth_type: \"jwt\", "
+    "so there was no JWT-authenticated role to test. This does not mean the "
+    "target has no JWT auth surface -- only that no role is currently configured "
+    "to authenticate as one. Set a role's auth_type to \"jwt\" (with a token_url "
+    "if the token comes from a login call) to actually exercise this module."
+)
+
+
+def _jwt_tests_note(jwt_roles: list[str]) -> str:
+    if not jwt_roles:
+        return _JWT_NOTE_NO_ROLE_CONFIGURED
+    return (
+        f"Ran against JWT-authenticated role(s) {', '.join(jwt_roles)} but found no "
+        "role-claim tampering issue. This can mean the target correctly verifies the "
+        "token's signature, its JWT has no matching role claim to tamper with, or the "
+        "probed endpoint doesn't enforce auth at all and the module safely skipped to "
+        "avoid a misleading finding -- check the scan log for which case applied."
+    )
+
+
+def _revert_state_changing_probes_flag(config_path: str) -> None:
+    """`testing.allow_state_changing_probes` is a manually-armed safety
+    gate (config/config.json) a tester flips on before a scan that needs
+    real write-verb probes, then should flip back off afterward -- but
+    it's been left `true` on disk after validation runs repeatedly during
+    this project's development. Auto-disarming it here, unconditionally
+    after every `stof scan`/`stof test` run (success, failure, or crash,
+    since this lives in the caller's `finally`), removes the need to
+    remember the manual revert at all."""
+    path = Path(config_path)
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if raw.get("testing", {}).get("allow_state_changing_probes") is True:
+        raw["testing"]["allow_state_changing_probes"] = False
+        path.write_text(json.dumps(raw, indent=2) + "\n")
+
+
+def _burp_seed_urls(endpoint_list, base_url: str) -> list[str]:
+    """Filters Layer 7's discovered endpoints down to absolute http(s)
+    URLs Burp can actually scan.
+
+    The crawler's endpoint list can include non-HTTP hrefs it saw on a
+    page (e.g. `javascript:checkSiteStatus('AltoroMutual')` from a real
+    demo.testfire.net link) -- Burp's REST API validates its whole
+    `urls` array and returns 400 ClientError for the entire request if
+    even one entry isn't a real URL, so a single bad entry would
+    otherwise silently kill the scan for every other endpoint too.
+    Falls back to `base_url` alone if nothing valid was discovered."""
+    seed_urls = sorted({e.url for e in endpoint_list if e.url.startswith(("http://", "https://"))})
+    return seed_urls or [base_url]
+
+
+def _burp_scope_prefix(base_url: str) -> str:
+    """Burp's scope-include rule is matched against the real HTTP
+    traffic it observes (e.g. `/rest/...`, `/api/...`), which never
+    carries a client-side SPA route fragment (`#/...`). Using
+    `base_url` verbatim as the scope prefix would silently exclude
+    every real request for a hash-routed single-page app -- scoping to
+    the bare origin instead is correct for any target, SPA or not."""
+    parts = urlsplit(base_url)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+async def _run_burp_scan(pw, config, endpoint_list, evidence, click_echo=click.echo) -> list:
+    """Runs a real Burp Suite Professional Active Scan against the
+    target and returns normalized `Finding`s (`scanner_source="burp"`).
+    Never raises out to the caller -- a Burp connectivity/API problem
+    is reported and the rest of the scan (stof's own modules) proceeds
+    regardless, matching this command's existing resilience pattern for
+    recon and individual vuln modules.
+
+    Seeds Burp with the URLs Layer 7's crawler already discovered
+    instead of just the bare base_url, so Burp can audit known
+    endpoints directly rather than blind-crawling the whole site from
+    scratch -- the same endpoint map every other module here already
+    reads from `endpoints.json`."""
+    seed_urls = _burp_seed_urls(endpoint_list, config.target.base_url)
+    click_echo(
+        f"[BURP]  Starting Burp Suite Active Scan against {len(seed_urls)} known endpoint(s) "
+        f"of {config.target.base_url} via {config.burp.api_url}..."
+    )
+    controller = None
+    try:
+        controller = await BurpController.create(
+            pw, config.burp.api_url, config.burp.api_key,
+            poll_interval_s=config.burp.poll_interval_s, timeout_s=config.burp.scan_timeout_s,
+        )
+        issues = await controller.run_active_scan(
+            seed_urls, scope_prefixes=[_burp_scope_prefix(config.target.base_url)]
+        )
+        findings = normalize_burp_issues(issues)
+        for f in findings:
+            f.evidence_refs = await evidence.capture_raw(
+                f.request_raw, f.response_raw, label=f"burp-{f.finding_id}"
+            )
+        click_echo(f"[BURP]  Active Scan complete: {len(findings)} issue(s) reported by Burp")
+        return findings
+    except (BurpApiError, TimeoutError, PlaywrightError) as exc:
+        click_echo(f"[BURP]  scan failed or Burp was unreachable ({config.burp.api_url}): {exc}")
+        return []
+    finally:
+        if controller is not None:
+            await controller.close()
+
+
+def _module_note(module_name: str, all_findings, jwt_roles: list[str] | None = None) -> dict:
+    count = sum(1 for f in all_findings if f.module_id == module_name)
+    note = None
+    if count == 0 and module_name == "jwt_tests":
+        note = _jwt_tests_note(jwt_roles or [])
+    return {"module": module_name, "finding_count": count, "note": note}
+
+
+async def _authenticated_session(session_manager, session_pool, role: str, target_url: str):
+    """Same authentication as `_authenticated_context()` below, but
+    returns the `Session` object itself rather than applying it to a
+    context -- `WorkflowRunner.run_workflow()` needs the `Session`
+    directly (it resolves `{{user.username}}`/`{{user.password}}`
+    tokens from `session.user_id`, and applies it to a context itself
+    via `PlaywrightEngine.replay()`), not a context already synced to
+    one role's cookies."""
+    context = await session_pool.get_context(role)
+    page = await context.new_page()
+    try:
+        return await session_manager.get_session(role, page)
+    finally:
+        await page.close()
+
+
+async def _authenticated_context(session_manager, session_pool, role: str, target_url: str):
+    context = await session_pool.get_context(role)
+    page = await context.new_page()
+    try:
+        session = await session_manager.get_session(role, page)
+    finally:
+        await page.close()
+    return await session_pool.apply_session(session, target_url)
+
+
+async def _replay_workflows(workflow_ids: list[str], users_by_role: dict, users_config, session_manager, session_pool, console: ScanConsole) -> None:
+    """A "REPLAYING RECORDED WORKFLOWS" phase, run once, early -- before
+    vulnerability testing starts -- for every workflow id passed via
+    `--workflow`. Real, working use of `WorkflowRunner` (Layer 6),
+    which previously existed fully built (recording, storage,
+    token-resolved replay via `PlaywrightEngine`) but was never called
+    from anywhere in the scan pipeline: a recorded checkout flow, signup
+    wizard, or any other multi-step journey the crawler's own link-
+    following can't reach on its own is exercised here, extending what
+    the rest of the scan can discover and test past whatever the
+    crawler found by itself.
+
+    Deliberately scoped to "replay it, log what happened" for this
+    first wiring -- not yet: merging newly-reached pages back into the
+    crawler's endpoint list, or feeding workflow state into any
+    vulnerability module's own detection logic (e.g. business-logic
+    abuse testing mid-flow). Both are real, valuable follow-ups; this
+    phase's own log output already reports exactly what it did and
+    didn't do, so that boundary is visible, not silently assumed.
+
+    Which role a workflow replays as isn't yet configurable per
+    workflow from the UI/CLI -- same "admin if present, else whichever
+    role is first" heuristic `recon_role` already uses elsewhere in
+    this function, logged explicitly so it's never a silent guess."""
+    console.phase("REPLAYING RECORDED WORKFLOWS")
+    replay_role = "admin" if "admin" in users_by_role else next(iter(users_by_role), None)
+    if replay_role is None:
+        console.info("Skipped -- no configured user to authenticate the replay with")
+        return
+
+    repository = WorkflowRepository()
+    engine = PlaywrightEngine(session_pool)
+    runner = WorkflowRunner(repository, engine, users_config)
+
+    for workflow_id in workflow_ids:
+        try:
+            session = await _authenticated_session(session_manager, session_pool, replay_role, "")
+            result = await runner.run_workflow(workflow_id, session)
+        except Exception as exc:
+            console.info(f"'{workflow_id}' (as role '{replay_role}'): could not replay -- {exc}")
+            continue
+        console.workflow_replayed(
+            workflow_id, replay_role, result.success,
+            result.completed_actions, result.total_actions, result.final_url, error=result.error,
+        )
+
+
+def _resolve_crawl_roles(role_override: str | None, users_by_role: dict, users_path: str) -> list[str]:
+    """Which role(s) `_run_crawl()` should authenticate and crawl as.
+
+    An explicit `--role` always crawls as exactly that one role --
+    unchanged from before. With no override, crawl as *every*
+    configured role and merge the results (see `_run_crawl`'s loop): a
+    low-priv role's crawl can otherwise never surface an admin-only
+    endpoint (or vice versa) since each crawl used to simply overwrite
+    `endpoints.json`. A target with only one configured role naturally
+    keeps today's single-crawl behavior either way -- there's nothing
+    to merge. Pure and side-effect-free (raises `click.ClickException`
+    on bad input, same as the rest of this file's validation) so it's
+    unit-testable without a browser."""
+    if role_override is not None:
+        if role_override not in users_by_role:
+            raise click.ClickException(f"role '{role_override}' is not configured in '{users_path}'")
+        return [role_override]
+
+    crawl_roles = list(users_by_role.keys())
+    if not crawl_roles:
+        raise click.ClickException("no configured user to authenticate the crawl with")
+    return crawl_roles
+
+
+async def _crawl_all_roles(
+    session_manager, session_pool, crawl_roles: list[str], crawler_config: CrawlerConfig,
+    target_url: str, echo,
+) -> list:
+    """Crawls as each role in `crawl_roles` in turn and merges the
+    results (see `endpoint_store.merge()`), logging a per-role progress
+    line only when there's more than one role -- a single-role crawl's
+    output stays identical to before Wave 1b. Split out of `_run_crawl`
+    so the role-fan-out loop itself (the actual Wave 1b behavior change)
+    is isolated from that function's already-substantial setup code."""
+    endpoints: list = []
+    for crawl_role in crawl_roles:
+        context = await _authenticated_context(session_manager, session_pool, crawl_role, target_url)
+        role_endpoints = await _with_retry(
+            lambda context=context: run_crawler(target_url, context, crawler_config)
+        )
+        endpoints = merge_endpoints(endpoints, role_endpoints)
+        if len(crawl_roles) > 1:
+            echo(
+                f"[CRAWL] role '{crawl_role}': {len(role_endpoints)} endpoint(s) found, "
+                f"{len(endpoints)} total after merge"
+            )
+    return endpoints
+
+
+async def _run_crawl(
+    config_path: str,
+    users_path: str,
+    role_override: str | None,
+    output_path: str,
+    max_depth: int,
+    max_pages: int,
+    headless_override: bool | None,
+    console: ScanConsole | None = None,
+) -> int:
+    echo = console.echo if console is not None else click.echo
+    load_dotenv()
+    config = load_config(config_path)
+    users = load_users(users_path)
+    users_by_role = {u.role: u for u in users.users}
+
+    crawl_roles = _resolve_crawl_roles(role_override, users_by_role, users_path)
+
+    form_provider = _build_form_login_provider(config)
+    jwt_provider = JWTAuthProvider(token_url=config.target.jwt_token_url)
+    session_store = SessionStore(db_path=Path("data") / "stof.db")
+    session_manager = SessionManager(
+        users=users_by_role,
+        providers={"form_login": form_provider, "jwt": jwt_provider},
+        store=session_store,
+    )
+
+    headless = config.browser.headless if headless_override is None else headless_override
+
+    echo(f"[CRAWL] Crawling {config.target.base_url} as role(s) {', '.join(crawl_roles)}...")
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=headless, slow_mo=config.browser.slowmo_ms or None)
+        session_pool = SessionPool(browser, ignore_https_errors=True)
+        try:
+            # One shared PassiveEngine across every role's crawl in this
+            # run -- it only accumulates observations from traffic the
+            # crawl(s) already made, so feeding it multiple roles' traffic
+            # is exactly "more observations", not a correctness concern.
+            passive_engine = PassiveEngine()
+            crawler_config = CrawlerConfig(
+                max_depth=max_depth, max_pages=max_pages,
+                exclude_path_patterns=tuple(config.target.crawler_exclude_patterns or ()),
+                passive_engine=passive_engine,
+            )
+            endpoints = await _crawl_all_roles(
+                session_manager, session_pool, crawl_roles, crawler_config, config.target.base_url, echo
+            )
+            anon_context = await session_pool.new_anonymous_context()
+            try:
+                await verify_auth_required(endpoints, anon_context)
+            finally:
+                await anon_context.close()
+        finally:
+            await session_pool.shutdown()
+
+    write_endpoints(endpoints, path=output_path)
+    forms = sum(1 for e in endpoints if e.endpoint_type == "form")
+    apis = sum(1 for e in endpoints if e.endpoint_type == "api")
+    pages = sum(1 for e in endpoints if e.endpoint_type == "page")
+    echo(
+        f"[CRAWL] Discovered {len(endpoints)} endpoint(s) ({forms} forms, {apis} API, {pages} pages) -> {output_path}"
+    )
+    if console is not None:
+        console.crawl_summary(len(endpoints), forms, apis, pages)
+
+    # Passive observations: derived entirely from traffic the crawl
+    # above already made -- no additional request. A separate file, not
+    # merged into endpoints.json, since an Observation is a candidate
+    # for an existing testcase family (TC-017/053/054/056/057/027), not
+    # an Endpoint or a Finding -- existing consumers of endpoints.json
+    # are unaffected either way.
+    passive_path = str(Path(output_path).parent / "passive_observations.json")
+    Path(passive_path).write_text(
+        json.dumps([o.to_dict() for o in passive_engine.observations], indent=2), encoding="utf-8"
+    )
+    if passive_engine.observations:
+        summary = ", ".join(f"{count} {kind}" for kind, count in sorted(passive_engine.summary().items()))
+        echo(f"[PASSIVE] {len(passive_engine.observations)} observation(s) ({summary}) -> {passive_path}")
+    return 0
+
+
+async def _run_scan(
+    config_path: str,
+    users_path: str,
+    role: str | None,
+    endpoints_path: str,
+    max_depth: int,
+    max_pages: int,
+    module_names: list[str] | None,
+    output: str | None,
+    headless: bool | None,
+    recrawl: bool,
+    log_dir: str | Path = DEFAULT_LOG_DIR,
+    scan_id: str | None = None,
+    workflow_ids: list[str] | None = None,
+) -> int:
+    """`_run_crawl()` then `_run_test()`, back to back -- two separate
+    browser launches (crawl's, then test's own), not one shared
+    session. Simpler and lower-risk than merging their lifecycles, and
+    matches how a human would run the two existing commands by hand.
+
+    Owns one `ScanConsole` (one scan id, one log file) spanning both
+    phases -- `_run_test()` is told to borrow it rather than create
+    its own, so the crawl phase's output and the test phase's output
+    land in the same `<log_dir>/scan_<id>.log`, not two.
+
+    `module_names` is `None` when `--module` wasn't passed -- resolved
+    here (not left for `_run_test()` to resolve again) since the
+    resolved list is needed for the banner before `_run_test()` runs.
+
+    `scan_id` is normally auto-generated (a caller can't know it ahead
+    of time); an external caller that needs to correlate this process
+    with its own tracking record before the log/report files exist
+    (stof/ui's backend) can pass one in instead."""
+    scan_id = scan_id or uuid.uuid4().hex[:8]
+    load_dotenv()
+    config = load_config(config_path)
+    module_names = _resolve_module_names(module_names, config)
+    console = ScanConsole(scan_id, log_dir=log_dir)
+    file_handler = attach_file_logging(console.log_path)
+    try:
+        console.banner(scan_id, config.target.base_url, module_names)
+
+        if recrawl or not Path(endpoints_path).is_file():
+            console.phase("CRAWL & ENDPOINT DISCOVERY")
+            crawl_exit = await _run_crawl(config_path, users_path, role, endpoints_path, max_depth, max_pages, headless, console=console)
+            if crawl_exit != 0:
+                return crawl_exit
+        else:
+            console.phase("CRAWL & ENDPOINT DISCOVERY")
+            console.info(f"Skipped -- reusing existing '{endpoints_path}' (pass --recrawl to force a fresh crawl)")
+
+        return await _run_test(module_names, endpoints_path, config_path, users_path, output, headless, scan_id=scan_id, console=console, workflow_ids=workflow_ids)
+    finally:
+        detach_file_logging(file_handler)
+        console.close()
+
+
+async def _run_test(
+    module_names: list[str] | None,
+    endpoints_path: str,
+    config_path: str,
+    users_path: str,
+    output_override: str | None,
+    headless_override: bool | None,
+    scan_id: str | None = None,
+    console: ScanConsole | None = None,
+    log_dir: str | Path = DEFAULT_LOG_DIR,
+    workflow_ids: list[str] | None = None,
+) -> int:
+    """Owns its `ScanConsole` (creates the scan id, prints the banner,
+    attaches file logging, closes everything at the end) when called
+    standalone as `stof test`. When called from `_run_scan()`, both
+    `scan_id` and `console` are already provided -- borrowed, not
+    owned, so this function must not print a second banner or detach
+    the file handler out from under the crawl phase that logged to it
+    first. `log_dir` is only consulted when this function creates its
+    own console (tests redirect it away from the real `data/logs/`).
+
+    `module_names` may already be resolved (passed in by `_run_scan()`)
+    or `None`/raw (standalone `stof test`) -- `_resolve_module_names()`
+    is a no-op on an already-resolved list, so calling it
+    unconditionally here is safe either way."""
+    owns_console = console is None
+    if scan_id is None:
+        scan_id = uuid.uuid4().hex[:8]
+    started_at = time.monotonic()
+
+    load_dotenv()
+    config = load_config(config_path)
+    module_names = _resolve_module_names(module_names, config)
+
+    if owns_console:
+        console = ScanConsole(scan_id, log_dir=log_dir)
+    file_handler = attach_file_logging(console.log_path) if owns_console else None
+    try:
+        if owns_console:
+            console.banner(scan_id, config.target.base_url, module_names)
+        users = load_users(users_path)
+        users_by_role = {u.role: u for u in users.users}
+
+        endpoint_list = load_endpoints(endpoints_path)
+        if not endpoint_list:
+            raise click.ClickException(
+                f"No endpoints found at '{endpoints_path}' -- run the crawler first (`stof crawl`)."
+            )
+
+        jwt_roles = _jwt_roles(users_by_role)
+        module_builders = _build_module_builders(config, jwt_roles, users_by_role)
+
+        form_provider = _build_form_login_provider(config)
+        jwt_provider = JWTAuthProvider(token_url=config.target.jwt_token_url)
+        session_store = SessionStore(db_path=Path("data") / "stof.db")
+        session_manager = SessionManager(
+            users=users_by_role,
+            providers={"form_login": form_provider, "jwt": jwt_provider},
+            store=session_store,
+        )
+
+        headless = config.browser.headless if headless_override is None else headless_override
+
+        all_findings = []
+        recon_report = None
+        walkthroughs: list = []
+        module_rows: list[tuple[str, dict[str, int]]] = []
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=headless, slow_mo=config.browser.slowmo_ms or None)
+            session_pool = SessionPool(browser, ignore_https_errors=True)
+            evidence = EvidenceCollector(scan_id=scan_id, base_dir=Path(config.output.evidence_dir))
+
+            try:
+                console.phase("RECONNAISSANCE & ENDPOINT CONTEXT")
+                recon_role = "admin" if "admin" in users_by_role else next(iter(users_by_role), None)
+                if recon_role is None:
+                    console.info("Recon skipped -- no configured user to authenticate recon with")
+                else:
+                    console.info("Running reconnaissance (tech stack, headers, exposed paths, secrets, parameters)...")
+                    try:
+                        recon_context = await _authenticated_context(session_manager, session_pool, recon_role, config.target.base_url)
+                        recon_report = await _with_retry(
+                            lambda: run_recon(endpoint_list, recon_context, config.target.base_url)
+                        )
+                        # Scan-id-stamped copy is the durable record (never
+                        # overwritten by a later scan, matching how reports/
+                        # logs are already namespaced); the flat path is kept
+                        # too as a "most recent scan" convenience pointer.
+                        write_recon_report(recon_report, path=Path("data") / "recon" / f"scan_{scan_id}.json")
+                        write_recon_report(recon_report, path=Path("data") / "recon_results.json")
+                        console.info(
+                            f"{recon_report.pages_analyzed} page(s) analyzed, "
+                            f"{len(recon_report.missing_security_headers)} with missing security headers, "
+                            f"{len(recon_report.exposed_paths)} exposed path(s), {len(recon_report.secrets)} secret(s)"
+                        )
+                    except KeyError as exc:
+                        console.info(f"Recon skipped: {exc}")
+
+                if workflow_ids:
+                    await _replay_workflows(workflow_ids, users_by_role, users, session_manager, session_pool, console)
+
+                module_names, profile_skips = _apply_application_profile(module_names, endpoint_list, jwt_roles)
+                role_auth = {role: user.auth_type for role, user in users_by_role.items()}
+                has_graphql = any("graphql" in e.url.lower() for e in endpoint_list)
+                console.application_profile(role_auth, has_graphql, profile_skips)
+
+                console.phase("VULNERABILITY TESTING")
+
+                async def _run_all_vuln_modules() -> tuple[list, list]:
+                    module_findings: list = []
+                    all_results: list = []
+                    total_modules = len(module_names)
+                    for i, name in enumerate(module_names):
+                        console.progress_bar(i, total_modules, f"running {name}...")
+                        vuln_module = module_builders[name]()
+                        if hasattr(vuln_module, "target_url"):
+                            vuln_module.target_url = config.target.base_url
+                        results = await _with_retry(
+                            lambda vm=vuln_module: vm.run_techniques(endpoint_list, session_manager, session_pool, evidence=evidence)
+                        )
+                        console.progress_bar(i + 1, total_modules, f"{name} complete")
+                        console.module_header(name, len(results))
+                        for result in results:
+                            console.test_result(result)
+                        console.not_automated_note(results)
+                        counts = summarize(results)
+                        console.module_summary(name, counts)
+                        module_rows.append((name, counts))
+                        all_results.extend(results)
+                        module_findings.extend(extract_findings(results))
+                    return module_findings, all_results
+
+                # Burp's Active Scan is independent of stof's own modules and
+                # can run for a long time -- run both concurrently (CLAUDE.md
+                # rule 5: "Use asyncio.gather() for parallelism in the
+                # orchestrator") rather than blocking the fast IDOR/JWT tests
+                # behind it.
+                if config.burp.enabled:
+                    (vuln_findings, _vuln_results), burp_findings = await asyncio.gather(
+                        _run_all_vuln_modules(), _run_burp_scan(pw, config, endpoint_list, evidence)
+                    )
+                else:
+                    vuln_findings, _vuln_results = await _run_all_vuln_modules()
+                    burp_findings = []
+
+                all_findings.extend(vuln_findings)
+                all_findings.extend(burp_findings)
+
+                if config.output.generate_walkthrough and all_findings:
+                    console.phase("BUILDING WALKTHROUGH REPORT")
+                    console.info(f"Replaying {len(all_findings)} confirmed finding(s) with a real browser to capture step-by-step evidence...")
+
+                    def _walkthrough_progress(done: int, total: int, label: str) -> None:
+                        console.progress_bar(done, total, label)
+
+                    walkthroughs = await build_walkthroughs(
+                        all_findings, session_manager, session_pool, scan_id,
+                        screenshot_base_dir=config.output.evidence_dir,
+                        progress=_walkthrough_progress,
+                        login_url=config.target.login_url,
+                        username_selector=config.target.username_selector,
+                        password_selector=config.target.password_selector,
+                        submit_selector=config.target.submit_selector,
+                        users_by_role=users_by_role,
+                    )
+                    error_count = sum(1 for w in walkthroughs if w.build_error)
+                    console.info(f"Walkthrough report built for {len(walkthroughs)} finding(s) ({error_count} with a build error)")
+            finally:
+                await session_pool.shutdown()
+
+        duration = round(time.monotonic() - started_at, 1)
+        # Same "scan-id-stamped is durable, flat path is a convenience
+        # pointer" pattern as the recon report above -- this file used to
+        # be the ONLY copy, so every new scan silently erased the
+        # previous scan's raw findings even though its HTML/JSON/Excel
+        # reports (already scan-id-namespaced) survived untouched.
+        write_findings(all_findings, path=Path("data") / "findings" / f"scan_{scan_id}.json")
+        write_findings(all_findings, path=Path("data") / "findings.json")
+
+        if module_rows:
+            console.summary_table(module_rows)
+
+        module_notes = [_module_note(name, all_findings, jwt_roles=jwt_roles) for name in module_names]
+        modules_run = list(module_names)
+        if config.burp.enabled:
+            modules_run.append("burp_active_scan")
+            module_notes.append(_module_note("burp_active_scan", all_findings))
+
+        reports_dir = output_override or config.output.reports_dir
+        scan_metadata = {
+            "scan_id": scan_id,
+            "target": config.target.base_url,
+            "modules_run": modules_run,
+            "module_notes": module_notes,
+            "duration_seconds": duration,
+        }
+        report_paths = generate_reports(
+            all_findings, scan_metadata, output_dir=reports_dir,
+            recon_report=recon_report.to_dict() if recon_report is not None else None,
+            walkthroughs=walkthroughs,
+        )
+
+        severity_counts: dict[str, int] = {}
+        for f in all_findings:
+            severity_counts[f.severity] = severity_counts.get(f.severity, 0) + 1
+        console.findings_by_severity(severity_counts)
+        console.reports(
+            str(report_paths.html), str(report_paths.json), str(report_paths.excel),
+            walkthrough=str(report_paths.walkthrough) if report_paths.walkthrough else None,
+        )
+        console.footer(duration)
+
+        return 0
+    finally:
+        _revert_state_changing_probes_flag(config_path)
+        if owns_console:
+            detach_file_logging(file_handler)
+            console.close()
+
+
+if __name__ == "__main__":
+    cli()

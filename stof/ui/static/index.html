@@ -1,0 +1,3356 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>STOF Console</title>
+<link rel="icon" type="image/jpeg" href="/nusummit-favicon.jpg" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --surface: #ffffff;
+    --surface-2: #eef1f4;
+    --surface-3: #e4e8ec;
+    --border: #dbe0e6;
+    --text: #16202b;
+    --text-muted: #626e7a;
+    --text-faint: #8b96a3;
+    --accent: #0e8c82;
+    --accent-soft: #e3f4f2;
+    --accent-text: #086b63;
+    --critical: #c22f45;
+    --critical-soft: #fbe7ea;
+    --high: #b56a12;
+    --high-soft: #fbeedb;
+    --medium: #8a6d00;
+    --medium-soft: #faf3d6;
+    --low: #2f7a4e;
+    --low-soft: #e3f3e9;
+    --pass: #2f7a4e;
+    --shadow: 0 1px 2px rgba(20, 30, 40, 0.06), 0 8px 24px -12px rgba(20, 30, 40, 0.12);
+    --radius: 8px;
+    --mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+    /* The sidebar (.brand/.nav) is a deliberate always-dark brand surface,
+       independent of the light/dark theme applied to the rest of the app
+       -- these are declared once here (not theme-conditional) so the two
+       places that paint it (.brand, .nav) share one source instead of
+       each hardcoding the same literals. */
+    --sidebar-bg: #0a1f38;
+    --sidebar-border: rgba(255,255,255,0.08);
+    --sidebar-text: rgba(255,255,255,0.62);
+    --sidebar-text-hover: #fff;
+    --sidebar-label: rgba(255,255,255,0.32);
+    --sidebar-accent: #4fd1c5;
+    --sidebar-accent-text: #6fe0d6;
+    --sidebar-accent-soft: rgba(79,209,197,0.14);
+    --tag-info: #6c8fd1;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b0f14;
+      --surface: #131a22;
+      --surface-2: #1a222c;
+      --surface-3: #212b36;
+      --border: #29343f;
+      --text: #e6eaef;
+      --text-muted: #93a0ad;
+      --text-faint: #6d7885;
+      --accent: #4fd1c5;
+      --accent-soft: #143733;
+      --accent-text: #6fe0d6;
+      --critical: #f0637a;
+      --critical-soft: #3a1620;
+      --high: #f0a95d;
+      --high-soft: #3a2810;
+      --medium: #e8d066;
+      --medium-soft: #35300f;
+      --low: #7ecb99;
+      --low-soft: #14311f;
+      --pass: #7ecb99;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0d1117;
+    --surface: #131a22;
+    --surface-2: #1a222c;
+    --surface-3: #212b36;
+    --border: #29343f;
+    --text: #e6eaef;
+    --text-muted: #93a0ad;
+    --text-faint: #6d7885;
+    --accent: #4fd1c5;
+    --accent-soft: #143733;
+    --accent-text: #6fe0d6;
+    --critical: #f0637a;
+    --critical-soft: #3a1620;
+    --high: #f0a95d;
+    --high-soft: #3a2810;
+    --medium: #e8d066;
+    --medium-soft: #35300f;
+    --low: #7ecb99;
+    --low-soft: #14311f;
+    --pass: #7ecb99;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4 { font-family: var(--sans); text-wrap: balance; margin: 0; }
+  ::selection { background: var(--accent-soft); color: var(--accent-text); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+  }
+
+  /* ---------------------------------------------------------------- shell */
+  .shell {
+    display: grid;
+    grid-template-columns: 246px 1fr;
+    grid-template-rows: 84px 1fr;
+    grid-template-areas:
+      "brand topbar"
+      "nav   main";
+    height: 100dvh;
+    /* Deliberately no min-height: it used to be 640px, which forced
+       .shell taller than the viewport on any shorter window and made
+       the WHOLE PAGE (including the sidebar) scroll instead of just
+       .main -- confirmed live via document.documentElement.scrollTop
+       moving while .main's own scrollTop stayed 0. .nav and .main both
+       already have their own overflow-y: auto, so they handle content
+       overflow correctly on their own; .shell just needs to stay
+       exactly viewport-height, never taller. */
+  }
+
+  .brand {
+    grid-area: brand;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    padding: 0 24px;
+    border-right: 1px solid var(--sidebar-border);
+    background: var(--sidebar-bg);
+  }
+  .brand .mark {
+    display: flex; align-items: center; gap: 9px;
+  }
+  .brand .mark img { height: 18px; width: auto; display: block; }
+  .brand .mark::after {
+    content: "";
+    width: 1px; height: 14px;
+    background: rgba(255,255,255,0.18);
+  }
+  .brand .name { font-weight: 700; font-size: 14.5px; letter-spacing: -0.01em; color: #fff; }
+  .brand .name small { display: block; font-weight: 500; font-size: 10px; color: rgba(255,255,255,0.42); letter-spacing: 0.08em; text-transform: uppercase; margin-top: 3px; }
+
+  .topbar {
+    grid-area: topbar;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 22px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .nav-toggle {
+    display: none; flex-direction: column; justify-content: center; gap: 4px;
+    width: 32px; height: 32px; border: none; background: transparent; cursor: pointer;
+    border-radius: 6px; flex-shrink: 0;
+  }
+  .nav-toggle span { width: 18px; height: 2px; background: var(--text); border-radius: 1px; }
+  .nav-toggle:hover { background: var(--surface-2); }
+  .nav-scrim {
+    display: none; position: fixed; inset: 0; z-index: 30;
+    background: rgba(0,0,0,0.4);
+  }
+  .target-picker {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 6px 14px 6px 10px;
+    font-size: 12.5px;
+  }
+  .target-picker .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pass); box-shadow: 0 0 0 3px var(--low-soft); }
+  .target-picker .url { font-family: var(--mono); color: var(--text); }
+
+  .topbar-right { display: flex; align-items: center; gap: 10px; }
+  .btn {
+    font-family: var(--sans);
+    font-size: 13px; font-weight: 600;
+    border-radius: 6px;
+    padding: 8px 14px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+  }
+  .btn:hover { background: var(--surface-2); }
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+  .btn-primary:hover { filter: brightness(1.05); background: var(--accent); }
+  .org-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 10px 5px 5px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .org-pill .av { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-3); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--text-muted); }
+
+  /* ---------------------------------------------------------------- nav */
+  .nav {
+    grid-area: nav;
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
+    padding: 14px 12px 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    overflow-y: auto;
+  }
+  .nav-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--sidebar-label); padding: 14px 10px 6px; }
+  .nav-label:first-child { padding-top: 4px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px;
+    border-radius: 7px;
+    font-size: 13.5px; font-weight: 500;
+    color: var(--sidebar-text);
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-left: 2px solid transparent;
+    background: none;
+    text-align: left;
+    width: 100%;
+    font-family: var(--sans);
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .nav-item:hover { background: rgba(255,255,255,0.06); color: var(--sidebar-text-hover); }
+  .nav-item.active { background: var(--sidebar-accent-soft); color: var(--sidebar-accent-text); font-weight: 700; border-left-color: var(--sidebar-accent); }
+  .nav-item .ic { width: 16px; text-align: center; flex-shrink: 0; opacity: 0.85; }
+  .nav-item .count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--sidebar-label); }
+  .nav-item.active .count { color: var(--sidebar-accent-text); }
+  .nav-foot { margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11.5px; color: rgba(255,255,255,0.32); display: flex; flex-direction: column; gap: 4px; }
+  .nav-foot .row { display: flex; justify-content: space-between; }
+  .nav-foot .v { font-family: var(--mono); color: rgba(255,255,255,0.55); }
+
+  /* ---------------------------------------------------------------- main */
+  .main { grid-area: main; overflow-y: auto; padding: 26px 30px 60px; }
+  .panel { display: none; }
+  .panel.active { display: block; animation: fade 180ms ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .breadcrumb {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-faint);
+    margin-bottom: 16px; min-height: 16px;
+  }
+  .breadcrumb a, .breadcrumb button.crumb {
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-muted);
+    background: none; border: none; padding: 0; cursor: pointer; text-decoration: none;
+  }
+  .breadcrumb a:hover, .breadcrumb button.crumb:hover { color: var(--accent); text-decoration: underline; }
+  .breadcrumb .crumb-current { color: var(--text); }
+  .breadcrumb .sep { color: var(--text-faint); }
+
+  .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
+  .page-head h1 { font-size: 21px; letter-spacing: -0.01em; }
+  .page-head p { margin: 4px 0 0; color: var(--text-muted); font-size: 13px; }
+
+  /* kpis */
+  .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 22px; }
+  .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 16px 14px; box-shadow: var(--shadow); }
+  .kpi .lbl { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); }
+  .kpi .val { font-family: var(--mono); font-size: 26px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
+  .kpi.crit .val { color: var(--critical); }
+  .kpi.high .val { color: var(--high); }
+
+  /* generic grid/cards */
+  .row-2 { display: grid; grid-template-columns: 1.55fr 1fr; gap: 16px; align-items: start; }
+  .row-3 { display: grid; grid-template-columns: 1.3fr 0.85fr 1fr; gap: 16px; align-items: start; }
+
+  .risk-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
+  .risk-row .sev-name { width: 62px; flex-shrink: 0; font-size: 12px; font-weight: 600; }
+  .risk-row .sev-bar-track { flex: 1; height: 8px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
+  .risk-row .sev-bar-fill { display: block; height: 100%; border-radius: 2px; transition: width 300ms ease; }
+  .risk-row .sev-count { width: 26px; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+  .card-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
+  .card-head h3 { font-size: 13.5px; font-weight: 700; }
+  .card-head .meta { font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); }
+  .card-body { padding: 6px 0; }
+  .card-empty { padding: 32px 18px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
+
+  /* module progress list */
+  .mod-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 18px; border-bottom: 1px solid var(--border); border-left: 2px solid transparent; font-size: 13px; transition: background 120ms ease, border-color 120ms ease; }
+  .mod-row:last-child { border-bottom: none; }
+  .mod-row:hover { background: var(--surface-2); }
+  .mod-row:has(.mod-state.running) { background: var(--accent-soft); border-left-color: var(--accent); }
+  .mod-state { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+  .mod-state.running { background: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); animation: pulse 1.4s ease-in-out infinite; }
+  .mod-state.done { background: var(--pass); box-shadow: 0 0 0 4px var(--low-soft); }
+  .mod-state.failed { background: var(--critical); box-shadow: 0 0 0 4px var(--critical-soft); }
+  .mod-state.queued { background: var(--text-faint); opacity: 0.5; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  .mod-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mod-name .tc { font-family: var(--mono); font-size: 11px; color: var(--text-faint); font-weight: 400; margin-left: 6px; }
+  .mod-counts { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; max-width: 260px; }
+  .mod-counts .dur { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
+  .mod-counts .status-text { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
+  .count-badge {
+    font-family: var(--mono); font-size: 10.5px; font-weight: 700; line-height: 1;
+    padding: 3px 7px; border-radius: 5px; white-space: nowrap; font-variant-numeric: tabular-nums;
+  }
+  .count-badge.pass { background: var(--low-soft); color: var(--pass); }
+  .count-badge.fail { background: var(--critical-soft); color: var(--critical); }
+  .count-badge.skip { background: var(--surface-3); color: var(--text-muted); }
+  .count-badge.err { background: var(--critical-soft); color: var(--critical); }
+  .module-progress-pill {
+    font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+    background: var(--surface-3); color: var(--text-muted);
+  }
+  .module-progress-pill.running { background: var(--accent-soft); color: var(--accent-text); }
+  .module-progress-pill.done { background: var(--low-soft); color: var(--pass); }
+  .module-progress-pill .fc { color: var(--critical); margin-left: 6px; }
+
+  .live-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); margin-right: 6px; animation: pulse 1.4s ease-in-out infinite; }
+  .meta.is-live { color: var(--accent-text); font-weight: 700; }
+  .meta.verify-ok { color: var(--pass); font-weight: 700; }
+  .meta.verify-fail { color: var(--critical); font-weight: 700; }
+  #verifyLoginStatus { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* live feed */
+  .feed-wrap { position: relative; }
+  .feed-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .feed-toolbar input {
+    flex: 1; font-family: var(--mono); font-size: 11.5px; border: 1px solid var(--border); border-radius: 6px;
+    padding: 5px 9px; background: var(--surface); color: var(--text); outline: none;
+  }
+  .feed-toolbar input:focus { border-color: var(--accent); }
+  .feed-toolbar input::placeholder { color: var(--text-faint); }
+  .feed { font-family: var(--mono); font-size: 12px; padding: 10px 10px; height: 296px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; background: var(--surface-2); }
+  .feed .line {
+    display: flex; gap: 8px; white-space: pre-wrap; word-break: break-word;
+    opacity: 0; animation: feedIn 260ms ease forwards; padding: 4px 8px; border-radius: 5px;
+    border-left: 2px solid transparent;
+  }
+  .feed .line.is-hidden { display: none; }
+  .feed .line:hover { background: var(--surface); }
+  .feed .line.is-find { border-left-color: var(--critical); background: var(--critical-soft); }
+  .feed .line.is-find.is-low { border-left-color: var(--medium); background: var(--medium-soft); }
+  @keyframes feedIn { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+  .feed .time { flex-shrink: 0; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .feed .tag { flex-shrink: 0; font-weight: 700; }
+  .feed-jump {
+    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    background: var(--accent); color: #fff; border: none; border-radius: 999px;
+    font-family: var(--sans); font-size: 11.5px; font-weight: 700; padding: 6px 14px;
+    cursor: pointer; box-shadow: 0 4px 12px -2px rgba(0,0,0,0.25);
+    display: none; align-items: center; gap: 6px;
+  }
+  .feed-jump.show { display: flex; }
+  .feed-jump:active { transform: translateX(-50%) scale(0.96); }
+  .feed .tag.t-STOF { color: var(--text-faint); }
+  .feed .tag.t-AUTH { color: var(--accent-text); }
+  .feed .tag.t-CRAWL { color: var(--tag-info); }
+  .feed .tag.t-MOD { color: var(--text-muted); }
+  .feed .tag.t-TEST { color: var(--text-muted); }
+  .feed .tag.t-FIND { color: var(--critical); }
+  .feed .tag.t-FIND.t-FIND-low { color: var(--medium); }
+  .feed .tag.t-PHASE { color: var(--accent-text); }
+  .feed .tag.t-REPORT { color: var(--low); }
+  .feed .tag.t-WF { color: var(--tag-info); }
+  .feed .tag.t-ERR { color: var(--critical); }
+  .feed .tag.t-UI { color: var(--text-faint); }
+  .feed .msg { color: var(--text); }
+  .feed .empty { color: var(--text-faint); }
+
+  /* toolbar / filters */
+  .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .bulk-bar[hidden] { display: none; }
+  .bulk-bar {
+    display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin-bottom: 10px;
+    background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px;
+    font-size: 12.5px; color: var(--accent-text);
+  }
+  table.findings td.select-cell, table.findings th.select-cell { width: 34px; text-align: center; }
+  table.findings tr.row-selected { background: var(--accent-soft); }
+  .chip-filter { display: flex; gap: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
+  .chip-filter button {
+    font-family: var(--sans); font-size: 12px; font-weight: 600;
+    border: none; background: none; color: var(--text-muted);
+    padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .chip-filter button.active { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,0.08); }
+  .chip-filter button .n { font-family: var(--mono); margin-left: 5px; color: var(--text-faint); }
+  .search { flex: 1; min-width: 180px; max-width: 320px; }
+  .search input {
+    width: 100%; font-family: var(--sans); font-size: 13px;
+    padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text);
+  }
+  .search input::placeholder { color: var(--text-faint); }
+  .select {
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); cursor: pointer;
+  }
+
+  table.findings { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.findings thead th {
+    text-align: left; font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+    color: var(--text-faint); padding: 0; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: var(--surface);
+  }
+  table.findings thead th:not(:has(.th-sort)) { padding: 10px 14px; }
+  .th-sort {
+    all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+    font: inherit; text-transform: inherit; letter-spacing: inherit; color: inherit;
+    padding: 10px 14px; width: 100%;
+  }
+  .th-sort:hover { color: var(--text); }
+  .th-sort::after { content: "↕"; opacity: 0.4; font-size: 10px; }
+  .th-sort[data-active="asc"]::after { content: "↑"; opacity: 1; color: var(--accent); }
+  .th-sort[data-active="desc"]::after { content: "↓"; opacity: 1; color: var(--accent); }
+  table.findings td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+  table.findings tbody tr:hover { background: var(--surface-2); }
+  table.findings tbody tr:last-child td { border-bottom: none; }
+  .tc-id { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
+  .finding-name { font-weight: 600; }
+  .finding-endpoint { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
+  .sev { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; padding: 3px 8px 3px 6px; border-radius: 4px; }
+  .sev::before { content: ""; width: 6px; height: 6px; border-radius: 50%; }
+  .sev.Critical { background: var(--critical-soft); color: var(--critical); }
+  .sev.Critical::before { background: var(--critical); }
+  .sev.High { background: var(--high-soft); color: var(--high); }
+  .sev.High::before { background: var(--high); }
+  .sev.Medium { background: var(--medium-soft); color: var(--medium); }
+  .sev.Medium::before { background: var(--medium); }
+  .sev.Low { background: var(--low-soft); color: var(--low); }
+  .sev.Low::before { background: var(--low); }
+  .sev.Info { background: var(--surface-3); color: var(--text-muted); }
+  .sev.Info::before { background: var(--text-faint); }
+  .status-badge { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 3px 7px; border-radius: 4px; }
+  .status-badge.FAIL { background: var(--critical-soft); color: var(--critical); }
+  .status-badge.PASS { background: var(--low-soft); color: var(--pass); }
+  .status-badge.SKIPPED { background: var(--surface-3); color: var(--text-faint); }
+  .status-badge.running { background: var(--accent-soft); color: var(--accent-text); }
+  .owasp-badge {
+    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 700;
+    padding: 3px 7px; border-radius: 4px; background: var(--surface-3); color: var(--text-muted);
+    cursor: default;
+  }
+  .status-badge.failed { background: var(--critical-soft); color: var(--critical); }
+  .status-badge.complete { background: var(--low-soft); color: var(--pass); }
+  .status-badge.stopped { background: var(--medium-soft); color: var(--medium); }
+  .empty-row td { padding: 40px 14px; text-align: center; color: var(--text-faint); }
+
+  /* modules grid */
+  .mods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .mod-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .mod-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
+  .mod-card-top::-webkit-details-marker { display: none; }
+  .mod-card h4 { font-size: 13.5px; font-weight: 700; }
+  .mod-card .layer { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); margin-top: 3px; }
+  .mod-card-foot { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 4px; }
+  .tc-count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+  .mod-tc-list { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+  .mod-tc-row { background: var(--surface-2); border-radius: 6px; padding: 10px 12px; }
+  .mod-tc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mod-tc-head .finding-name { font-size: 12.5px; flex: 1; }
+  .mod-tc-desc { margin: 6px 0 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.55; }
+  .mod-tc-compliance { margin-top: 6px; font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
+
+  /* risk trend chart */
+  .sev-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; font-size: 11.5px; color: var(--text-muted); }
+  .sev-legend .item { display: flex; align-items: center; gap: 6px; }
+  .sev-legend .swatch { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
+  .chart-wrap { position: relative; width: 100%; }
+  .chart-wrap svg { width: 100%; height: 200px; display: block; overflow: visible; }
+  .chart-wrap .bar-seg { cursor: pointer; }
+  .chart-wrap .axis-label { font-family: var(--mono); font-size: 9px; fill: var(--text-faint); }
+  .chart-wrap .grid-line { stroke: var(--border); stroke-width: 1; }
+  .chart-tooltip {
+    position: absolute; pointer-events: none; z-index: 5;
+    background: var(--text); color: var(--surface);
+    font-size: 11px; font-family: var(--sans); line-height: 1.5;
+    padding: 7px 10px; border-radius: 6px; white-space: nowrap;
+    transform: translate(-50%, -100%); margin-top: -8px;
+  }
+  :root[data-theme="dark"] .chart-tooltip { background: var(--surface-3); color: var(--text); border: 1px solid var(--border); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chart-tooltip { background: var(--surface-3); color: var(--text); border: 1px solid var(--border); } }
+  .chart-tooltip b { font-weight: 700; }
+
+  .top-mod-row { display: grid; grid-template-columns: 130px 1fr 44px; align-items: center; gap: 10px; padding: 7px 0; font-size: 12px; }
+  .top-mod-row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .top-mod-bar { height: 8px; border-radius: 2px; background: var(--surface-3); display: flex; overflow: hidden; gap: 2px; }
+  .top-mod-bar span { display: block; height: 100%; }
+  .top-mod-row .count { font-family: var(--mono); text-align: right; color: var(--text-muted); }
+
+  .switch { position: relative; display: inline-block; width: 36px; height: 21px; flex-shrink: 0; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .track { position: absolute; inset: 0; background: var(--surface-3); border-radius: 999px; transition: background 150ms ease; cursor: pointer; }
+  .switch .track::before { content: ""; position: absolute; width: 15px; height: 15px; left: 3px; top: 3px; background: var(--surface); border-radius: 50%; transition: transform 150ms ease; box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
+  .switch input:checked + .track { background: var(--accent); }
+  .switch input:checked + .track::before { transform: translateX(15px); }
+  .switch input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
+
+  /* settings */
+  .settings-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; max-width: 900px; }
+  .setting-row { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+  .setting-row .k { font-size: 12.5px; font-weight: 600; }
+  .setting-row .k small { display: block; font-weight: 400; color: var(--text-faint); font-size: 11px; margin-top: 2px; }
+  .setting-row .v { font-family: var(--mono); font-size: 12.5px; color: var(--text-muted); }
+  .danger-banner { display: flex; gap: 12px; align-items: flex-start; background: var(--high-soft); border: 1px solid var(--high); color: var(--high); padding: 12px 16px; border-radius: var(--radius); font-size: 12.5px; margin-bottom: 16px; }
+  .danger-banner b { display: block; margin-bottom: 2px; color: var(--high); }
+  .danger-banner span { color: var(--text-muted); }
+  .danger-banner.on { background: var(--critical-soft); border-color: var(--critical); }
+  .danger-banner.on b { color: var(--critical); }
+
+  /* reports */
+  .reports-list { display: flex; flex-direction: column; gap: 10px; }
+  .report-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .report-item summary { list-style: none; display: flex; align-items: center; gap: 14px; padding: 14px 18px; cursor: pointer; }
+  .report-item summary::-webkit-details-marker { display: none; }
+  .report-item .ficon { width: 34px; height: 34px; border-radius: 7px; background: var(--accent-soft); color: var(--accent-text); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; font-family: var(--mono); flex-shrink: 0; }
+  .report-item .rmeta { flex: 1; }
+  .report-item .rmeta .rn { font-weight: 700; font-size: 13px; }
+  .report-item .rmeta .rd { font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); margin-top: 2px; }
+  .report-item .chev { color: var(--text-faint); transition: transform 150ms ease; }
+  .report-item[open] .chev { transform: rotate(90deg); }
+  .report-item .rbody { padding: 0 18px 16px 66px; font-size: 12.5px; color: var(--text-muted); display: flex; flex-direction: column; gap: 10px; }
+  .report-item .rbody a.btn { text-decoration: none; align-self: flex-start; }
+
+  code.inline { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+  .steps { list-style: none; margin: 0; padding: 0; counter-reset: step; display: flex; flex-direction: column; gap: 10px; }
+  .steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; color: var(--text-muted); line-height: 1.6; }
+  .steps li::before {
+    counter-increment: step; content: counter(step);
+    flex: 0 0 20px; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--accent-soft); color: var(--accent-text);
+    font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+    margin-top: 1px;
+  }
+  .steps code.inline { color: var(--text); }
+
+  /* forms (Settings) */
+  .form-body { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field label { font-size: 12px; font-weight: 600; color: var(--text); }
+  .field label small { font-weight: 400; color: var(--text-faint); margin-left: 4px; }
+  .field label { display: flex; align-items: center; justify-content: space-between; }
+  .btn-link-remove {
+    background: none; border: none; padding: 0; font-family: var(--sans); font-size: 11px;
+    font-weight: 600; color: var(--critical); cursor: pointer; text-decoration: underline;
+  }
+  .btn-link-remove:hover { color: var(--critical); opacity: 0.75; }
+  .field input {
+    font-family: var(--sans); font-size: 13px; padding: 8px 12px;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text);
+  }
+  .field input::placeholder { color: var(--text-faint); }
+  .form-actions { display: flex; justify-content: flex-end; padding-top: 4px; }
+
+  /* modal */
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(10, 14, 18, 0.5); display: none; align-items: center; justify-content: center; z-index: 50; }
+  .modal-backdrop.open { display: flex; }
+  .modal { width: 440px; max-width: calc(100vw - 40px); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px; }
+  .modal h3 { font-size: 15.5px; margin-bottom: 6px; }
+  .modal p { font-size: 12.5px; color: var(--text-muted); margin: 0 0 14px; line-height: 1.6; }
+  .modal .target-line { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; }
+  .modal label.confirm { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: var(--text); cursor: pointer; margin-bottom: 18px; }
+  .modal label.confirm input { margin-top: 2px; }
+  .modal .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+  .modal-module-list {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 2px 12px;
+    max-height: 200px; overflow-y: auto; margin-top: 6px;
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--surface-2);
+  }
+  .modal-module-list label {
+    display: flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 4px 2px;
+    cursor: pointer; border-radius: 4px;
+  }
+  .modal-module-list label:hover { background: var(--surface); }
+  .modal-module-list input { margin: 0; flex-shrink: 0; }
+  .health-check-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .health-check-row #healthCheckStatus { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* wide scan-summary modal + target-grouped Scans tab */
+  .modal-wide {
+    width: 780px; max-width: calc(100vw - 40px); max-height: calc(100vh - 60px);
+    overflow-y: auto; padding: 0; position: relative;
+    border-top: 3px solid var(--sev-accent, var(--accent));
+  }
+  .modal-x {
+    position: absolute; top: 14px; right: 16px; z-index: 2;
+    width: 28px; height: 28px; border-radius: 6px; border: none;
+    background: transparent; color: var(--text-faint); font-size: 20px; line-height: 1;
+    cursor: pointer; transition: background 120ms ease, color 120ms ease;
+  }
+  .modal-x:hover { background: var(--surface-2); color: var(--text); }
+  .modal-wide-head { padding: 26px 56px 18px 26px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+  .modal-wide-eyebrow { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; color: var(--sev-accent, var(--accent)); text-transform: uppercase; margin-bottom: 8px; }
+  .modal-wide-head h3 { font-family: var(--mono); font-size: 17px; font-weight: 600; margin-bottom: 6px; word-break: break-all; color: var(--text); }
+  .summary-name-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
+  .summary-name-row #summaryScanName { font-size: 15px; font-weight: 700; color: var(--text); }
+  .summary-name-row #summaryScanName:empty::before { content: "Unnamed scan"; color: var(--text-faint); font-weight: 400; font-style: italic; }
+  .modal-wide-meta { font-size: 12px; color: var(--text-muted); margin: 0; }
+  .summary-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; padding: 20px 26px 0; margin-bottom: 6px; }
+  .summary-kpis .kpi { padding: 14px; box-shadow: none; background: var(--surface-2); border-color: var(--border); }
+  .summary-kpis .kpi .val { font-size: 21px; }
+  .summary-body { display: grid; grid-template-columns: 0.8fr 1.3fr 0.9fr; gap: 24px; padding: 18px 26px; margin-bottom: 0; min-width: 0; }
+  .summary-reports-list { display: flex; flex-direction: column; gap: 6px; }
+  .summary-report-link {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--border); font-size: 12px; color: var(--text); text-decoration: none;
+  }
+  .summary-report-link:hover { border-color: var(--accent); background: var(--surface-2); }
+  .summary-report-link .ext {
+    font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.03em;
+    background: var(--surface-2); color: var(--text-muted); border-radius: 4px; padding: 2px 5px; flex-shrink: 0;
+  }
+  .summary-body h4 { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 12px; }
+  .summary-finding-row { padding: 10px 0 10px 12px; border-left: 3px solid var(--border); border-bottom: none; margin-bottom: 8px; font-size: 12px; background: var(--surface-2); border-radius: 0 6px 6px 0; }
+  .summary-finding-row.Critical { border-left-color: var(--critical); }
+  .summary-finding-row.High { border-left-color: var(--high); }
+  .summary-finding-row.Medium { border-left-color: var(--medium); }
+  .summary-finding-row.Low { border-left-color: var(--low); }
+  .summary-finding-row .head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; padding-right: 10px; }
+  .finding-detail-section { padding: 18px 26px; border-bottom: 1px solid var(--border); }
+  .finding-detail-section:last-child { border-bottom: none; }
+  .finding-detail-section h4 { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 10px; }
+  .finding-detail-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
+  .finding-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px 20px; }
+  .finding-detail-grid .kv-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 3px; }
+  .finding-detail-grid .kv-val { font-size: 13px; color: var(--text); word-break: break-word; }
+  .finding-detail-text { font-size: 13px; color: var(--text-muted); line-height: 1.65; margin: 0; white-space: pre-wrap; }
+  .finding-raw-block { position: relative; }
+  .finding-raw-block pre {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+    color: var(--text); white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow-y: auto; margin: 0;
+  }
+  .finding-raw-block + .finding-raw-block { margin-top: 14px; }
+  .finding-raw-block .kv-label { margin-bottom: 6px; }
+  .finding-evidence-list { display: flex; flex-wrap: wrap; gap: 10px; }
+  .finding-evidence-list img { width: 160px; border-radius: 6px; border: 1px solid var(--border); cursor: pointer; }
+  #findingsTable tr[data-clickable] { cursor: pointer; }
+  #findingsTable tr[data-clickable]:hover { background: var(--surface-2); }
+  .summary-finding-row .name { font-weight: 600; flex: 1; }
+  .summary-finding-row .finding-endpoint { padding-right: 10px; }
+  .modal-actions.summary-actions { padding: 16px 26px 22px; border-top: 1px solid var(--border); margin-top: 0; }
+  .btn-danger { border-color: var(--critical); color: var(--critical); background: transparent; }
+  .btn-danger:hover { background: var(--critical-soft); }
+  /* .mod-row's normal layout (state dot / name / progress bar / nowrap
+     counts) is sized for the dashboard's wide "Module log" card -- in
+     this modal's narrower column, the nowrap counts text overflowed
+     horizontally into the findings column next to it. Stack name and
+     counts instead of forcing them onto one row here. */
+  #summaryModules, #summaryFindings { min-width: 0; overflow-wrap: break-word; }
+  #summaryModules .mod-row { display: grid; grid-template-columns: 14px 1fr; align-items: baseline; column-gap: 8px; row-gap: 2px; padding: 8px 0; }
+  #summaryModules .mod-name { grid-column: 2; }
+  #summaryModules .mod-counts { grid-column: 2; white-space: normal; font-size: 11px; color: var(--text-muted); }
+
+  .target-group { margin-bottom: 20px; }
+  .target-group-head { display: flex; align-items: center; gap: 10px; padding: 10px 2px; font-size: 13px; font-weight: 700; }
+  .target-group-head .n { font-weight: 400; color: var(--text-faint); font-family: var(--mono); font-size: 11.5px; }
+  .scan-row { display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 8px; cursor: pointer; transition: background 120ms ease; }
+  .scan-row:hover { background: var(--surface-2); }
+  .scan-row .sid { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); width: 76px; flex-shrink: 0; }
+  .scan-row .sname { font-weight: 700; font-size: 13px; width: 190px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scan-row .when { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); width: 150px; flex-shrink: 0; }
+  .scan-row .sevs { display: flex; gap: 10px; flex: 1; font-size: 11.5px; }
+  .scan-row .sevs span { font-family: var(--mono); }
+
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 12px 16px; font-size: 12.5px; z-index: 60; opacity: 0; transform: translateY(6px); transition: opacity 180ms ease, transform 180ms ease; }
+  .toast.show { opacity: 1; transform: none; }
+  .toast.err { border-color: var(--critical); color: var(--critical); }
+
+  @media (max-width: 980px) {
+    .kpis { grid-template-columns: repeat(3, 1fr); }
+    .row-2 { grid-template-columns: 1fr; }
+    .row-3 { grid-template-columns: 1fr; }
+    .settings-grid { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 768px) {
+    .shell {
+      grid-template-columns: 1fr;
+      grid-template-rows: 64px 1fr;
+      grid-template-areas: "topbar" "main";
+    }
+    .brand { display: none; }
+    .nav-toggle { display: flex; }
+    .nav {
+      position: fixed; top: 0; left: 0; bottom: 0; z-index: 31;
+      width: 246px; transform: translateX(-100%);
+      transition: transform 180ms ease;
+      box-shadow: var(--shadow);
+    }
+    body.nav-open .nav { transform: translateX(0); }
+    body.nav-open .nav-scrim { display: block; }
+    .summary-body { grid-template-columns: 1fr; }
+    .finding-detail-grid { grid-template-columns: 1fr 1fr; }
+    .modal-wide { width: calc(100vw - 24px); }
+  }
+  .table-scroll {
+    overflow-x: auto;
+    /* A table wider than its container has no visual cue that it
+       scrolls -- confirmed live at tablet width (900px): the findings
+       table clips OWASP/CWE/Endpoint with nothing suggesting more
+       content exists off-screen. A right-edge fade is a standard,
+       cheap affordance for "there's more this way" that doesn't
+       require JS scroll-position tracking. */
+    background:
+      linear-gradient(to right, var(--surface) 30px, transparent) left,
+      linear-gradient(to left, var(--surface) 30px, transparent) right;
+    background-repeat: no-repeat;
+    background-size: 30px 100%, 30px 100%;
+  }
+  .table-scroll table.findings { min-width: 720px; }
+</style>
+</head>
+<body>
+
+<div class="shell">
+  <div class="brand">
+    <div class="mark"><img src="/nusummit-logo.svg" alt="NuSummit" /></div>
+    <div class="name">STOF Console<small>Security Testing Orchestration</small></div>
+  </div>
+
+  <div class="topbar" role="banner">
+    <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation" aria-expanded="false" aria-controls="primaryNav">
+      <span></span><span></span><span></span>
+    </button>
+    <div class="target-picker">
+      <span class="dot" aria-hidden="true"></span>
+      <span class="url" id="targetUrl">loading&hellip;</span>
+    </div>
+    <div class="topbar-right">
+      <button class="btn btn-danger" id="stopScanBtn" hidden>■ Stop scan</button>
+      <button class="btn btn-primary" id="newScanBtn">▶ Run Scan</button>
+      <div class="org-pill"><span class="av" aria-hidden="true">●</span> Local console</div>
+    </div>
+  </div>
+
+  <nav class="nav" id="primaryNav" aria-label="Primary">
+    <div class="nav-label">Overview</div>
+    <button class="nav-item active" data-panel="dashboard" aria-current="page"><span class="ic" aria-hidden="true">◧</span> Dashboard</button>
+    <button class="nav-item" data-panel="scans"><span class="ic" aria-hidden="true">⟳</span> Scans <span class="count" id="navScanCount">0</span></button>
+
+    <div class="nav-label">Results</div>
+    <button class="nav-item" data-panel="findings"><span class="ic" aria-hidden="true">▲</span> Findings <span class="count" id="navFindingsCount">0</span></button>
+    <button class="nav-item" data-panel="reports"><span class="ic" aria-hidden="true">▤</span> Reports <span class="count" id="navReportsCount">0</span></button>
+
+    <div class="nav-label">Configuration</div>
+    <button class="nav-item" data-panel="modules"><span class="ic" aria-hidden="true">▦</span> Modules <span class="count" id="navModulesCount">0</span></button>
+    <button class="nav-item" data-panel="workflows"><span class="ic" aria-hidden="true">●</span> Workflows <span class="count" id="navWorkflowsCount">0</span></button>
+    <button class="nav-item" data-panel="settings"><span class="ic" aria-hidden="true">⚙</span> Settings</button>
+
+    <div class="nav-foot">
+      <div class="row"><span>Engine</span><span class="v">Playwright · async</span></div>
+      <div class="row"><span>Store</span><span class="v">stof.db (SQLite)</span></div>
+      <div class="row"><span>Backend</span><span class="v" id="healthState">checking&hellip;</span></div>
+    </div>
+  </nav>
+
+  <div class="nav-scrim" id="navScrim" hidden></div>
+
+  <main class="main">
+    <nav class="breadcrumb" id="breadcrumb" aria-label="Breadcrumb"></nav>
+
+    <!-- ============================================================ DASHBOARD -->
+    <section class="panel active" id="panel-dashboard" aria-labelledby="h1-dashboard">
+      <div class="page-head">
+        <div>
+          <h1 id="h1-dashboard">Risk posture</h1>
+          <p id="riskPostureSub">Across every scan run against this target.</p>
+        </div>
+      </div>
+
+      <div class="row-3" id="riskPostureRow" style="margin-bottom: 26px;">
+        <div class="card">
+          <div class="card-head">
+            <h3>Findings trend</h3>
+            <div class="meta" id="trendMeta">&mdash;</div>
+          </div>
+          <div class="card-body" style="padding: 16px 18px;">
+            <div class="sev-legend" id="trendLegend"></div>
+            <div class="chart-wrap"><svg id="trendChart" viewBox="0 0 640 200" preserveAspectRatio="none"></svg></div>
+            <div class="chart-tooltip" id="trendTooltip" hidden></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Current risk</h3>
+            <div class="meta" id="currentRiskMeta">&mdash;</div>
+          </div>
+          <div class="card-body" id="currentRiskList" style="padding: 14px 18px;"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Most affected modules</h3>
+            <div class="meta" id="coverageMeta">&mdash;</div>
+          </div>
+          <div class="card-body" id="topModulesList" style="padding: 6px 18px 14px;"></div>
+        </div>
+      </div>
+
+      <div class="page-head">
+        <div>
+          <h1 style="font-size: 16px;">Scan detail</h1>
+          <p id="dashboardSub">No scan selected yet &mdash; run one, or pick a past scan from the Scans tab.</p>
+        </div>
+        <select class="select" id="dashboardScanSelect" style="display:none;"></select>
+      </div>
+
+      <div class="kpis">
+        <div class="kpi"><div class="lbl">Endpoints mapped</div><div class="val" id="kpiEndpoints">&mdash;</div><div class="sub" id="kpiEndpointsSub">&nbsp;</div></div>
+        <div class="kpi"><div class="lbl">Techniques run</div><div class="val" id="kpiTechniques">&mdash;</div><div class="sub" id="kpiTechniquesSub">&nbsp;</div></div>
+        <div class="kpi crit"><div class="lbl">Critical findings</div><div class="val" id="kpiCritical">&mdash;</div><div class="sub">needs immediate triage</div></div>
+        <div class="kpi high"><div class="lbl">High findings</div><div class="val" id="kpiHigh">&mdash;</div><div class="sub">fix before release</div></div>
+        <div class="kpi"><div class="lbl">Total findings</div><div class="val" id="kpiTotal">&mdash;</div><div class="sub" id="kpiTotalSub">&nbsp;</div></div>
+      </div>
+
+      <div class="row-2">
+        <div class="card">
+          <div class="card-head">
+            <h3>Module log</h3>
+            <div class="meta" id="moduleProgressMeta">&mdash;</div>
+          </div>
+          <div class="card-body" id="moduleProgressList"><div class="card-empty">Run a scan to see per-module progress here.</div></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h3>Live activity</h3>
+            <div class="meta" id="feedMeta">idle</div>
+          </div>
+          <div class="feed-toolbar">
+            <input type="text" id="feedFilter" placeholder="Filter by module, technique ID, or endpoint&hellip;" />
+          </div>
+          <div class="feed-wrap">
+            <div class="feed" id="liveFeed"><div class="empty">Waiting for a scan to start&hellip;</div></div>
+            <button class="feed-jump" id="feedJump" type="button">
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+              <span id="feedJumpCount">New activity</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ SCANS -->
+    <section class="panel" id="panel-scans" aria-labelledby="h1-scans">
+      <div class="page-head">
+        <div>
+          <h1 id="h1-scans">Scans</h1>
+          <p>Grouped by target — click any scan to open its summary.</p>
+        </div>
+        <button class="btn btn-primary" data-runscan>▶ Run Scan</button>
+      </div>
+
+      <div id="scansByTarget"><div class="card-empty">No scans yet — click "Run Scan" to launch one.</div></div>
+    </section>
+
+    <!-- ============================================================ FINDINGS -->
+    <section class="panel" id="panel-findings" aria-labelledby="h1-findings">
+      <div class="page-head">
+        <div>
+          <h1 id="h1-findings">Findings</h1>
+          <p id="findingsSub">Select a completed scan to load its findings.</p>
+        </div>
+        <select class="select" id="findingsScanSelect"><option value="">Select a scan&hellip;</option></select>
+      </div>
+
+      <div class="toolbar">
+        <div class="chip-filter" id="sevFilter">
+          <button data-sev="all" class="active">All <span class="n">0</span></button>
+          <button data-sev="Critical">Critical <span class="n">0</span></button>
+          <button data-sev="High">High <span class="n">0</span></button>
+          <button data-sev="Medium">Medium <span class="n">0</span></button>
+          <button data-sev="Low">Low <span class="n">0</span></button>
+        </div>
+        <select class="select" id="owaspFilter" style="width:auto; max-width:260px;">
+          <option value="all">All OWASP categories</option>
+        </select>
+        <div class="search">
+          <input type="text" id="findingSearch" placeholder="Search by technique or endpoint&hellip;" />
+        </div>
+      </div>
+
+      <div class="bulk-bar" id="findingsBulkBar" hidden>
+        <span><b id="findingsBulkCount">0</b> selected</span>
+        <div style="display:flex; gap:8px; margin-left:auto;">
+          <button type="button" class="btn" id="findingsBulkExport">⇩ Export selected (JSON)</button>
+          <button type="button" class="btn" id="findingsBulkClear">Clear selection</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="table-scroll">
+          <table class="findings">
+            <thead><tr>
+              <th style="width:34px;"><input type="checkbox" id="findingsSelectAll" aria-label="Select all findings" /></th>
+              <th><button type="button" class="th-sort" data-sort="vuln_type">Vulnerability</button></th>
+              <th><button type="button" class="th-sort" data-sort="user_role">Role</button></th>
+              <th><button type="button" class="th-sort" data-sort="severity">Severity</button></th>
+              <th>OWASP</th><th>CWE</th>
+              <th><button type="button" class="th-sort" data-sort="endpoint">Endpoint</button></th>
+            </tr></thead>
+            <tbody id="findingsTable"><tr class="empty-row"><td colspan="7">No findings loaded.</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============================================================ MODULES -->
+    <section class="panel" id="panel-modules" aria-labelledby="h1-modules">
+      <div class="page-head">
+        <div>
+          <h1 id="h1-modules">Modules</h1>
+          <p>Enable or disable a technique family before the next scan run. Written straight to <code class="inline">config/config.json</code>.</p>
+        </div>
+      </div>
+      <div class="mods-grid" id="modulesGrid"></div>
+    </section>
+
+    <!-- ============================================================ REPORTS -->
+    <section class="panel" id="panel-reports" aria-labelledby="h1-reports">
+      <div class="page-head">
+        <div>
+          <h1 id="h1-reports">Reports</h1>
+          <p>Generated at the end of every scan, in three formats, from <code class="inline">data/reports/</code>.</p>
+        </div>
+      </div>
+      <div class="reports-list" id="reportsList"><div class="card-empty">No reports on disk yet — run a scan to generate one.</div></div>
+    </section>
+
+    <!-- ============================================================ WORKFLOWS -->
+    <section class="panel" id="panel-workflows" aria-labelledby="h1-workflows">
+      <div class="page-head">
+        <div>
+          <h1 id="h1-workflows">Workflows</h1>
+          <p>Record yourself performing a real multi-step flow once (login, checkout, a signup wizard) — pick it from the checklist when you start a scan and it's replayed early, extending what the crawler alone can reach.</p>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input type="file" id="uploadWorkflowInput" accept="application/json,.json" hidden />
+          <button class="btn btn-primary" id="uploadWorkflowBtn">⇧ Upload a workflow</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="card-head">
+          <h3>How to record a workflow</h3>
+          <div class="meta">runs on your own machine</div>
+        </div>
+        <div class="card-body" style="padding: 16px 18px;">
+          <p style="margin:0 0 14px; font-size: 12.5px; color: var(--text-muted); line-height: 1.6;">
+            Recording always happens on your own laptop with a small standalone script, fully offline from this
+            server — no debug port needs to be reachable over the network, no matter where this console is deployed.
+          </p>
+          <ol class="steps">
+            <li>Download the recorder script below.</li>
+            <li>On your own machine: <code class="inline">pip install playwright</code> then <code class="inline">playwright install chromium</code>.</li>
+            <li>Start a debuggable browser: <code class="inline">google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/stof-chrome-debug &amp;</code></li>
+            <li>Run it: <code class="inline">python3 record_workflow.py --output my-flow.json</code></li>
+            <li>Walk through the real flow in that browser window — login, checkout, whatever the test case needs. Every click, fill, and page change is captured, across as many pages as the flow needs.</li>
+            <li>Press Enter in the terminal to stop and save <code class="inline">my-flow.json</code>.</li>
+            <li>Bring that file back here and click <b>Upload a workflow</b> above to import it.</li>
+          </ol>
+          <button type="button" class="btn btn-primary" id="downloadRecorderBtn" style="margin-top:14px;">⇩ Download record_workflow.py</button>
+        </div>
+      </div>
+
+      <div class="reports-list" id="workflowsList"><div class="card-empty">No workflows recorded yet — download the recorder script below to capture one.</div></div>
+    </section>
+
+    <!-- ============================================================ SETTINGS -->
+    <section class="panel" id="panel-settings" aria-labelledby="h1-settings">
+      <div class="page-head">
+        <div>
+          <h1 id="h1-settings">Settings</h1>
+          <p>Target, browser and credential configuration — edits write straight to <code class="inline">config.json</code> / <code class="inline">users.json</code> / <code class="inline">.env</code>.</p>
+        </div>
+      </div>
+
+      <div class="danger-banner" id="probesBanner">
+        <span>⚠</span>
+        <div><b id="probesBannerTitle">State-changing probes are off</b><span>Techniques that write data (account creation, cache poisoning confirmation, workflow-step probes) are skipped until this is turned on for an authorized engagement window.</span></div>
+      </div>
+
+      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head"><h3>Target</h3><div class="meta">config.json → target</div></div>
+        <form id="targetForm" class="form-body">
+          <div class="field"><label>Base URL</label><input type="url" name="base_url" required placeholder="https://example.com" /></div>
+          <div class="field"><label>Login page URL</label><input type="url" name="login_url" required placeholder="https://example.com/login" /></div>
+          <p style="margin: 4px 0 0; font-size: 11.5px; color: var(--text-faint); line-height: 1.6;">
+            That's all most targets need — STOF auto-detects the login form's fields on any application (no CSS selectors required). If a particular app's login page is unusual and auto-detect picks the wrong field, either set an exact override below, or use <b>Workflows → Upload a workflow</b> to capture the real login by recording it once with <code class="inline">tools/record_workflow.py</code>.
+          </p>
+          <details style="margin-top: 6px;">
+            <summary style="cursor:pointer; font-size: 12px; font-weight: 600; color: var(--text-muted);">Advanced: manual selector overrides</summary>
+            <div style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
+              <div class="field"><label>Username field selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="username_selector" placeholder="#username" /></div>
+              <div class="field"><label>Password field selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="password_selector" placeholder="#password" /></div>
+              <div class="field"><label>Submit button selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="submit_selector" placeholder="button[type=submit]" /></div>
+            </div>
+          </details>
+          <div class="form-actions"><button type="submit" class="btn btn-primary">Save target</button></div>
+        </form>
+      </div>
+
+      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head"><h3>Credentials</h3><div class="meta">users.json + .env</div></div>
+        <p style="margin: 0 0 12px; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+          Only got one account for this target? Leave the other role's fields blank, or click
+          <b>Remove</b> below if it's already configured — every module and Verify Login already
+          adapt to whatever's actually here, from one account up.
+        </p>
+        <form id="credentialsForm" class="form-body">
+          <div class="field">
+            <label>Admin username <button type="button" class="btn-link-remove" id="removeAdminBtn" hidden>Remove</button></label>
+            <input type="text" name="admin_username" autocomplete="off" placeholder="leave blank if this target has no admin account" />
+          </div>
+          <div class="field"><label>Admin password <small>write-only, never shown back</small></label><input type="password" name="admin_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
+          <div class="field">
+            <label>Normal-user username <button type="button" class="btn-link-remove" id="removeNormalBtn" hidden>Remove</button></label>
+            <input type="text" name="normal_username" autocomplete="off" placeholder="leave blank if this target has no normal-user account" />
+          </div>
+          <div class="field"><label>Normal-user password <small>write-only, never shown back</small></label><input type="password" name="normal_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
+          <div class="form-actions"><button type="submit" class="btn btn-primary">Save credentials</button></div>
+        </form>
+      </div>
+
+      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head"><h3>Verify Login</h3><div class="meta">runs a real login, shows you the result</div></div>
+        <p style="margin: 0 0 12px; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+          Drives a real browser through the login form as the selected account and shows you a
+          screenshot of what it actually reached — works the same whether this console is open on
+          this machine or on another one over the network, since nothing pops up on the server's
+          own screen.
+        </p>
+        <div class="form-body">
+          <div class="field" style="max-width: 260px;" id="verifyLoginRoleField">
+            <label>Account <small id="verifyLoginRoleHint"></small></label>
+            <select class="select" id="verifyLoginRole"></select>
+          </div>
+          <div class="form-actions" style="align-items: center; gap: 12px;">
+            <button type="button" class="btn btn-primary" id="verifyLoginBtn">▶ Verify login</button>
+            <span id="verifyLoginStatus" class="meta">idle</span>
+          </div>
+          <div id="verifyLoginShotWrap" hidden style="margin-top: 4px;">
+            <img id="verifyLoginShot" alt="Screenshot of the page reached after login" style="max-width: 100%; border-radius: 8px; border: 1px solid var(--border); display: block;" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head"><h3>Out-of-band testing</h3><div class="meta">config.json → burp.collaborator_url</div></div>
+        <form id="oobForm" class="form-body">
+          <p style="margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+            Point this at your own OOB collaborator (Burp Collaborator, interactsh, or any equivalent host you control) to enable <code class="inline">ssrf_tests</code>' TC-137.6 — it sends a unique callback URL per candidate parameter; STOF doesn't poll for the callback itself, so check your collaborator's own dashboard for a hit.
+          </p>
+          <div class="field"><label>Collaborator host</label><input type="text" name="collaborator_url" placeholder="e.g. abc123.oastify.com or https://your-collaborator.example" /></div>
+          <div class="form-actions"><button type="submit" class="btn btn-primary">Save</button></div>
+        </form>
+      </div>
+
+      <div class="settings-grid">
+        <div class="setting-row"><div class="k">Browser<small>Playwright headless mode</small></div><label class="switch"><input type="checkbox" id="headlessToggle" /><span class="track"></span></label></div>
+        <div class="setting-row"><div class="k">Report output<small>Where HTML/JSON/Excel land</small></div><div class="v" id="settingsReportsDir">&mdash;</div></div>
+        <div class="setting-row"><div class="k">Allow state-changing probes<small>Required for write-verb techniques (TC-135/136, etc.)</small></div><label class="switch"><input type="checkbox" id="probesToggle" /><span class="track"></span></label></div>
+        <div class="setting-row"><div class="k">Burp Suite integration<small>Layer 3C — Phase 2</small></div><div class="v" id="settingsBurp">&mdash;</div></div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<div class="modal-backdrop" id="scanModalBackdrop">
+  <div class="modal" style="width: 520px;">
+    <h3>Run a new scan</h3>
+    <p>This launches <code class="inline">stof scan</code> and sends real requests to the configured target &mdash; including attack payloads from every enabled module.</p>
+    <div class="target-line" id="modalTarget">&mdash;</div>
+
+    <div class="field" style="margin: 12px 0;">
+      <label>Scan name <small>optional &mdash; helps tell scans apart later</small></label>
+      <input type="text" id="modalScanName" placeholder="e.g. Pre-release regression, Client X round 2" autocomplete="off" />
+    </div>
+
+    <div class="field" style="margin: 0 0 12px;">
+      <label style="display: flex; align-items: center; justify-content: space-between;">
+        <span>Modules to run <small id="modalModuleCount"></small></span>
+        <span>
+          <button type="button" class="btn-link-remove" id="modalModulesAll" style="color: var(--accent-text);">All</button>
+          <button type="button" class="btn-link-remove" id="modalModulesNone" style="color: var(--text-faint); margin-left: 8px;">None</button>
+        </span>
+      </label>
+      <div class="modal-module-list" id="modalModuleList"></div>
+    </div>
+
+    <div class="field" style="margin: 0 0 12px;" id="modalWorkflowField" hidden>
+      <label>
+        <span>Recorded workflows to replay <small>optional &mdash; login flow, checkout, a signup wizard...</small></span>
+      </label>
+      <div class="modal-module-list" id="modalWorkflowList" style="grid-template-columns: 1fr;"></div>
+    </div>
+
+    <div class="health-check-row">
+      <button type="button" class="btn" id="healthCheckBtn">Check tool health</button>
+      <span id="healthCheckStatus" class="meta">not checked this session</span>
+    </div>
+
+    <label class="confirm">
+      <input type="checkbox" id="modalConfirm" />
+      <span>I confirm I am authorized to run a security scan against this target.</span>
+    </label>
+    <div class="modal-actions">
+      <button class="btn" id="modalCancel">Cancel</button>
+      <button class="btn btn-primary" id="modalStart" disabled>▶ Start scan</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="scanSummaryBackdrop">
+  <div class="modal modal-wide" id="summaryModal">
+    <button class="modal-x" id="summaryClose" aria-label="Close">&times;</button>
+    <div class="modal-wide-head">
+      <span class="modal-wide-eyebrow" id="summaryStatusPill">SCAN SUMMARY</span>
+      <div class="summary-name-row">
+        <span id="summaryScanName"></span>
+        <button type="button" class="btn-link-remove" id="summaryRenameBtn" style="color: var(--accent-text);">Rename</button>
+      </div>
+      <h3 id="summaryTarget">&mdash;</h3>
+      <p class="modal-wide-meta" id="summaryMeta">&mdash;</p>
+    </div>
+    <div class="summary-kpis" id="summaryKpis"></div>
+    <div class="summary-body">
+      <div>
+        <h4>Module breakdown</h4>
+        <div id="summaryModules"></div>
+      </div>
+      <div>
+        <h4>Top findings</h4>
+        <div id="summaryFindings"></div>
+      </div>
+      <div>
+        <h4>Reports</h4>
+        <div class="summary-reports-list" id="summaryReports"></div>
+      </div>
+    </div>
+    <div class="modal-actions summary-actions" style="justify-content: space-between; align-items: center;">
+      <button class="btn btn-danger" id="summaryDelete">Delete scan</button>
+      <div style="display:flex; gap:8px;">
+        <button class="btn" id="summaryViewFindings">View all findings</button>
+        <button class="btn btn-primary" id="summaryViewReport">Open full report</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="findingDetailBackdrop">
+  <div class="modal modal-wide" id="findingDetailModal">
+    <button class="modal-x" id="findingDetailClose" aria-label="Close">&times;</button>
+    <div class="modal-wide-head">
+      <span class="modal-wide-eyebrow" id="findingDetailSevPill">FINDING</span>
+      <h3 id="findingDetailName">&mdash;</h3>
+      <div class="finding-detail-badges" id="findingDetailBadges"></div>
+    </div>
+
+    <div class="finding-detail-section">
+      <h4>Overview</h4>
+      <div class="finding-detail-grid">
+        <div><div class="kv-label">Endpoint</div><div class="kv-val" id="fdEndpoint">&mdash;</div></div>
+        <div><div class="kv-label">User role</div><div class="kv-val" id="fdRole">&mdash;</div></div>
+        <div><div class="kv-label">CVSS score</div><div class="kv-val" id="fdCvss">&mdash;</div></div>
+        <div><div class="kv-label">Discovered</div><div class="kv-val" id="fdDiscovered">&mdash;</div></div>
+        <div><div class="kv-label">Module</div><div class="kv-val" id="fdModule">&mdash;</div></div>
+        <div><div class="kv-label">Scanner source</div><div class="kv-val" id="fdSource">&mdash;</div></div>
+      </div>
+    </div>
+
+    <div class="finding-detail-section">
+      <h4>What we found</h4>
+      <p class="finding-detail-text" id="fdDescription">&mdash;</p>
+    </div>
+
+    <div class="finding-detail-section">
+      <h4>Recommended fix</h4>
+      <p class="finding-detail-text" id="fdRecommendation">&mdash;</p>
+    </div>
+
+    <div class="finding-detail-section" id="fdRawSection">
+      <h4>Request / response</h4>
+      <div class="finding-raw-block">
+        <div class="kv-label">Request</div>
+        <pre id="fdRequest">&mdash;</pre>
+      </div>
+      <div class="finding-raw-block">
+        <div class="kv-label">Response</div>
+        <pre id="fdResponse">&mdash;</pre>
+      </div>
+    </div>
+
+    <div class="finding-detail-section" id="fdEvidenceSection" style="display:none;">
+      <h4>Evidence</h4>
+      <div class="finding-evidence-list" id="fdEvidenceList"></div>
+    </div>
+
+    <div class="modal-actions" style="padding: 18px 26px;">
+      <button class="btn" id="findingDetailCloseBtn">Close</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="genericModalBackdrop">
+  <div class="modal">
+    <h3 id="genericModalTitle"></h3>
+    <p id="genericModalMessage"></p>
+    <div class="field" id="genericModalInputField" style="margin-bottom: 16px;">
+      <input type="text" id="genericModalInput" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="genericModalCancel">Cancel</button>
+      <button class="btn btn-primary" id="genericModalOk">OK</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var API = "";
+  var state = { modules: [], scans: [], activeScanId: null, ws: null, findingsScanId: null, findings: [], activeSev: "all", activeOwasp: "all", query: "", findingsSort: { key: "severity", dir: 1 }, findingsSelected: new Set() };
+
+  // ---------------------------------------------------------------- OWASP Top 10:2021 mapping
+  // Coarse compliance mapping for reporting/filtering, not a scoring
+  // engine: each module has a default category, refined by a keyword
+  // check against the finding's own vuln_type/description when a module
+  // spans more than one category (e.g. auth_tests covers both broken
+  // access control AND authentication-failure techniques).
+  var OWASP_MODULE_DEFAULT = {
+    idor_tests: "A01:2021 – Broken Access Control",
+    csrf_tests: "A01:2021 – Broken Access Control",
+    jwt_tests: "A07:2021 – Identification and Authentication Failures",
+    auth_tests: "A07:2021 – Identification and Authentication Failures",
+    oauth_tests: "A07:2021 – Identification and Authentication Failures",
+    sqli_tests: "A03:2021 – Injection",
+    xss_tests: "A03:2021 – Injection",
+    injection_variants_tests: "A03:2021 – Injection",
+    graphql_tests: "A05:2021 – Security Misconfiguration",
+    configuration_tests: "A05:2021 – Security Misconfiguration",
+    cache_tests: "A05:2021 – Security Misconfiguration",
+    disclosure_tests: "A05:2021 – Security Misconfiguration",
+    deserialization_tests: "A08:2021 – Software and Data Integrity Failures",
+    business_logic_tests: "A04:2021 – Insecure Design",
+    ssrf_tests: "A10:2021 – Server-Side Request Forgery",
+    bfla_tests: "A01:2021 – Broken Access Control",
+    role_tests: "A01:2021 – Broken Access Control",
+    tenant_tests: "A01:2021 – Broken Access Control",
+    mass_assignment_tests: "A08:2021 – Software and Data Integrity Failures",
+    session_weakness_tests: "A07:2021 – Identification and Authentication Failures",
+  };
+  // ---------------------------------------------------------------- CWE mapping
+  // Same shape as the OWASP map above: a per-module default, refined by
+  // a keyword check against vuln_type/description for modules whose
+  // techniques span more than one weakness class. Coarse, for reporting/
+  // filtering -- not a substitute for a human confirming the exact CWE
+  // on a given finding before it goes in a client-facing report.
+  var CWE_MODULE_DEFAULT = {
+    idor_tests: "CWE-639 – Authorization Bypass Through User-Controlled Key",
+    csrf_tests: "CWE-352 – Cross-Site Request Forgery",
+    jwt_tests: "CWE-287 – Improper Authentication",
+    auth_tests: "CWE-287 – Improper Authentication",
+    oauth_tests: "CWE-287 – Improper Authentication",
+    sqli_tests: "CWE-89 – SQL Injection",
+    xss_tests: "CWE-79 – Cross-Site Scripting",
+    injection_variants_tests: "CWE-74 – Improper Neutralization of Special Elements",
+    graphql_tests: "CWE-284 – Improper Access Control",
+    configuration_tests: "CWE-16 – Configuration",
+    cache_tests: "CWE-524 – Use of Cache Containing Sensitive Information",
+    disclosure_tests: "CWE-200 – Exposure of Sensitive Information",
+    deserialization_tests: "CWE-502 – Deserialization of Untrusted Data",
+    business_logic_tests: "CWE-840 – Business Logic Errors",
+    ssrf_tests: "CWE-918 – Server-Side Request Forgery",
+    bfla_tests: "CWE-862 – Missing Authorization",
+    role_tests: "CWE-269 – Improper Privilege Management",
+    tenant_tests: "CWE-284 – Improper Access Control",
+    mass_assignment_tests: "CWE-915 – Improperly Controlled Modification of Object Attributes",
+    session_weakness_tests: "CWE-613 – Insufficient Session Expiration",
+  };
+  var CWE_KEYWORD_OVERRIDES = [
+    ["access control", "CWE-284 – Improper Access Control"],
+    ["privilege escalation", "CWE-269 – Improper Privilege Management"],
+    ["role manipulation", "CWE-269 – Improper Privilege Management"],
+    ["object-level authorization", "CWE-639 – Authorization Bypass Through User-Controlled Key"],
+    ["function-level authorization", "CWE-862 – Missing Authorization"],
+    ["session fixation", "CWE-384 – Session Fixation"],
+    ["httponly", "CWE-1004 – Sensitive Cookie Without 'HttpOnly' Flag"],
+    ["samesite", "CWE-1275 – Sensitive Cookie with Improper SameSite Attribute"],
+    ["secure flag", "CWE-614 – Sensitive Cookie Without 'Secure' Attribute"],
+    ["weak secret", "CWE-326 – Inadequate Encryption Strength"],
+    ["alg:none", "CWE-347 – Improper Verification of Cryptographic Signature"],
+    ["algorithm confusion", "CWE-347 – Improper Verification of Cryptographic Signature"],
+    ["signature", "CWE-347 – Improper Verification of Cryptographic Signature"],
+    ["rate limit", "CWE-307 – Improper Restriction of Excessive Authentication Attempts"],
+    ["brute force", "CWE-307 – Improper Restriction of Excessive Authentication Attempts"],
+    ["cors", "CWE-346 – Origin Validation Error"],
+    ["content security policy", "CWE-693 – Protection Mechanism Failure"],
+    [" csp", "CWE-693 – Protection Mechanism Failure"],
+    ["mass assignment", "CWE-915 – Improperly Controlled Modification of Object Attributes"],
+    ["command injection", "CWE-78 – OS Command Injection"],
+    ["path traversal", "CWE-22 – Path Traversal"],
+    ["directory traversal", "CWE-22 – Path Traversal"],
+    ["open redirect", "CWE-601 – URL Redirection to Untrusted Site"],
+    ["nosql", "CWE-943 – Improper Neutralization in Data Query Logic"],
+    ["ldap injection", "CWE-90 – LDAP Injection"],
+    ["sql injection", "CWE-89 – SQL Injection"],
+    ["cross-site scripting", "CWE-79 – Cross-Site Scripting"],
+    ["xss", "CWE-79 – Cross-Site Scripting"],
+    ["deserialization", "CWE-502 – Deserialization of Untrusted Data"],
+    ["csrf", "CWE-352 – Cross-Site Request Forgery"],
+    ["ssrf", "CWE-918 – Server-Side Request Forgery"],
+    ["pii", "CWE-200 – Exposure of Sensitive Information"],
+    ["sensitive data", "CWE-200 – Exposure of Sensitive Information"],
+    ["idor", "CWE-639 – Authorization Bypass Through User-Controlled Key"],
+    ["cross-tenant", "CWE-284 – Improper Access Control"],
+  ];
+  function cweFor(f) {
+    var hay = ((f.vuln_type || "") + " " + (f.description || "")).toLowerCase();
+    for (var i = 0; i < CWE_KEYWORD_OVERRIDES.length; i++) {
+      if (hay.indexOf(CWE_KEYWORD_OVERRIDES[i][0]) !== -1) return CWE_KEYWORD_OVERRIDES[i][1];
+    }
+    return CWE_MODULE_DEFAULT[f.module_id] || "Unmapped";
+  }
+  function cweCode(cwe) { return cwe.split(" –")[0]; }
+  // [keyword, category] pairs checked in order against vuln_type +
+  // description (lowercased) -- first match wins, before the module default.
+  var OWASP_KEYWORD_OVERRIDES = [
+    ["access control", "A01:2021 – Broken Access Control"],
+    ["privilege escalation", "A01:2021 – Broken Access Control"],
+    ["role manipulation", "A01:2021 – Broken Access Control"],
+    ["object-level authorization", "A01:2021 – Broken Access Control"],
+    ["function-level authorization", "A01:2021 – Broken Access Control"],
+    ["weak secret", "A02:2021 – Cryptographic Failures"],
+    ["alg:none", "A02:2021 – Cryptographic Failures"],
+    ["algorithm confusion", "A02:2021 – Cryptographic Failures"],
+    ["signature", "A02:2021 – Cryptographic Failures"],
+    ["pii", "A02:2021 – Cryptographic Failures"],
+    ["sensitive data", "A02:2021 – Cryptographic Failures"],
+    ["httponly", "A02:2021 – Cryptographic Failures"],
+    ["samesite", "A02:2021 – Cryptographic Failures"],
+    ["injection", "A03:2021 – Injection"],
+    ["cross-site scripting", "A03:2021 – Injection"],
+    ["xss", "A03:2021 – Injection"],
+    ["deserialization", "A08:2021 – Software and Data Integrity Failures"],
+  ];
+  function owaspCategoryFor(f) {
+    var hay = ((f.vuln_type || "") + " " + (f.description || "")).toLowerCase();
+    for (var i = 0; i < OWASP_KEYWORD_OVERRIDES.length; i++) {
+      if (hay.indexOf(OWASP_KEYWORD_OVERRIDES[i][0]) !== -1) return OWASP_KEYWORD_OVERRIDES[i][1];
+    }
+    return OWASP_MODULE_DEFAULT[f.module_id] || "Unmapped";
+  }
+  function owaspCode(category) { return category.split(":")[0]; }
+
+  function toast(msg, isErr) {
+    var el = document.getElementById("toast");
+    el.textContent = msg;
+    el.className = "toast show" + (isErr ? " err" : "");
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { el.classList.remove("show"); }, 3200);
+  }
+
+  async function api(path, opts) {
+    var res = await fetch(API + path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts || {}));
+    if (!res.ok) {
+      var body = await res.text();
+      throw new Error(res.status + " " + res.statusText + ": " + body);
+    }
+    var ct = res.headers.get("content-type") || "";
+    return ct.indexOf("application/json") !== -1 ? res.json() : res.text();
+  }
+
+  // ---------------------------------------------------------------- nav
+  var navItems = document.querySelectorAll(".nav-item[data-panel]");
+  navItems.forEach(function (btn) {
+    btn.addEventListener("click", function () { setRoute("#/" + btn.dataset.panel); });
+  });
+  var _lastPanel = null;
+  function showPanel(name) {
+    navItems.forEach(function (b) {
+      var active = b.dataset.panel === name;
+      b.classList.toggle("active", active);
+      if (active) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
+    });
+    document.querySelectorAll(".panel").forEach(function (p) { p.classList.remove("active"); });
+    document.getElementById("panel-" + name).classList.add("active");
+    // Only reset scroll on an actual panel change -- e.g. opening a
+    // finding's detail modal keeps the route on the "findings" panel
+    // (just adds a deeper URL segment) and must NOT reset the list's
+    // scroll position under the modal, or closing it would jarringly
+    // land the user back at the top. Confirmed live: scrollTop was
+    // silently carrying over between genuinely different panels too
+    // (Settings scrolled -> Scans landed mid-scroll, heading offscreen).
+    if (name !== _lastPanel) document.querySelector(".main").scrollTop = 0;
+    _lastPanel = name;
+    closeNavDrawer();
+  }
+
+  // ---------------------------------------------------------------- router
+  // Hash-based (no server routing changes needed -- `stof/ui/server.py`
+  // always serves this one file regardless of path). Every panel plus a
+  // scan's detail and a single finding's detail get a real, bookmarkable
+  // URL. `location.hash` is the single source of truth: every navigation
+  // action sets it, and the `hashchange` listener is the only place that
+  // actually mutates panel/modal visibility -- this avoids the click-
+  // handler-vs-listener double-mutation bugs a naive router gets wrong.
+  var VALID_PANELS = ["dashboard", "scans", "findings", "reports", "modules", "workflows", "settings"];
+  var PANEL_TITLES = {
+    dashboard: "Dashboard", scans: "Scans", findings: "Findings", reports: "Reports",
+    modules: "Modules", workflows: "Workflows", settings: "Settings",
+  };
+  function setRoute(hash) {
+    if (location.hash === hash) { handleRouteChange(); return; }
+    location.hash = hash;
+  }
+  function parseRoute() {
+    var raw = location.hash.replace(/^#\/?/, "");
+    var parts = raw.split("/").filter(Boolean);
+    var panel = VALID_PANELS.indexOf(parts[0]) !== -1 ? parts[0] : "dashboard";
+    return { panel: panel, parts: parts };
+  }
+  async function handleRouteChange() {
+    var route = parseRoute();
+    showPanel(route.panel);
+
+    if (route.panel === "scans" && route.parts[1]) {
+      openScanSummary(route.parts[1]);
+    } else {
+      summaryBackdrop.classList.remove("open");
+    }
+
+    if (route.panel === "findings" && route.parts[1] && route.parts[2]) {
+      var scanId = route.parts[1], findingId = route.parts[2];
+      if (state.findingsScanId !== scanId) await loadFindingsFor(scanId);
+      var match = state.findings.find(function (f) { return f.finding_id === findingId; });
+      if (match) openFindingDetail(match, scanId);
+      else { findingDetailBackdrop.classList.remove("open"); toast("That finding could not be found (it may have been deleted).", true); }
+    } else {
+      findingDetailBackdrop.classList.remove("open");
+    }
+
+    updateBreadcrumb(route);
+  }
+  function updateBreadcrumb(route) {
+    var el = document.getElementById("breadcrumb");
+    var crumbs = [{ label: PANEL_TITLES[route.panel], hash: "#/" + route.panel }];
+    if (route.panel === "scans" && route.parts[1]) {
+      crumbs.push({ label: route.parts[1] });
+    }
+    if (route.panel === "findings" && route.parts[1]) {
+      crumbs.push({ label: "Scan " + route.parts[1], hash: "#/scans/" + route.parts[1] });
+      if (route.parts[2]) crumbs.push({ label: "Finding" });
+    }
+    el.innerHTML = crumbs.map(function (c, i) {
+      var isLast = i === crumbs.length - 1;
+      var sep = i > 0 ? '<span class="sep" aria-hidden="true">/</span>' : "";
+      if (isLast || !c.hash) return sep + '<span class="crumb-current">' + c.label + "</span>";
+      return sep + '<button type="button" class="crumb" data-hash="' + c.hash + '">' + c.label + "</button>";
+    }).join("");
+    el.querySelectorAll("button.crumb").forEach(function (btn) {
+      btn.addEventListener("click", function () { setRoute(btn.dataset.hash); });
+    });
+  }
+  window.addEventListener("hashchange", handleRouteChange);
+
+  // ---------------------------------------------------------------- mobile nav drawer
+  var navToggle = document.getElementById("navToggle");
+  var primaryNav = document.getElementById("primaryNav");
+  var navScrim = document.getElementById("navScrim");
+  function openNavDrawer() {
+    document.body.classList.add("nav-open");
+    navToggle.setAttribute("aria-expanded", "true");
+    navScrim.hidden = false;
+  }
+  function closeNavDrawer() {
+    document.body.classList.remove("nav-open");
+    navToggle.setAttribute("aria-expanded", "false");
+    navScrim.hidden = true;
+  }
+  navToggle.addEventListener("click", function () {
+    document.body.classList.contains("nav-open") ? closeNavDrawer() : openNavDrawer();
+  });
+  navScrim.addEventListener("click", closeNavDrawer);
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && document.body.classList.contains("nav-open")) closeNavDrawer();
+  });
+
+  // ---------------------------------------------------------------- health + config
+  // Note: #healthState's live text is owned by the global WebSocket
+  // (setLiveIndicator, below) once it connects -- this is only the
+  // one-time check before that connection exists.
+  async function loadHealth() {
+    try {
+      await api("/api/health");
+    } catch (e) {
+      document.getElementById("healthState").textContent = "backend unreachable";
+      document.getElementById("healthState").style.color = "var(--critical)";
+    }
+  }
+
+  async function loadConfig() {
+    try {
+      var cfg = await api("/api/config");
+      document.getElementById("targetUrl").textContent = (cfg.target && cfg.target.base_url) || "not configured";
+      var tf = document.getElementById("targetForm");
+      tf.base_url.value = (cfg.target && cfg.target.base_url) || "";
+      tf.login_url.value = (cfg.target && cfg.target.login_url) || "";
+      tf.username_selector.value = (cfg.target && cfg.target.username_selector) || "";
+      tf.password_selector.value = (cfg.target && cfg.target.password_selector) || "";
+      tf.submit_selector.value = (cfg.target && cfg.target.submit_selector) || "";
+      document.getElementById("headlessToggle").checked = !!(cfg.browser && cfg.browser.headless);
+      document.getElementById("settingsReportsDir").textContent = (cfg.output && cfg.output.reports_dir) || "—";
+      document.getElementById("settingsBurp").textContent = cfg.burp && cfg.burp.enabled ? "enabled" : "not enabled";
+      document.getElementById("oobForm").collaborator_url.value = (cfg.burp && cfg.burp.collaborator_url) || "";
+      document.getElementById("modalTarget").textContent = "Target: " + ((cfg.target && cfg.target.base_url) || "not configured");
+    } catch (e) {
+      toast("Could not load config.json: " + e.message, true);
+    }
+  }
+
+  document.getElementById("targetForm").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var f = e.target;
+    try {
+      await api("/api/config/target", {
+        method: "PUT",
+        body: JSON.stringify({
+          base_url: f.base_url.value.trim(),
+          login_url: f.login_url.value.trim(),
+          username_selector: f.username_selector.value.trim() || null,
+          password_selector: f.password_selector.value.trim() || null,
+          submit_selector: f.submit_selector.value.trim() || null,
+        }),
+      });
+      toast("Target saved");
+      loadConfig();
+    } catch (err) {
+      toast("Could not save target: " + err.message, true);
+    }
+  });
+
+  document.getElementById("credentialsForm").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var f = e.target;
+    try {
+      await api("/api/credentials", {
+        method: "PUT",
+        body: JSON.stringify({
+          admin_username: f.admin_username.value.trim() || null,
+          admin_password: f.admin_password.value || null,
+          normal_username: f.normal_username.value.trim() || null,
+          normal_password: f.normal_password.value || null,
+        }),
+      });
+      f.admin_password.value = "";
+      f.normal_password.value = "";
+      toast("Credentials saved");
+      loadVerifyLoginRoles();
+      loadCredentialsFields();
+    } catch (err) {
+      toast("Could not save credentials: " + err.message, true);
+    }
+  });
+
+  // Pre-fills the Credentials form's usernames from whatever's actually
+  // in users.json, and shows a "Remove" link on each role that's
+  // currently configured -- the other half of single-account support:
+  // a fresh install ships both admin+normal placeholders, so a target
+  // that only issues one account needs a way to drop the other one
+  // from the UI, not just leave a stale/unused entry sitting there.
+  async function loadCredentialsFields() {
+    try {
+      var roles = await api("/api/auth/roles");
+      var byRole = {};
+      roles.forEach(function (r) { byRole[r.role] = r; });
+      var f = document.getElementById("credentialsForm");
+      f.admin_username.value = (byRole.admin && byRole.admin.username) || "";
+      f.normal_username.value = (byRole.normal && byRole.normal.username) || "";
+      document.getElementById("removeAdminBtn").hidden = !byRole.admin;
+      document.getElementById("removeNormalBtn").hidden = !byRole.normal;
+    } catch (err) {
+      // Non-fatal -- the form still works for entering fresh credentials.
+    }
+  }
+  async function removeCredentialRole(role) {
+    var ok = await askConfirm(
+      "Remove '" + role + "' account?",
+      "This target will then only be tested with whatever account(s) remain. You can re-add it later by filling in the fields again.",
+      true
+    );
+    if (!ok) return;
+    try {
+      await api("/api/credentials/" + role, { method: "DELETE" });
+      toast("'" + role + "' account removed");
+      document.getElementById("credentialsForm")[role + "_username"].value = "";
+      loadCredentialsFields();
+      loadVerifyLoginRoles();
+    } catch (err) {
+      toast("Could not remove '" + role + "': " + err.message, true);
+    }
+  }
+  document.getElementById("removeAdminBtn").addEventListener("click", function () { removeCredentialRole("admin"); });
+  document.getElementById("removeNormalBtn").addEventListener("click", function () { removeCredentialRole("normal"); });
+  loadCredentialsFields();
+
+  document.getElementById("oobForm").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var f = e.target;
+    try {
+      await api("/api/config/oob", {
+        method: "PUT",
+        body: JSON.stringify({ collaborator_url: f.collaborator_url.value.trim() }),
+      });
+      toast("Out-of-band collaborator saved");
+    } catch (err) {
+      toast("Could not save collaborator URL: " + err.message, true);
+    }
+  });
+
+  // ---------------------------------------------------------------- Verify Login
+  var verifyLoginPollTimer = null;
+  var verifyLoginRoleLabels = { admin: "Admin", normal: "Normal user" };
+  // A target handed to STOF for testing just as often comes with one
+  // account as with a full admin+normal pair -- the picker reflects
+  // whatever users.json actually has (1, 2, or more roles), not a
+  // hardcoded assumption. JWT/API-token roles are listed but excluded:
+  // Verify Login drives a real login *form*, which those roles never see.
+  async function loadVerifyLoginRoles() {
+    var sel = document.getElementById("verifyLoginRole");
+    var hint = document.getElementById("verifyLoginRoleHint");
+    var btn = document.getElementById("verifyLoginBtn");
+    try {
+      var roles = await api("/api/auth/roles");
+      var verifiable = roles.filter(function (r) { return r.verifiable; });
+      if (!roles.length) {
+        sel.innerHTML = '<option value="">No accounts configured</option>';
+        hint.textContent = "add one under Credentials above";
+        btn.disabled = true;
+        return;
+      }
+      if (!verifiable.length) {
+        sel.innerHTML = '<option value="">No form-login accounts</option>';
+        hint.textContent = "configured account(s) use JWT/API tokens, not a login form";
+        btn.disabled = true;
+        return;
+      }
+      sel.innerHTML = verifiable.map(function (r) {
+        var label = (verifyLoginRoleLabels[r.role] || r.role) + " (" + r.username + ")";
+        return '<option value="' + r.role.replace(/"/g, "&quot;") + '">' + label + "</option>";
+      }).join("");
+      hint.textContent = verifiable.length === 1 ? "only one account configured" : verifiable.length + " accounts configured";
+      btn.disabled = false;
+    } catch (err) {
+      sel.innerHTML = '<option value="">Could not load accounts</option>';
+      hint.textContent = "";
+      btn.disabled = true;
+    }
+  }
+  function setVerifyLoginStatus(text, tone) {
+    var el = document.getElementById("verifyLoginStatus");
+    el.textContent = text;
+    el.title = text;
+    el.className = "meta" + (tone ? " " + tone : "");
+  }
+  function setVerifyLoginShot(dataUrl) {
+    var wrap = document.getElementById("verifyLoginShotWrap");
+    var img = document.getElementById("verifyLoginShot");
+    if (dataUrl) {
+      img.src = dataUrl;
+      wrap.hidden = false;
+    } else {
+      wrap.hidden = true;
+      img.removeAttribute("src");
+    }
+  }
+  async function pollVerifyLogin() {
+    try {
+      var session = await api("/api/auth/verify-login/current");
+      if (session.status === "idle") {
+        setVerifyLoginStatus("idle");
+        clearInterval(verifyLoginPollTimer);
+        return;
+      }
+      if (session.status === "starting") {
+        setVerifyLoginStatus("logging in…", "is-live");
+        setVerifyLoginShot(null);
+      } else if (session.status === "success") {
+        setVerifyLoginStatus("login successful (" + session.role + ")", "verify-ok");
+        setVerifyLoginShot(session.screenshot_data_url);
+        document.getElementById("verifyLoginBtn").disabled = false;
+        clearInterval(verifyLoginPollTimer);
+      } else if (session.status === "failed") {
+        setVerifyLoginStatus("login failed: " + (session.error || "unknown error"), "verify-fail");
+        setVerifyLoginShot(session.screenshot_data_url);
+        document.getElementById("verifyLoginBtn").disabled = false;
+        clearInterval(verifyLoginPollTimer);
+      }
+    } catch (err) {
+      clearInterval(verifyLoginPollTimer);
+      setVerifyLoginStatus("idle");
+      document.getElementById("verifyLoginBtn").disabled = false;
+    }
+  }
+  document.getElementById("verifyLoginBtn").addEventListener("click", async function (e) {
+    var btn = e.currentTarget;
+    var role = document.getElementById("verifyLoginRole").value;
+    if (!role) return;
+    btn.disabled = true;
+    setVerifyLoginShot(null);
+    try {
+      await api("/api/auth/verify-login", { method: "POST", body: JSON.stringify({ role: role }) });
+      setVerifyLoginStatus("logging in…", "is-live");
+      clearInterval(verifyLoginPollTimer);
+      verifyLoginPollTimer = setInterval(pollVerifyLogin, 1200);
+    } catch (err) {
+      toast("Could not start Verify Login: " + err.message, true);
+      btn.disabled = false;
+    }
+  });
+  loadVerifyLoginRoles();
+  pollVerifyLogin();
+
+  document.getElementById("headlessToggle").addEventListener("change", async function (e) {
+    var on = e.target.checked;
+    try {
+      await api("/api/config/browser", { method: "PUT", body: JSON.stringify({ headless: on }) });
+      toast(on ? "Browser set to headless" : "Browser set to headed (visible window)");
+    } catch (err) {
+      e.target.checked = !on;
+      toast("Could not update browser setting: " + err.message, true);
+    }
+  });
+
+  async function loadTesting() {
+    try {
+      var t = await api("/api/testing");
+      setProbesUI(t.allow_state_changing_probes);
+    } catch (e) {
+      toast("Could not load testing flag: " + e.message, true);
+    }
+  }
+  function setProbesUI(on) {
+    document.getElementById("probesToggle").checked = on;
+    var banner = document.getElementById("probesBanner");
+    banner.classList.toggle("on", on);
+    document.getElementById("probesBannerTitle").textContent = on
+      ? "State-changing probes are ON for this window"
+      : "State-changing probes are off";
+  }
+  document.getElementById("probesToggle").addEventListener("change", async function (e) {
+    var on = e.target.checked;
+    try {
+      await api("/api/testing", { method: "PUT", body: JSON.stringify({ allow_state_changing_probes: on }) });
+      setProbesUI(on);
+      toast(on ? "State-changing probes enabled" : "State-changing probes disabled");
+    } catch (err) {
+      e.target.checked = !on;
+      toast("Could not update setting: " + err.message, true);
+    }
+  });
+
+  // ---------------------------------------------------------------- modules
+  async function loadModules() {
+    try {
+      state.modules = await api("/api/modules");
+      renderModules();
+      document.getElementById("navModulesCount").textContent = state.modules.filter(function (m) { return m.enabled; }).length;
+    } catch (e) {
+      toast("Could not load modules: " + e.message, true);
+    }
+  }
+  function renderModules() {
+    var grid = document.getElementById("modulesGrid");
+    grid.innerHTML = "";
+    state.modules.forEach(function (m) {
+      var card = document.createElement("details");
+      card.className = "mod-card";
+      card.innerHTML =
+        '<summary class="mod-card-top">' +
+          '<div><h4>' + m.name + '</h4><div class="layer">' + m.id + '</div></div>' +
+          '<label class="switch" onclick="event.stopPropagation()"><input type="checkbox" ' + (m.enabled ? "checked" : "") + ' ' + (m.locked ? "disabled" : "") + ' data-mod="' + m.id + '" /><span class="track"></span></label>' +
+        '</summary>' +
+        '<div class="mod-card-foot"><span class="tc-count">' + m.technique_count + ' technique' + (m.technique_count === 1 ? "" : "s") + ' — click to show test cases</span></div>' +
+        '<div class="mod-tc-list" data-tc-list></div>';
+      grid.appendChild(card);
+      card.addEventListener("toggle", function () {
+        if (card.open) loadModuleTestcases(m.id, card.querySelector("[data-tc-list]"));
+      }, { once: true });
+    });
+    grid.querySelectorAll("input[data-mod]").forEach(function (input) {
+      input.addEventListener("change", async function () {
+        var id = input.dataset.mod;
+        try {
+          await api("/api/modules/" + id, { method: "PUT", body: JSON.stringify({ enabled: input.checked }) });
+          var m = state.modules.find(function (x) { return x.id === id; });
+          if (m) m.enabled = input.checked;
+          document.getElementById("navModulesCount").textContent = state.modules.filter(function (x) { return x.enabled; }).length;
+          toast((input.checked ? "Enabled " : "Disabled ") + id);
+        } catch (err) {
+          input.checked = !input.checked;
+          toast("Could not update module: " + err.message, true);
+        }
+      });
+    });
+  }
+
+  async function loadModuleTestcases(modId, container) {
+    container.innerHTML = '<div style="padding:10px 0; font-size:11.5px; color:var(--text-faint);">Loading…</div>';
+    try {
+      var testcases = await api("/api/modules/" + modId + "/testcases");
+      if (!testcases.length) {
+        container.innerHTML = '<div style="padding:10px 0; font-size:11.5px; color:var(--text-faint);">No registered test cases found for this module.</div>';
+        return;
+      }
+      container.innerHTML = "";
+      testcases.forEach(function (tc) {
+        var row = document.createElement("div");
+        row.className = "mod-tc-row";
+        row.innerHTML =
+          '<div class="mod-tc-head"><span class="tc-id"></span><span class="finding-name"></span><span class="sev"></span></div>' +
+          '<p class="mod-tc-desc"></p>' +
+          '<div class="mod-tc-compliance"></div>';
+        row.querySelector(".tc-id").textContent = tc.id;
+        row.querySelector(".finding-name").textContent = tc.name || "";
+        var sev = row.querySelector(".sev");
+        sev.textContent = tc.severity || "Info";
+        sev.className = "sev " + (tc.severity || "Info");
+        row.querySelector(".mod-tc-desc").textContent = tc.description || "";
+        row.querySelector(".mod-tc-compliance").textContent = [tc.compliance, tc.cwe_id].filter(Boolean).join(" · ");
+        container.appendChild(row);
+      });
+    } catch (e) {
+      container.innerHTML = '<div style="padding:10px 0; font-size:11.5px; color:var(--critical);">Could not load test cases: ' + e.message + '</div>';
+    }
+  }
+
+  // ---------------------------------------------------------------- generic prompt/confirm modal
+  // Replaces window.prompt()/window.confirm() -- native browser dialogs
+  // look and behave inconsistently across browsers and read as
+  // unfinished in a product UI. Same visual language as the Run Scan
+  // modal, just parameterized. Promise-based so call sites read like
+  // the native functions they replace: `await askPrompt(...)`.
+  var genericBackdrop = document.getElementById("genericModalBackdrop");
+  var genericTitle = document.getElementById("genericModalTitle");
+  var genericMessage = document.getElementById("genericModalMessage");
+  var genericInputField = document.getElementById("genericModalInputField");
+  var genericInput = document.getElementById("genericModalInput");
+  var genericCancel = document.getElementById("genericModalCancel");
+  var genericOk = document.getElementById("genericModalOk");
+  var genericResolve = null;
+
+  function closeGenericModal(result) {
+    genericBackdrop.classList.remove("open");
+    if (genericResolve) { genericResolve(result); genericResolve = null; }
+  }
+  genericCancel.addEventListener("click", function () { closeGenericModal(null); });
+  genericBackdrop.addEventListener("click", function (e) { if (e.target === genericBackdrop) closeGenericModal(null); });
+  genericOk.addEventListener("click", function () {
+    var hasInput = genericInputField.style.display !== "none";
+    closeGenericModal(hasInput ? genericInput.value.trim() : true);
+  });
+  genericInput.addEventListener("keydown", function (e) { if (e.key === "Enter") genericOk.click(); });
+
+  function askPrompt(title, message, placeholder, initialValue) {
+    genericTitle.textContent = title;
+    genericMessage.textContent = message;
+    genericInputField.style.display = "";
+    genericInput.value = initialValue || "";
+    genericInput.placeholder = placeholder || "";
+    genericOk.textContent = "Save";
+    genericOk.className = "btn btn-primary";
+    genericBackdrop.classList.add("open");
+    setTimeout(function () { genericInput.focus(); }, 50);
+    return new Promise(function (resolve) { genericResolve = resolve; });
+  }
+
+  function askConfirm(title, message, destructive) {
+    genericTitle.textContent = title;
+    genericMessage.textContent = message;
+    genericInputField.style.display = "none";
+    genericOk.textContent = destructive ? "Delete" : "Confirm";
+    genericOk.className = destructive ? "btn" : "btn btn-primary";
+    if (destructive) { genericOk.style.borderColor = "var(--critical)"; genericOk.style.color = "var(--critical)"; }
+    else { genericOk.style.borderColor = ""; genericOk.style.color = ""; }
+    genericBackdrop.classList.add("open");
+    return new Promise(function (resolve) { genericResolve = function (v) { resolve(!!v); }; });
+  }
+
+  // ---------------------------------------------------------------- scan modal
+  var backdrop = document.getElementById("scanModalBackdrop");
+  var modalConfirm = document.getElementById("modalConfirm");
+  var modalStart = document.getElementById("modalStart");
+  function renderModalModuleList() {
+    var list = document.getElementById("modalModuleList");
+    var runnable = state.modules.filter(function (m) { return !m.locked; }); // crawler always runs, not a choice
+    list.innerHTML = runnable.map(function (m) {
+      return '<label><input type="checkbox" value="' + m.id + '"' + (m.enabled ? " checked" : "") + ' /><span>' + m.name + "</span></label>";
+    }).join("");
+    updateModalModuleCount();
+    list.querySelectorAll("input").forEach(function (cb) { cb.addEventListener("change", updateModalModuleCount); });
+  }
+  function updateModalModuleCount() {
+    var boxes = document.querySelectorAll("#modalModuleList input");
+    var checked = document.querySelectorAll("#modalModuleList input:checked");
+    document.getElementById("modalModuleCount").textContent = checked.length + " / " + boxes.length + " selected";
+  }
+  async function renderModalWorkflowList() {
+    var field = document.getElementById("modalWorkflowField");
+    var list = document.getElementById("modalWorkflowList");
+    try {
+      var workflows = await api("/api/workflows");
+      if (!workflows.length) { field.hidden = true; list.innerHTML = ""; return; }
+      field.hidden = false;
+      list.innerHTML = workflows.map(function (w) {
+        return '<label><input type="checkbox" value="' + w.workflow_id + '" />' +
+          '<span>' + w.name + ' <small style="color:var(--text-faint);">(' + w.action_count + ' action(s) &middot; ' + w.target_url + ')</small></span></label>';
+      }).join("");
+    } catch (err) {
+      field.hidden = true;
+    }
+  }
+  function openModal() {
+    renderModalModuleList();
+    renderModalWorkflowList();
+    document.getElementById("modalScanName").value = "";
+    backdrop.classList.add("open");
+  }
+  function closeModal() { backdrop.classList.remove("open"); modalConfirm.checked = false; modalStart.disabled = true; }
+  document.getElementById("newScanBtn").addEventListener("click", openModal);
+  document.querySelectorAll("[data-runscan]").forEach(function (b) { b.addEventListener("click", openModal); });
+  document.getElementById("modalModulesAll").addEventListener("click", function () {
+    document.querySelectorAll("#modalModuleList input").forEach(function (cb) { cb.checked = true; });
+    updateModalModuleCount();
+  });
+  document.getElementById("modalModulesNone").addEventListener("click", function () {
+    document.querySelectorAll("#modalModuleList input").forEach(function (cb) { cb.checked = false; });
+    updateModalModuleCount();
+  });
+
+  // ---------------------------------------------------------------- tool health check
+  // "Is STOF itself working correctly" is a question worth answering
+  // BEFORE trusting it against a real target, not after -- runs the
+  // real tests/unit suite as a subprocess and surfaces pass/fail right
+  // here, advisory only (a failing suite doesn't block the scan; the
+  // operator makes the call with the information in front of them).
+  var healthCheckBtn = document.getElementById("healthCheckBtn");
+  var healthCheckPollTimer = null;
+  function setHealthCheckStatus(text, tone) {
+    var el = document.getElementById("healthCheckStatus");
+    el.textContent = text;
+    el.title = text;
+    el.className = "meta" + (tone ? " " + tone : "");
+  }
+  async function pollHealthCheck() {
+    try {
+      var s = await api("/api/health/run-tests/current");
+      if (s.status === "running") {
+        setHealthCheckStatus("checking…", "is-live");
+        document.getElementById("healthCheckStatus").title = "running the tests/unit suite — usually takes ~25s";
+        return;
+      }
+      clearInterval(healthCheckPollTimer);
+      healthCheckBtn.disabled = false;
+      if (s.status === "passed") {
+        setHealthCheckStatus("✓ Good to go", "verify-ok");
+        document.getElementById("healthCheckStatus").title = s.passed + " / " + s.passed + " test cases passed in " + s.duration_s.toFixed(1) + "s";
+      } else if (s.status === "failed") {
+        var total = s.passed + s.failed;
+        setHealthCheckStatus("⚠ " + s.failed + " of " + total + " test case" + (total === 1 ? "" : "s") + " failing", "verify-fail");
+        document.getElementById("healthCheckStatus").title =
+          "Results from this scan may not be fully reliable. Failing: " + s.failing_tests.join(", ");
+      } else {
+        setHealthCheckStatus("⚠ Could not run tests", "verify-fail");
+        document.getElementById("healthCheckStatus").title = s.error || "unknown error";
+      }
+    } catch (err) {
+      clearInterval(healthCheckPollTimer);
+      healthCheckBtn.disabled = false;
+      setHealthCheckStatus("not checked this session");
+    }
+  }
+  healthCheckBtn.addEventListener("click", async function () {
+    healthCheckBtn.disabled = true;
+    try {
+      await api("/api/health/run-tests", { method: "POST" });
+      setHealthCheckStatus("checking…", "is-live");
+      clearInterval(healthCheckPollTimer);
+      healthCheckPollTimer = setInterval(pollHealthCheck, 1500);
+    } catch (err) {
+      healthCheckBtn.disabled = false;
+      toast("Could not start test run: " + err.message, true);
+    }
+  });
+
+  // ---------------------------------------------------------------- stop scan
+  // Topbar-level (not per-panel) since a running scan is a global fact,
+  // not something scoped to whichever tab happens to be open. Synced
+  // from loadScans() -- called on boot, every 30s, and right after a
+  // scan starts -- rather than its own poll loop.
+  var stopScanBtn = document.getElementById("stopScanBtn");
+  function syncStopScanButton() {
+    var running = state.scans.find(function (s) { return s.status === "running"; });
+    stopScanBtn.hidden = !running;
+    stopScanBtn.dataset.scanId = running ? running.scan_id : "";
+    // The backend now rejects a second concurrent scan outright (409) --
+    // disabling "Run Scan" while one is live surfaces that limit up
+    // front instead of letting the operator fill out the whole modal
+    // and only find out on submit.
+    document.getElementById("newScanBtn").disabled = !!running;
+    document.getElementById("newScanBtn").title = running ? "A scan is already running -- stop it first" : "";
+    document.querySelectorAll("[data-runscan]").forEach(function (b) {
+      b.disabled = !!running;
+      b.title = running ? "A scan is already running -- stop it first" : "";
+    });
+  }
+  stopScanBtn.addEventListener("click", async function () {
+    var scanId = stopScanBtn.dataset.scanId;
+    if (!scanId) return;
+    var ok = await askConfirm(
+      "Stop this scan?",
+      "scan " + scanId + " will be terminated immediately. Findings already discovered are kept; anything still in progress is lost.",
+      true
+    );
+    if (!ok) return;
+    stopScanBtn.disabled = true;
+    try {
+      await api("/api/scans/" + scanId + "/stop", { method: "POST" });
+      toast("Stopping scan " + scanId + "…");
+    } catch (err) {
+      toast("Could not stop scan " + scanId + ": " + err.message, true);
+    } finally {
+      stopScanBtn.disabled = false;
+      loadScans();
+    }
+  });
+  document.getElementById("modalCancel").addEventListener("click", closeModal);
+  backdrop.addEventListener("click", function (e) { if (e.target === backdrop) closeModal(); });
+  modalConfirm.addEventListener("change", function () { modalStart.disabled = !modalConfirm.checked; });
+
+  // Escape closes whichever modal is open -- neither modal handled this
+  // before (confirmed live: Tab worked, Esc did nothing on either the
+  // scan-confirm or generic prompt/confirm modal).
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if (backdrop.classList.contains("open")) closeModal();
+    else if (genericBackdrop.classList.contains("open")) closeGenericModal(null);
+    else if (document.getElementById("scanSummaryBackdrop").classList.contains("open")) closeScanSummary();
+  });
+
+  modalStart.addEventListener("click", async function () {
+    modalStart.disabled = true;
+    try {
+      var selectedModules = Array.from(document.querySelectorAll("#modalModuleList input:checked")).map(function (cb) { return cb.value; });
+      var selectedWorkflows = Array.from(document.querySelectorAll("#modalWorkflowList input:checked")).map(function (cb) { return cb.value; });
+      var scanName = document.getElementById("modalScanName").value.trim();
+      var result = await api("/api/scans", {
+        method: "POST",
+        body: JSON.stringify({
+          modules: selectedModules, name: scanName || null,
+          workflow_ids: selectedWorkflows.length ? selectedWorkflows : null,
+          confirm_authorized: true,
+        }),
+      });
+      closeModal();
+      toast("Scan " + result.scan_id + " started");
+      setRoute("#/dashboard");
+      attachToScan(result.scan_id);
+      await loadScans();
+    } catch (err) {
+      toast("Could not start scan: " + err.message, true);
+      modalStart.disabled = false;
+    }
+  });
+
+  // ---------------------------------------------------------------- live scan tracking
+  // Consumes ONLY structured JSON events (see stof/core/console.py's
+  // _emit_event / stof/ui/server.py's _broadcast_event) -- never raw
+  // CLI text. Each event type renders as one clean, plain-English
+  // activity line; nothing here parses or displays terminal output.
+  var EVENT_LABELS = {
+    scan_started: function (e) { return "Scan started against " + e.target; },
+    phase: function (e) { return e.title; },
+    module_started: function (e) { return "Running " + moduleLabel(e.module) + " (" + e.technique_count + " technique" + (e.technique_count === 1 ? "" : "s") + ")"; },
+    module_completed: function (e) { return moduleLabel(e.module) + " finished — " + formatCounts(e.counts, e.total); },
+    finding: function (e) { return e.severity + " — " + e.technique + " (" + e.technique_id + ")"; },
+    workflow_replayed: function (e) {
+      return e.success
+        ? "Workflow '" + e.workflow_id + "' replayed (" + e.completed_actions + "/" + e.total_actions + ") as '" + e.role + "' — landed on " + e.final_url
+        : "Workflow '" + e.workflow_id + "' stopped after " + e.completed_actions + "/" + e.total_actions + " action(s) — " + e.error;
+    },
+    reports_generated: function () { return "Reports generated"; },
+    scan_completed: function (e) { return "Scan complete in " + Math.round(e.duration_seconds) + "s"; },
+    process_exited: function (e) {
+      if (e.status === "complete") return "Scan finished successfully";
+      if (e.status === "stopped") return "Scan stopped by operator";
+      return "Scan process exited with an error (code " + e.exit_code + ")";
+    },
+    error: function (e) { return e.message; },
+  };
+  var EVENT_TAGS = {
+    scan_started: "STOF", phase: "PHASE", module_started: "MOD", module_completed: "MOD",
+    finding: "FIND", reports_generated: "REPORT", scan_completed: "STOF", process_exited: "STOF", error: "ERR",
+    workflow_replayed: "WF",
+  };
+  function moduleLabel(id) {
+    var m = state.modules.find(function (x) { return x.id === id; });
+    return m ? m.name : id;
+  }
+  function formatCounts(counts, total) {
+    counts = counts || {};
+    var parts = [];
+    if (counts.PASS) parts.push(counts.PASS + " pass");
+    if (counts.FAIL) parts.push(counts.FAIL + " fail");
+    if (counts.SKIPPED) parts.push(counts.SKIPPED + " skipped");
+    if (counts.ERROR) parts.push(counts.ERROR + " error");
+    return (parts.length ? parts.join(", ") : "no techniques run") + (total ? " (" + total + " total)" : "");
+  }
+  // Compact colored pill badges for a module row -- replaces one long
+  // comma-joined string, which regularly overflowed the row and got
+  // clipped mid-word on real scans with many techniques.
+  function formatCountsBadges(counts, total) {
+    counts = counts || {};
+    var badges = [];
+    if (counts.PASS) badges.push('<span class="count-badge pass">' + counts.PASS + " pass</span>");
+    if (counts.FAIL) badges.push('<span class="count-badge fail">' + counts.FAIL + " fail</span>");
+    if (counts.SKIPPED) badges.push('<span class="count-badge skip">' + counts.SKIPPED + " skip</span>");
+    if (counts.ERROR) badges.push('<span class="count-badge err">' + counts.ERROR + " error</span>");
+    if (!badges.length) return '<span class="status-text">no techniques run</span>';
+    return badges.join("");
+  }
+
+  function setFeedMeta(status) {
+    var meta = document.getElementById("feedMeta");
+    var live = status === "running";
+    meta.className = "meta" + (live ? " is-live" : "");
+    meta.innerHTML = (live ? '<span class="live-dot"></span>' : "") + (live ? "live" : status);
+  }
+
+  // Enterprise log-viewer convention (Datadog/Grafana/GitHub Actions): only
+  // auto-scroll while the reader is already at the bottom. Scrolling up to
+  // read history must not get yanked back down by new lines -- instead
+  // surface a "jump to latest" affordance with a pending count.
+  var feedPendingCount = 0;
+  function isFeedAtBottom(feed) {
+    return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 24;
+  }
+  function onFeedScroll() {
+    if (isFeedAtBottom(document.getElementById("liveFeed"))) {
+      feedPendingCount = 0;
+      document.getElementById("feedJump").classList.remove("show");
+    }
+  }
+  function jumpToLatest() {
+    var feed = document.getElementById("liveFeed");
+    feed.scrollTop = feed.scrollHeight;
+    feedPendingCount = 0;
+    document.getElementById("feedJump").classList.remove("show");
+  }
+  function filterLiveFeed(query) {
+    var q = query.trim().toLowerCase();
+    document.querySelectorAll("#liveFeed .line").forEach(function (line) {
+      line.classList.toggle("is-hidden", q.length > 0 && line.textContent.toLowerCase().indexOf(q) === -1);
+    });
+  }
+  document.getElementById("liveFeed").addEventListener("scroll", onFeedScroll);
+  document.getElementById("feedJump").addEventListener("click", jumpToLatest);
+  document.getElementById("feedFilter").addEventListener("input", function () { filterLiveFeed(this.value); });
+
+  function appendFeedEvent(event) {
+    var feed = document.getElementById("liveFeed");
+    if (feed.querySelector(".empty")) feed.innerHTML = "";
+    var label = EVENT_LABELS[event.event];
+    if (!label) return; // unknown/uninteresting event type -- silently ignored, never shown raw
+    var tag = EVENT_TAGS[event.event] || "STOF";
+    var tagClass = "t-" + tag;
+    if (event.event === "finding" && (event.severity === "Medium" || event.severity === "Low" || event.severity === "Info")) {
+      tagClass += " t-FIND-low";
+    }
+    var wasAtBottom = isFeedAtBottom(feed);
+    var div = document.createElement("div");
+    div.className = "line" + (event.event === "finding" ? " is-find" + (tagClass.indexOf("t-FIND-low") !== -1 ? " is-low" : "") : "");
+    var timeStr = event.ts ? new Date(event.ts).toLocaleTimeString([], { hour12: false }) : "";
+    div.innerHTML = '<span class="time">' + timeStr + '</span><span class="tag ' + tagClass + '">[' + tag + ']</span><span class="msg"></span>';
+    div.querySelector(".msg").textContent = label(event);
+    var filterVal = document.getElementById("feedFilter").value.trim().toLowerCase();
+    if (filterVal && div.textContent.toLowerCase().indexOf(filterVal) === -1) div.classList.add("is-hidden");
+    feed.appendChild(div);
+    if (wasAtBottom) {
+      feed.scrollTop = feed.scrollHeight;
+    } else {
+      feedPendingCount += 1;
+      var jumpBtn = document.getElementById("feedJump");
+      document.getElementById("feedJumpCount").textContent = feedPendingCount + " new";
+      jumpBtn.classList.add("show");
+    }
+  }
+
+  var moduleRows = {};
+  function ensureModuleRow(modId) {
+    if (moduleRows[modId]) return moduleRows[modId];
+    var list = document.getElementById("moduleProgressList");
+    if (list.querySelector(".card-empty")) list.innerHTML = "";
+    var row = document.createElement("div");
+    row.className = "mod-row";
+    row.innerHTML = '<span class="mod-state queued"></span><span class="mod-name" title="' + moduleLabel(modId) + '">' + moduleLabel(modId) + '</span><span class="mod-counts"><span class="status-text">queued</span></span>';
+    list.appendChild(row);
+    moduleRows[modId] = row;
+    return row;
+  }
+  // CI/CD job-list convention (GitHub Actions, GitLab, CircleCI): show
+  // how long each unit of work took, not just its pass/fail outcome.
+  var moduleStartTs = {};
+  function renderModuleState(modId, st) {
+    var row = ensureModuleRow(modId);
+    row.querySelector(".mod-state").className = "mod-state " + (st.status === "complete" ? "done" : st.status);
+    var countsEl = row.querySelector(".mod-counts");
+    if (st.status === "running" && st.ts) moduleStartTs[modId] = st.ts;
+    if (st.status === "complete") {
+      var durLabel = "";
+      if (moduleStartTs[modId] && st.ts) {
+        var seconds = (new Date(st.ts) - new Date(moduleStartTs[modId])) / 1000;
+        if (seconds >= 0) durLabel = '<span class="dur">' + (seconds < 10 ? seconds.toFixed(1) : Math.round(seconds)) + "s</span>";
+      }
+      countsEl.innerHTML = durLabel + formatCountsBadges(st.counts, st.total);
+    } else {
+      countsEl.innerHTML = '<span class="status-text">' + (st.status === "running" ? "running…" : "queued") + "</span>";
+    }
+    updateModuleProgressMeta();
+  }
+  function updateModuleProgressMeta() {
+    var rows = Object.keys(moduleRows);
+    var meta = document.getElementById("moduleProgressMeta");
+    if (!rows.length) { meta.className = "meta"; meta.textContent = "—"; return; }
+    var done = rows.filter(function (id) { return moduleRows[id].querySelector(".mod-state").classList.contains("done"); });
+    // formatCounts() only ever includes " fail" in the string when
+    // counts.FAIL is truthy (nonzero) -- a plain substring check is
+    // therefore exact, no "0 fail" false-positive to guard against.
+    var failingModules = rows.filter(function (id) { return moduleRows[id].querySelector(".mod-counts").textContent.indexOf(" fail") !== -1; });
+    var allDone = done.length === rows.length;
+    // The pill tracks *completion progress*, never findings severity --
+    // mixing the two made a fully-finished scan read as an error banner.
+    // Findings are already signalled per-row and in the live feed.
+    meta.className = "module-progress-pill" + (allDone ? " done" : " running");
+    meta.innerHTML = done.length + " / " + rows.length + " complete" +
+      (failingModules.length ? '<span class="fc">' + failingModules.length + " with findings</span>" : "");
+  }
+  function renderModuleLogEmptyState(scanStatus) {
+    var list = document.getElementById("moduleProgressList");
+    if (Object.keys(moduleRows).length) return;
+    list.innerHTML = scanStatus === "running"
+      ? '<div class="card-empty">Still crawling / profiling the target — module testing hasn\'t started yet.</div>'
+      : '<div class="card-empty">No module reached the per-technique testing phase for this scan (every module was ruled not applicable to this target, or the scan failed before testing started — check Live activity).</div>';
+  }
+  function applyEventToDashboard(event) {
+    if (event.event === "module_started") {
+      renderModuleState(event.module, { status: "running", ts: event.ts });
+    } else if (event.event === "module_completed") {
+      renderModuleState(event.module, { status: "complete", counts: event.counts, total: event.total, ts: event.ts });
+    }
+  }
+
+  // Attaches the Dashboard view to one scan: replays its full event
+  // history from the REST snapshot (works whether the scan is still
+  // running or already finished), then lets the ALREADY-OPEN global
+  // socket (see connectGlobalStream below) carry everything from here
+  // on -- no per-scan connection, so this is safe to call repeatedly
+  // (e.g. clicking "Watch" on different rows) without leaking sockets.
+  // Multiple scans can run at once (different module subsets, or just
+  // launched back-to-back) -- attaching the Dashboard to one doesn't
+  // block starting or watching another. `dashboardScanSelect` is the
+  // picker for which scan's progress this view currently shows.
+  async function attachToScan(scanId) {
+    state.activeScanId = scanId;
+    document.getElementById("liveFeed").innerHTML = "";
+    document.getElementById("moduleProgressList").innerHTML = "";
+    document.getElementById("feedFilter").value = "";
+    feedPendingCount = 0;
+    document.getElementById("feedJump").classList.remove("show");
+    moduleRows = {};
+    moduleStartTs = {};
+    try {
+      var s = await api("/api/scans/" + scanId);
+      setDashboardSub(scanId, s.target, s.status === "running" ? "live" : s.status);
+      setFeedMeta(s.status);
+      renderCrawlKpi(s.crawl);
+      renderTechniquesKpi(s.modules_state);
+      renderLiveFindingsKpi(s.live_findings);
+      (s.events || []).forEach(function (event) {
+        appendFeedEvent(event);
+        applyEventToDashboard(event);
+      });
+      renderModuleLogEmptyState(s.status);
+      updateModuleProgressMeta();
+      syncDashboardScanSelect(scanId);
+      if (s.status === "complete") loadFindingsFor(scanId);
+    } catch (e) {
+      toast("Could not load scan " + scanId + ": " + e.message, true);
+    }
+  }
+
+  // Builds the "scan <id> · <target> · <status>" line with DOM nodes
+  // instead of string-concatenated innerHTML -- `target` comes from
+  // config.json's target.base_url, which the Settings form lets the
+  // operator set to an arbitrary string with no sanitization. Confirmed
+  // live: setting base_url to `<img src=x onerror=...>` via
+  // PUT /api/config/target and starting a scan got it reflected here
+  // unescaped. scanId/status are server-controlled (uuid hex / enum)
+  // so those two stay as literal markup; only the untrusted value is
+  // ever inserted as text.
+  function setDashboardSub(scanId, target, status) {
+    var el = document.getElementById("dashboardSub");
+    el.innerHTML = 'scan <code class="inline"></code> &middot; <span></span> &middot; ' + status;
+    el.querySelector("code").textContent = scanId;
+    el.querySelector("span").textContent = target;
+  }
+
+  function renderCrawlKpi(crawl) {
+    var val = document.getElementById("kpiEndpoints");
+    var sub = document.getElementById("kpiEndpointsSub");
+    if (!crawl) { val.textContent = "—"; sub.innerHTML = "&nbsp;"; return; }
+    val.textContent = crawl.endpoint_count;
+    sub.textContent = crawl.forms + " forms · " + crawl.apis + " API · " + crawl.pages + " pages";
+  }
+  function renderTechniquesKpi(modulesState) {
+    var val = document.getElementById("kpiTechniques");
+    var sub = document.getElementById("kpiTechniquesSub");
+    var entries = Object.keys(modulesState || {}).map(function (k) { return modulesState[k]; });
+    if (!entries.length) { val.textContent = "—"; sub.innerHTML = "&nbsp;"; return; }
+    var done = entries.filter(function (m) { return m.status === "complete"; });
+    var sum = done.reduce(function (acc, m) { return acc + (m.total || 0); }, 0);
+    val.textContent = sum;
+    sub.textContent = done.length + " of " + entries.length + " module" + (entries.length === 1 ? "" : "s") + " complete";
+  }
+  function renderLiveFindingsKpi(liveFindings) {
+    liveFindings = liveFindings || [];
+    var counts = { Critical: 0, High: 0 };
+    liveFindings.forEach(function (f) { if (counts[f.severity] !== undefined) counts[f.severity]++; });
+    document.getElementById("kpiCritical").textContent = counts.Critical;
+    document.getElementById("kpiHigh").textContent = counts.High;
+    document.getElementById("kpiTotal").textContent = liveFindings.length;
+  }
+
+  function syncDashboardScanSelect(scanId) {
+    var select = document.getElementById("dashboardScanSelect");
+    if (select.value !== scanId) select.value = scanId;
+  }
+  function renderDashboardScanSelect() {
+    var select = document.getElementById("dashboardScanSelect");
+    if (!state.scans.length) { select.style.display = "none"; return; }
+    select.style.display = "";
+    var prev = select.value;
+    select.innerHTML = "";
+    state.scans.forEach(function (s) {
+      var opt = document.createElement("option");
+      opt.value = s.scan_id;
+      opt.textContent = (s.status === "running" ? "● " : "") + (s.name ? s.name + " (" + s.scan_id + ")" : s.scan_id) + " — " + s.target;
+      select.appendChild(opt);
+    });
+    if (prev && state.scans.some(function (s) { return s.scan_id === prev; })) {
+      select.value = prev;
+    } else if (state.activeScanId === null) {
+      select.value = state.scans[0].scan_id;
+      attachToScan(state.scans[0].scan_id);
+    }
+  }
+  document.getElementById("dashboardScanSelect").addEventListener("change", function (e) {
+    if (e.target.value) attachToScan(e.target.value);
+  });
+
+  // ---------------------------------------------------------------- global live channel
+  // ONE persistent WebSocket for the whole app -- every cross-cutting
+  // change (any scan's progress, a module toggle from another tab, a
+  // new report, a saved/deleted workflow) arrives here and updates
+  // whatever's on screen automatically. This is the fix for "always
+  // have to refresh": nothing in this UI should ever need a manual
+  // reload to see current state. Reconnects with backoff on drop; a
+  // slow 30s poll (see boot()) is kept as a defensive backstop in case
+  // a message is ever missed mid-reconnect, matching how production
+  // push-based dashboards still keep a low-frequency safety poll.
+  var reconnectDelay = 1000;
+  function connectGlobalStream() {
+    var proto = location.protocol === "https:" ? "wss:" : "ws:";
+    var ws = new WebSocket(proto + "//" + location.host + "/api/stream");
+    state.ws = ws;
+    ws.onopen = function () {
+      reconnectDelay = 1000;
+      setLiveIndicator(true);
+    };
+    ws.onmessage = function (evt) {
+      var event;
+      try { event = JSON.parse(evt.data); } catch (e) { return; }
+      routeGlobalEvent(event);
+    };
+    ws.onclose = function () {
+      setLiveIndicator(false);
+      setTimeout(connectGlobalStream, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 1.6, 15000);
+    };
+    ws.onerror = function () { try { ws.close(); } catch (e) {} };
+  }
+
+  function setLiveIndicator(connected) {
+    var el = document.getElementById("healthState");
+    el.textContent = connected ? "live" : "reconnecting…";
+    el.style.color = connected ? "var(--pass)" : "var(--high)";
+  }
+
+  function routeGlobalEvent(event) {
+    if (event.event === "scan_event") {
+      var inner = event.data;
+      if (event.scan_id === state.activeScanId) {
+        appendFeedEvent(inner);
+        applyEventToDashboard(inner);
+        if (inner.event === "crawl_completed") renderCrawlKpi({ endpoint_count: inner.endpoint_count, forms: inner.forms, apis: inner.apis, pages: inner.pages });
+        if (inner.event === "module_started" || inner.event === "module_completed") {
+          // Re-derive modules_state client-side from the running feed
+          // rather than re-fetching -- appendFeedEvent/applyEventToDashboard
+          // already updated moduleRows; techniques-run KPI needs the same source.
+          api("/api/scans/" + event.scan_id).then(function (s) { renderTechniquesKpi(s.modules_state); }).catch(function () {});
+        }
+        if (inner.event === "finding") {
+          var totalEl = document.getElementById("kpiTotal");
+          var critEl = document.getElementById("kpiCritical");
+          var highEl = document.getElementById("kpiHigh");
+          totalEl.textContent = (parseInt(totalEl.textContent, 10) || 0) + 1;
+          if (inner.severity === "Critical") critEl.textContent = (parseInt(critEl.textContent, 10) || 0) + 1;
+          if (inner.severity === "High") highEl.textContent = (parseInt(highEl.textContent, 10) || 0) + 1;
+        }
+      }
+      if (inner.event === "process_exited") {
+        loadScans();
+        if (inner.status === "complete") loadDashboardSummary();
+        if (event.scan_id === state.activeScanId) {
+          setFeedMeta(inner.status);
+          document.getElementById("dashboardSub").innerHTML = 'scan <code class="inline">' + event.scan_id + '</code> &middot; ' + inner.status;
+          if (inner.status === "complete") loadFindingsFor(event.scan_id);
+        }
+        if (inner.status === "complete") {
+          toast("Scan " + event.scan_id + " completed");
+        } else if (inner.status === "stopped") {
+          toast("Scan " + event.scan_id + " stopped");
+        } else {
+          toast("Scan " + event.scan_id + " failed", true);
+        }
+      }
+    } else if (event.event === "scan_created") {
+      loadScans();
+    } else if (event.event === "module_toggled") {
+      var m = state.modules.find(function (x) { return x.id === event.id; });
+      if (m) { m.enabled = event.enabled; renderModules(); }
+      document.getElementById("navModulesCount").textContent = state.modules.filter(function (x) { return x.enabled; }).length;
+    } else if (event.event === "testing_changed") {
+      setProbesUI(event.allow_state_changing_probes);
+    } else if (event.event === "workflow_saved" || event.event === "workflow_deleted") {
+      loadWorkflows();
+    } else if (event.event === "scan_deleted") {
+      loadScans();
+      loadDashboardSummary();
+      if (state.activeScanId === event.scan_id) state.activeScanId = null;
+    }
+  }
+
+  // ---------------------------------------------------------------- scans list
+  async function loadScans() {
+    try {
+      state.scans = await api("/api/scans");
+      renderScans();
+      renderDashboardScanSelect();
+      syncStopScanButton();
+      document.getElementById("navScanCount").textContent = state.scans.length;
+      var select = document.getElementById("findingsScanSelect");
+      var prev = select.value;
+      select.innerHTML = '<option value="">Select a scan…</option>';
+      state.scans.filter(function (s) { return s.status === "complete"; }).forEach(function (s) {
+        var opt = document.createElement("option");
+        opt.value = s.scan_id;
+        opt.textContent = (s.name ? s.name + " (" + s.scan_id + ")" : s.scan_id) + " — " + s.target;
+        select.appendChild(opt);
+      });
+      if (prev) {
+        select.value = prev;
+      } else if (state.findingsScanId === null) {
+        // Nothing picked yet (fresh load/refresh) -- default the
+        // Findings tab to the most recent completed scan's FULL result
+        // set (no severity filter pre-applied) rather than leaving it
+        // blank until the user manually opens the dropdown. The
+        // dropdown itself is still how they narrow to a different scan
+        // afterward -- this only sets the starting point.
+        var latestComplete = state.scans.find(function (s) { return s.status === "complete"; });
+        if (latestComplete) {
+          select.value = latestComplete.scan_id;
+          loadFindingsFor(latestComplete.scan_id);
+        }
+      }
+    } catch (e) {
+      toast("Could not load scans: " + e.message, true);
+    }
+  }
+  // Grouped by target -- an operator running STOF against several
+  // apps over time needs "what's the history for THIS target," not
+  // one flat list interleaving unrelated targets by timestamp. Each
+  // row opens the Scan Summary modal on click (the whole row, not just
+  // a button -- matches "I'll click the scan I need to see the
+  // summary").
+  function renderScans() {
+    var container = document.getElementById("scansByTarget");
+    container.innerHTML = "";
+    if (!state.scans.length) {
+      container.innerHTML = '<div class="card-empty">No scans yet — click "Run Scan" to launch one.</div>';
+      return;
+    }
+    var byTarget = {};
+    var order = [];
+    state.scans.forEach(function (s) {
+      if (!byTarget[s.target]) { byTarget[s.target] = []; order.push(s.target); }
+      byTarget[s.target].push(s);
+    });
+    order.forEach(function (target) {
+      var scans = byTarget[target];
+      var group = document.createElement("div");
+      group.className = "target-group";
+      var head = document.createElement("div");
+      head.className = "target-group-head";
+      head.innerHTML = '<span class="target"></span><span class="n">' + scans.length + " scan" + (scans.length === 1 ? "" : "s") + "</span>";
+      head.querySelector(".target").textContent = target; // free-text, operator-settable -- textContent only
+      group.appendChild(head);
+      scans.forEach(function (s) {
+        var row = document.createElement("div");
+        row.className = "scan-row";
+        var when = s.started_at ? new Date(s.started_at).toLocaleString() : "—";
+        row.innerHTML =
+          (s.name ? '<span class="sname" title=""></span>' : "") +
+          '<span class="sid"></span><span class="when"></span>' +
+          '<span class="sevs" id="sevs-' + s.scan_id + '"></span>' +
+          '<span class="status-badge ' + s.status + '">' + s.status.toUpperCase() + "</span>";
+        if (s.name) {
+          row.querySelector(".sname").textContent = s.name;
+          row.querySelector(".sname").title = s.name;
+        }
+        row.querySelector(".sid").textContent = s.scan_id;
+        row.querySelector(".when").textContent = when;
+        row.addEventListener("click", function () {
+          if (s.status === "running") { attachToScan(s.scan_id); setRoute("#/dashboard"); }
+          else { setRoute("#/scans/" + s.scan_id); }
+        });
+        group.appendChild(row);
+        if (s.status === "complete") {
+          api("/api/scans/" + s.scan_id + "/findings").then(function (r) {
+            var el = document.getElementById("sevs-" + s.scan_id);
+            if (!el || !r.summary) return;
+            el.innerHTML = SEV_ORDER.filter(function (sev) { return r.summary.by_severity[sev]; })
+              .map(function (sev) { return '<span style="color:' + SEV_COLOR[sev] + '">' + r.summary.by_severity[sev] + " " + sev + "</span>"; })
+              .join(" &middot; ") || '<span style="color:var(--pass)">clean</span>';
+          }).catch(function () {});
+        }
+      });
+      container.appendChild(group);
+    });
+  }
+
+  // ---------------------------------------------------------------- scan summary modal
+  var summaryBackdrop = document.getElementById("scanSummaryBackdrop");
+  function closeScanSummary() { setRoute("#/scans"); }
+  document.getElementById("summaryClose").addEventListener("click", closeScanSummary);
+  summaryBackdrop.addEventListener("click", function (e) { if (e.target === summaryBackdrop) closeScanSummary(); });
+  document.getElementById("summaryRenameBtn").addEventListener("click", async function () {
+    var scanId = document.getElementById("summaryModal").dataset.scanId;
+    var current = document.getElementById("summaryScanName").textContent;
+    var name = await askPrompt("Rename this scan", "Shown alongside its ID everywhere in the console.", "e.g. Pre-release regression", current);
+    if (name === null) return;
+    try {
+      await api("/api/scans/" + scanId + "/name", { method: "PATCH", body: JSON.stringify({ name: name }) });
+      document.getElementById("summaryScanName").textContent = name;
+      toast(name ? "Scan renamed" : "Scan name cleared");
+      loadScans();
+    } catch (err) {
+      toast("Could not rename scan: " + err.message, true);
+    }
+  });
+
+  async function openScanSummary(scanId) {
+    summaryBackdrop.classList.add("open");
+    var modalEl = document.getElementById("summaryModal");
+    modalEl.dataset.scanId = scanId;
+    modalEl.style.setProperty("--sev-accent", "var(--accent)");
+    document.getElementById("summaryTarget").textContent = "Loading…";
+    document.getElementById("summaryMeta").textContent = "";
+    document.getElementById("summaryStatusPill").textContent = "SCAN SUMMARY";
+    document.getElementById("summaryScanName").textContent = "";
+    document.getElementById("summaryKpis").innerHTML = "";
+    document.getElementById("summaryModules").innerHTML = "";
+    document.getElementById("summaryFindings").innerHTML = "";
+    document.getElementById("summaryReports").innerHTML = "";
+    try {
+      var s = await api("/api/scans/" + scanId);
+      document.getElementById("summaryScanName").textContent = s.name || "";
+      // This scan's findings AND its exported reports, side by side --
+      // these were previously two disconnected nav items (Scans,
+      // Reports) for what is conceptually one object: a completed scan.
+      api("/api/reports").then(function (allReports) {
+        var mine = allReports.filter(function (r) { return r.scan_id === scanId; });
+        var reportsEl = document.getElementById("summaryReports");
+        if (!mine.length) { reportsEl.innerHTML = '<div class="card-empty" style="padding:8px 0;">No reports yet.</div>'; return; }
+        reportsEl.innerHTML = mine.map(function (r) {
+          return '<a class="summary-report-link" href="/api/reports/' + encodeURIComponent(r.filename) + '" target="_blank" rel="noopener">' +
+            '<span class="ext">' + r.type + '</span><span></span></a>';
+        }).join("");
+        reportsEl.querySelectorAll(".summary-report-link").forEach(function (el, i) {
+          el.querySelector("span:last-child").textContent = mine[i].filename;
+        });
+      }).catch(function () {
+        document.getElementById("summaryReports").innerHTML = '<div class="card-empty" style="padding:8px 0;">Could not load reports.</div>';
+      });
+      var f = await api("/api/scans/" + scanId + "/findings");
+      var summary = f.summary || { total_findings: (f.findings || []).length, by_severity: {} };
+
+      // Accent the whole modal (top border + eyebrow label) by the
+      // worst severity present -- the same "state visible at a glance,
+      // not just in text" principle the rest of this console already
+      // uses (KPI cards, severity chips).
+      var worstSev = SEV_ORDER.find(function (sev) { return summary.by_severity[sev] > 0; });
+      var accentVar = worstSev ? "var(--" + worstSev.toLowerCase() + ")" : "var(--pass)";
+      modalEl.style.setProperty("--sev-accent", accentVar);
+      document.getElementById("summaryStatusPill").textContent = worstSev
+        ? worstSev.toUpperCase() + " FINDINGS PRESENT" : "CLEAN SCAN — NO FINDINGS";
+
+      document.getElementById("summaryTarget").textContent = s.target;
+      document.getElementById("summaryMeta").textContent =
+        (s.started_at ? new Date(s.started_at).toLocaleString() : "") +
+        (s.finished_at ? " → " + new Date(s.finished_at).toLocaleString() : "") +
+        " · " + s.status;
+
+      var kpis = document.getElementById("summaryKpis");
+      var endpointsVal = s.crawl ? s.crawl.endpoint_count : "—";
+      var techsVal = Object.keys(s.modules_state || {}).length
+        ? Object.values(s.modules_state).reduce(function (a, m) { return a + (m.total || 0); }, 0) : "—";
+      [
+        ["Endpoints", endpointsVal], ["Techniques", techsVal],
+        ["Critical", summary.by_severity.Critical || 0], ["High", summary.by_severity.High || 0],
+        ["Total findings", summary.total_findings || 0],
+      ].forEach(function (pair) {
+        var div = document.createElement("div");
+        div.className = "kpi";
+        div.innerHTML = '<div class="lbl"></div><div class="val"></div>';
+        div.querySelector(".lbl").textContent = pair[0];
+        div.querySelector(".val").textContent = pair[1];
+        kpis.appendChild(div);
+      });
+
+      var modulesEl = document.getElementById("summaryModules");
+      var modIds = Object.keys(s.modules_state || {});
+      if (!modIds.length) {
+        modulesEl.innerHTML = '<div class="card-empty" style="padding:16px 0;">No module reached the testing phase.</div>';
+      } else {
+        modIds.forEach(function (modId) {
+          var st = s.modules_state[modId];
+          var row = document.createElement("div");
+          row.className = "mod-row";
+          row.innerHTML = '<span class="mod-state ' + (st.status === "complete" ? "done" : st.status) + '"></span>' +
+            '<span class="mod-name"></span><span class="mod-counts"></span>';
+          row.querySelector(".mod-name").textContent = moduleLabel(modId);
+          row.querySelector(".mod-counts").innerHTML = st.status === "complete"
+            ? formatCountsBadges(st.counts, st.total)
+            : '<span class="status-text">' + st.status + "</span>";
+          modulesEl.appendChild(row);
+        });
+      }
+
+      var findingsEl = document.getElementById("summaryFindings");
+      var findings = (f.findings || []).slice().sort(function (a, b) {
+        return SEV_ORDER.indexOf(a.severity) - SEV_ORDER.indexOf(b.severity);
+      }).slice(0, 8);
+      if (!findings.length) {
+        findingsEl.innerHTML = '<div class="card-empty" style="padding:16px 0;">No findings.</div>';
+      } else {
+        findings.forEach(function (finding) {
+          var row = document.createElement("div");
+          row.className = "summary-finding-row " + finding.severity;
+          var owasp = owaspCategoryFor(finding);
+          row.innerHTML = '<div class="head"><span class="sev"></span><span class="name"></span><span class="owasp-badge" title=""></span></div><div class="finding-endpoint"></div>';
+          var sevEl = row.querySelector(".sev");
+          sevEl.textContent = finding.severity; sevEl.className = "sev " + finding.severity;
+          row.querySelector(".name").textContent = finding.vuln_type || "Unnamed finding";
+          var owaspEl = row.querySelector(".owasp-badge");
+          owaspEl.textContent = owaspCode(owasp);
+          owaspEl.title = owasp;
+          row.querySelector(".finding-endpoint").textContent = finding.description ? finding.description.slice(0, 100) : "";
+          findingsEl.appendChild(row);
+        });
+        if ((f.findings || []).length > 8) {
+          var more = document.createElement("div");
+          more.style.cssText = "font-size:11.5px;color:var(--text-faint);padding-top:6px;";
+          more.textContent = "+ " + ((f.findings || []).length - 8) + " more — view all findings below";
+          findingsEl.appendChild(more);
+        }
+      }
+
+      document.getElementById("summaryViewFindings").onclick = function () {
+        setRoute("#/findings");
+        document.getElementById("findingsScanSelect").value = scanId;
+        loadFindingsFor(scanId);
+      };
+      document.getElementById("summaryViewReport").onclick = function () {
+        window.open("/api/reports/scan_" + scanId + ".html", "_blank", "noopener");
+      };
+      document.getElementById("summaryDelete").onclick = async function () {
+        var ok = await askConfirm(
+          "Delete scan " + scanId + "?",
+          "Permanently removes its report, log, findings, and evidence screenshots. This cannot be undone.",
+          true,
+        );
+        if (!ok) return;
+        try {
+          await api("/api/scans/" + scanId, { method: "DELETE" });
+          toast("Deleted scan " + scanId);
+          closeScanSummary();
+          loadScans();
+          loadDashboardSummary();
+        } catch (err) {
+          toast("Could not delete scan: " + err.message, true);
+        }
+      };
+    } catch (e) {
+      document.getElementById("summaryTarget").textContent = "Could not load scan " + scanId;
+      document.getElementById("summaryMeta").textContent = e.message;
+    }
+  }
+
+  // ---------------------------------------------------------------- findings
+  document.getElementById("findingsScanSelect").addEventListener("change", function (e) {
+    if (e.target.value) loadFindingsFor(e.target.value);
+  });
+  async function loadFindingsFor(scanId) {
+    try {
+      var report = await api("/api/scans/" + scanId + "/findings");
+      state.findingsScanId = scanId;
+      state.findings = report.findings || [];
+      state.findingsSelected.clear();
+      document.getElementById("findingsScanSelect").value = scanId;
+      document.getElementById("findingsSub").innerHTML = 'Results for <code class="inline">' + scanId + '</code> &mdash; ' + state.findings.length + ' finding(s).';
+      renderSevCounts();
+      renderOwaspFilterOptions();
+      renderFindings();
+      document.getElementById("navFindingsCount").textContent = state.findings.length;
+    } catch (e) {
+      toast("Could not load findings for " + scanId + ": " + e.message, true);
+    }
+  }
+  function renderSevCounts() {
+    var counts = { Critical: 0, High: 0, Medium: 0, Low: 0, Info: 0 };
+    state.findings.forEach(function (f) { if (counts[f.severity] !== undefined) counts[f.severity]++; });
+    document.querySelectorAll("#sevFilter button").forEach(function (btn) {
+      var sev = btn.dataset.sev;
+      btn.querySelector(".n").textContent = sev === "all" ? state.findings.length : (counts[sev] || 0);
+    });
+    document.getElementById("kpiCritical").textContent = counts.Critical;
+    document.getElementById("kpiHigh").textContent = counts.High;
+    document.getElementById("kpiTotal").textContent = state.findings.length;
+  }
+  function renderOwaspFilterOptions() {
+    var sel = document.getElementById("owaspFilter");
+    var cats = Array.from(new Set(state.findings.map(owaspCategoryFor))).sort();
+    var prev = sel.value || state.activeOwasp;
+    sel.innerHTML = '<option value="all">All OWASP categories</option>' +
+      cats.map(function (c) { return '<option value="' + c.replace(/"/g, "&quot;") + '">' + c + "</option>"; }).join("");
+    sel.value = cats.indexOf(prev) !== -1 ? prev : "all";
+    state.activeOwasp = sel.value;
+  }
+  function findingSortValue(f, key) {
+    if (key === "severity") return SEV_ORDER.indexOf(f.severity);
+    if (key === "endpoint") return typeof f.endpoint === "object" && f.endpoint ? f.endpoint.url : (f.endpoint || "");
+    return (f[key] || "").toString().toLowerCase();
+  }
+  function renderFindings() {
+    var rows = state.findings.filter(function (f) {
+      var matchesSev = state.activeSev === "all" || f.severity === state.activeSev;
+      var matchesOwasp = state.activeOwasp === "all" || owaspCategoryFor(f) === state.activeOwasp;
+      var q = state.query.toLowerCase();
+      var hay = ((f.vuln_type || "") + " " + (f.description || "") + " " + (f.endpoint || "") + " " + (f.user_role || "")).toLowerCase();
+      return matchesSev && matchesOwasp && (!q || hay.indexOf(q) !== -1);
+    });
+    if (state.findingsSort.key) {
+      var key = state.findingsSort.key, dir = state.findingsSort.dir;
+      rows.sort(function (a, b) {
+        var av = findingSortValue(a, key), bv = findingSortValue(b, key);
+        return av < bv ? -dir : av > bv ? dir : 0;
+      });
+    }
+    document.querySelectorAll(".th-sort").forEach(function (btn) {
+      var active = btn.dataset.sort === state.findingsSort.key;
+      if (active) btn.setAttribute("data-active", state.findingsSort.dir === 1 ? "asc" : "desc");
+      else btn.removeAttribute("data-active");
+    });
+    var body = document.getElementById("findingsTable");
+    body.innerHTML = "";
+    if (!rows.length) {
+      body.innerHTML = '<tr class="empty-row"><td colspan="7">No findings match this filter.</td></tr>';
+      return;
+    }
+    rows.forEach(function (f) {
+      var tr = document.createElement("tr");
+      if (state.findingsSelected.has(f.finding_id)) tr.classList.add("row-selected");
+      var endpoint = typeof f.endpoint === "object" && f.endpoint ? (f.endpoint.method + " " + f.endpoint.url) : (f.endpoint || "—");
+      var owasp = owaspCategoryFor(f);
+      var cwe = cweFor(f);
+      tr.innerHTML =
+        '<td class="select-cell"><input type="checkbox" aria-label="Select finding" ' + (state.findingsSelected.has(f.finding_id) ? "checked" : "") + ' /></td>' +
+        '<td><div class="finding-name"></div><div class="finding-endpoint" style="margin-top:4px;"></div></td>' +
+        '<td></td>' +
+        '<td><span class="sev ' + f.severity + '">' + f.severity + '</span></td>' +
+        '<td><span class="owasp-badge" style="white-space:nowrap;" title="OWASP Top 10:2021">' + owasp + '</span></td>' +
+        '<td><span class="owasp-badge" style="white-space:nowrap;" title="Common Weakness Enumeration">' + cwe + '</span></td>' +
+        '<td class="finding-endpoint"></td>';
+      tr.children[1].querySelector(".finding-name").textContent = f.vuln_type || "Unnamed finding";
+      tr.children[1].querySelector(".finding-endpoint").textContent = f.description ? f.description.slice(0, 90) + (f.description.length > 90 ? "…" : "") : "";
+      tr.children[2].textContent = f.user_role || "—";
+      tr.children[6].textContent = endpoint;
+      tr.setAttribute("data-clickable", "");
+      tr.title = "Click for full details";
+      tr.querySelector('input[type=checkbox]').addEventListener("click", function (e) {
+        e.stopPropagation();
+        if (e.target.checked) state.findingsSelected.add(f.finding_id); else state.findingsSelected.delete(f.finding_id);
+        tr.classList.toggle("row-selected", e.target.checked);
+        syncFindingsBulkBar();
+      });
+      tr.addEventListener("click", function () { setRoute("#/findings/" + state.findingsScanId + "/" + f.finding_id); });
+      body.appendChild(tr);
+    });
+    syncFindingsBulkBar();
+    var selectAll = document.getElementById("findingsSelectAll");
+    selectAll.checked = rows.length > 0 && rows.every(function (f) { return state.findingsSelected.has(f.finding_id); });
+    selectAll.indeterminate = !selectAll.checked && rows.some(function (f) { return state.findingsSelected.has(f.finding_id); });
+  }
+  function syncFindingsBulkBar() {
+    var n = state.findingsSelected.size;
+    document.getElementById("findingsBulkBar").hidden = n === 0;
+    document.getElementById("findingsBulkCount").textContent = n;
+  }
+  document.getElementById("findingsSelectAll").addEventListener("change", function (e) {
+    // Only affects the currently rendered/filtered rows, not every
+    // finding for the scan -- matches what the user can actually see.
+    document.querySelectorAll("#findingsTable tr[data-clickable] input[type=checkbox]").forEach(function (cb) {
+      cb.checked = e.target.checked;
+      cb.dispatchEvent(new Event("click", { bubbles: false }));
+    });
+  });
+  document.getElementById("findingsBulkClear").addEventListener("click", function () {
+    state.findingsSelected.clear();
+    renderFindings();
+  });
+  document.getElementById("findingsBulkExport").addEventListener("click", function () {
+    var selected = state.findings.filter(function (f) { return state.findingsSelected.has(f.finding_id); });
+    var blob = new Blob([JSON.stringify(selected, null, 2)], { type: "application/json" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = "findings_" + (state.findingsScanId || "export") + "_selected.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toast("Exported " + selected.length + " finding(s)");
+  });
+  // ---------------------------------------------------------------- finding detail modal
+  var findingDetailBackdrop = document.getElementById("findingDetailBackdrop");
+  function closeFindingDetail() { setRoute("#/findings/" + state.findingsScanId); }
+  document.getElementById("findingDetailClose").addEventListener("click", closeFindingDetail);
+  document.getElementById("findingDetailCloseBtn").addEventListener("click", closeFindingDetail);
+  findingDetailBackdrop.addEventListener("click", function (e) { if (e.target === findingDetailBackdrop) closeFindingDetail(); });
+
+  function openFindingDetail(f, scanId) {
+    findingDetailBackdrop.classList.add("open");
+    var modalEl = document.getElementById("findingDetailModal");
+    modalEl.dataset.scanId = scanId || state.findingsScanId || "";
+    var sevVar = { Critical: "--critical", High: "--high", Medium: "--medium", Low: "--low" }[f.severity] || "--accent";
+    modalEl.style.setProperty("--sev-accent", "var(" + sevVar + ")");
+
+    document.getElementById("findingDetailSevPill").textContent = (f.severity || "INFO").toUpperCase() + " SEVERITY FINDING";
+    document.getElementById("findingDetailName").textContent = f.vuln_type || "Unnamed finding";
+
+    var owasp = owaspCategoryFor(f), cwe = cweFor(f);
+    document.getElementById("findingDetailBadges").innerHTML =
+      '<span class="sev ' + f.severity + '">' + f.severity + '</span>' +
+      '<span class="owasp-badge" title="OWASP Top 10:2021">' + owasp + '</span>' +
+      '<span class="owasp-badge" title="Common Weakness Enumeration">' + cwe + '</span>';
+
+    var endpoint = typeof f.endpoint === "object" && f.endpoint ? (f.endpoint.method + " " + f.endpoint.url) : (f.endpoint || "—");
+    document.getElementById("fdEndpoint").textContent = endpoint;
+    document.getElementById("fdRole").textContent = f.user_role || "—";
+    document.getElementById("fdCvss").textContent = (f.cvss_score !== undefined && f.cvss_score !== null) ? f.cvss_score : "—";
+    document.getElementById("fdDiscovered").textContent = f.discovered_at ? new Date(f.discovered_at).toLocaleString() : "—";
+    document.getElementById("fdModule").textContent = f.module_id || "—";
+    document.getElementById("fdSource").textContent = f.scanner_source || "stof";
+
+    document.getElementById("fdDescription").textContent = f.description || "No description recorded for this finding.";
+    document.getElementById("fdRecommendation").textContent = f.recommendation || "No remediation guidance recorded for this finding.";
+
+    var hasRaw = !!(f.request_raw || f.response_raw);
+    document.getElementById("fdRawSection").style.display = hasRaw ? "" : "none";
+    document.getElementById("fdRequest").textContent = f.request_raw || "(not captured for this finding)";
+    document.getElementById("fdResponse").textContent = f.response_raw || "(not captured for this finding)";
+
+    var evidenceSection = document.getElementById("fdEvidenceSection");
+    var evidenceList = document.getElementById("fdEvidenceList");
+    var refs = f.evidence_refs || [];
+    if (refs.length) {
+      evidenceSection.style.display = "";
+      evidenceList.innerHTML = refs.map(function (ref) {
+        var isImage = /\.(png|jpe?g|gif|webp)$/i.test(ref);
+        var url = "/api/evidence/" + encodeURIComponent(ref).replace(/%2F/g, "/");
+        return isImage
+          ? '<a href="' + url + '" target="_blank" rel="noopener"><img src="' + url + '" loading="lazy" /></a>'
+          : '<a class="btn" href="' + url + '" target="_blank" rel="noopener">' + ref.split("/").pop() + "</a>";
+      }).join("");
+    } else {
+      evidenceSection.style.display = "none";
+      evidenceList.innerHTML = "";
+    }
+  }
+
+  document.querySelectorAll(".th-sort").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var key = btn.dataset.sort;
+      if (state.findingsSort.key === key) state.findingsSort.dir *= -1;
+      else state.findingsSort = { key: key, dir: 1 };
+      renderFindings();
+    });
+  });
+  document.getElementById("sevFilter").addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-sev]");
+    if (!btn) return;
+    document.querySelectorAll("#sevFilter button").forEach(function (b) { b.classList.remove("active"); });
+    btn.classList.add("active");
+    state.activeSev = btn.dataset.sev;
+    renderFindings();
+  });
+  document.getElementById("findingSearch").addEventListener("input", function (e) { state.query = e.target.value; renderFindings(); });
+  document.getElementById("owaspFilter").addEventListener("change", function (e) { state.activeOwasp = e.target.value; renderFindings(); });
+
+  // ---------------------------------------------------------------- risk posture (executive summary)
+  var SEV_ORDER = ["Critical", "High", "Medium", "Low", "Info"];
+  // Chart-specific status colors (NOT the app's --critical/--high/--medium/
+  // --low badge tokens elsewhere -- those failed the dataviz skill's CVD
+  // separation check when run as an adjacent-segment palette; these are
+  // individually contrast-validated status colors instead, always paired
+  // with a text label here (legend + hover tooltip), matching how the
+  // skill's own reference palette treats status color as a category
+  // distinct from a categorical series).
+  // Reads the same severity tokens the badges/pills elsewhere in the app
+  // use (:root's --critical/--high/--medium/--low/--text-faint), instead
+  // of a second, hand-picked color set -- the chart's colors now can
+  // never drift out of sync with the rest of the UI, in either theme.
+  function _cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+  var SEV_COLOR = {
+    Critical: _cssVar("--critical"), High: _cssVar("--high"), Medium: _cssVar("--medium"),
+    Low: _cssVar("--low"), Info: _cssVar("--text-faint"),
+  };
+  var SVG_NS = "http://www.w3.org/2000/svg";
+
+  async function loadDashboardSummary() {
+    try {
+      var d = await api("/api/dashboard/summary");
+      renderTrendLegend();
+      renderTrendChart(d.trend);
+      renderCurrentRisk(d.latest);
+      renderTopModules(d.top_modules, d.coverage);
+      document.getElementById("trendMeta").textContent = d.total_scans + " scan" + (d.total_scans === 1 ? "" : "s") + " total";
+      document.getElementById("riskPostureSub").textContent = d.latest
+        ? ("Latest scan " + d.latest.scan_id + " — " + d.latest.total + " finding(s) as of " + new Date(d.latest.generated_at).toLocaleString())
+        : "No completed scans yet — run one to start building a risk trend.";
+    } catch (e) {
+      document.getElementById("trendMeta").textContent = "unavailable";
+    }
+  }
+
+  function renderTrendLegend() {
+    var el = document.getElementById("trendLegend");
+    el.innerHTML = '<span class="item"><span class="swatch" style="background:var(--accent); opacity:.6;"></span>Total</span>' +
+      SEV_ORDER.map(function (s) {
+        return '<span class="item"><span class="swatch" style="background:' + SEV_COLOR[s] + '"></span>' + s + "</span>";
+      }).join("");
+  }
+
+  // Multi-line trend -- one line per severity, an area wash under the
+  // TOTAL line only (avoids five overlapping fills turning to mud),
+  // a shared crosshair + per-point markers, gridlines at 25/50/75/100%.
+  // Bars were the wrong form here: a stacked bar reads composition of
+  // ONE scan well, but this card's job is "is the trend going up or
+  // down" across many scans -- a line is what that job actually needs.
+  function renderTrendChart(trend) {
+    var svg = document.getElementById("trendChart");
+    var tooltip = document.getElementById("trendTooltip");
+    var wrap = svg.parentElement;
+    svg.innerHTML = "";
+    if (!trend.length) {
+      var empty = document.createElementNS(SVG_NS, "text");
+      empty.setAttribute("x", "320"); empty.setAttribute("y", "96");
+      empty.setAttribute("text-anchor", "middle"); empty.setAttribute("class", "axis-label");
+      empty.setAttribute("font-size", "12"); empty.textContent = "No completed scans yet";
+      svg.appendChild(empty);
+      var emptyHint = document.createElementNS(SVG_NS, "text");
+      emptyHint.setAttribute("x", "320"); emptyHint.setAttribute("y", "114");
+      emptyHint.setAttribute("text-anchor", "middle"); emptyHint.setAttribute("class", "axis-label");
+      emptyHint.setAttribute("font-size", "11"); emptyHint.setAttribute("opacity", "0.7");
+      emptyHint.textContent = "Run a scan to start building a trend";
+      svg.appendChild(emptyHint);
+      return;
+    }
+    var W = 640, H = 200, padL = 4, padR = 4, padBottom = 24, padTop = 14;
+    var plotH = H - padBottom - padTop;
+    var plotW = W - padL - padR;
+    var maxTotal = Math.max.apply(null, trend.map(function (t) { return t.total; }).concat([4]));
+    // Round the axis ceiling up to a clean step so gridline labels read
+    // as real numbers (5, 10, 25...) instead of an arbitrary max.
+    var step = Math.pow(10, Math.floor(Math.log10(Math.max(maxTotal, 1))));
+    if (maxTotal / step <= 2) step /= 2; else if (maxTotal / step >= 5) step *= 1;
+    var axisMax = Math.ceil(maxTotal / step) * step || 4;
+    var n = trend.length;
+    var xFor = function (i) { return n === 1 ? padL + plotW / 2 : padL + (i / (n - 1)) * plotW; };
+    var yFor = function (v) { return padTop + plotH - (v / axisMax) * plotH; };
+
+    // gridlines (4 bands) with value labels
+    for (var g = 0; g <= 4; g++) {
+      var gv = (axisMax / 4) * g;
+      var gy = yFor(gv);
+      var gline = document.createElementNS(SVG_NS, "line");
+      gline.setAttribute("class", "grid-line");
+      gline.setAttribute("x1", padL); gline.setAttribute("y1", gy);
+      gline.setAttribute("x2", W - padR); gline.setAttribute("y2", gy);
+      svg.appendChild(gline);
+      var glabel = document.createElementNS(SVG_NS, "text");
+      glabel.setAttribute("x", 2); glabel.setAttribute("y", gy - 3);
+      glabel.setAttribute("class", "axis-label"); glabel.textContent = Math.round(gv);
+      svg.appendChild(glabel);
+    }
+
+    // Area wash under the TOTAL line only -- composition is what the
+    // per-severity lines + tooltip already show; the fill just gives
+    // the headline trend visual weight without a 5-fill blend of mud.
+    var totalPts = trend.map(function (t, i) { return [xFor(i), yFor(t.total)]; });
+    var areaD = "M" + totalPts.map(function (p) { return p[0] + "," + p[1]; }).join(" L") +
+      " L" + totalPts[totalPts.length - 1][0] + "," + yFor(0) + " L" + totalPts[0][0] + "," + yFor(0) + " Z";
+    var area = document.createElementNS(SVG_NS, "path");
+    area.setAttribute("d", areaD);
+    area.setAttribute("fill", "var(--accent)");
+    area.setAttribute("opacity", "0.07");
+    svg.appendChild(area);
+    var totalLine = document.createElementNS(SVG_NS, "path");
+    totalLine.setAttribute("d", "M" + totalPts.map(function (p) { return p[0] + "," + p[1]; }).join(" L"));
+    totalLine.setAttribute("fill", "none");
+    totalLine.setAttribute("stroke", "var(--accent)");
+    totalLine.setAttribute("stroke-width", "2");
+    totalLine.setAttribute("stroke-linejoin", "round");
+    totalLine.setAttribute("stroke-linecap", "round");
+    totalLine.setAttribute("opacity", "0.35");
+    svg.appendChild(totalLine);
+
+    // One line per severity, thinner, full opacity -- the composition read.
+    SEV_ORDER.forEach(function (sev) {
+      var pts = trend.map(function (t, i) { return [xFor(i), yFor(t.by_severity[sev] || 0)]; });
+      var hasAny = trend.some(function (t) { return (t.by_severity[sev] || 0) > 0; });
+      if (!hasAny) return;
+      var line = document.createElementNS(SVG_NS, "path");
+      line.setAttribute("d", "M" + pts.map(function (p) { return p[0] + "," + p[1]; }).join(" L"));
+      line.setAttribute("fill", "none");
+      line.setAttribute("stroke", SEV_COLOR[sev]);
+      line.setAttribute("stroke-width", "2");
+      line.setAttribute("stroke-linejoin", "round");
+      line.setAttribute("stroke-linecap", "round");
+      svg.appendChild(line);
+      pts.forEach(function (p, i) {
+        var v = trend[i].by_severity[sev] || 0;
+        if (!v) return;
+        var dot = document.createElementNS(SVG_NS, "circle");
+        dot.setAttribute("cx", p[0]); dot.setAttribute("cy", p[1]); dot.setAttribute("r", "3");
+        dot.setAttribute("style", "fill:" + SEV_COLOR[sev]);
+        svg.appendChild(dot);
+      });
+    });
+
+    // Crosshair + full-height hit targets, one per scan -- hover
+    // anywhere in that scan's column shows its whole breakdown.
+    var crosshair = document.createElementNS(SVG_NS, "line");
+    crosshair.setAttribute("class", "grid-line");
+    crosshair.setAttribute("y1", padTop); crosshair.setAttribute("y2", H - padBottom);
+    crosshair.setAttribute("stroke-dasharray", "3,3");
+    crosshair.style.display = "none";
+    svg.appendChild(crosshair);
+
+    var colW = plotW / n;
+    trend.forEach(function (t, i) {
+      var x = xFor(i);
+      var hit = document.createElementNS(SVG_NS, "rect");
+      hit.setAttribute("x", padL + i * colW); hit.setAttribute("y", padTop);
+      hit.setAttribute("width", colW); hit.setAttribute("height", plotH);
+      hit.setAttribute("fill", "transparent");
+      hit.setAttribute("class", "bar-seg");
+      hit.addEventListener("mouseenter", function () {
+        showTrendTooltip(t);
+        crosshair.setAttribute("x1", x); crosshair.setAttribute("x2", x);
+        crosshair.style.display = "";
+      });
+      hit.addEventListener("mousemove", function (e) { positionTrendTooltip(e, wrap); });
+      hit.addEventListener("mouseleave", function () { tooltip.hidden = true; crosshair.style.display = "none"; });
+      svg.appendChild(hit);
+
+      if (n <= 8 || i % Math.ceil(n / 8) === 0 || i === n - 1) {
+        var label = document.createElementNS(SVG_NS, "text");
+        label.setAttribute("x", x); label.setAttribute("y", H - 6);
+        label.setAttribute("text-anchor", n === 1 ? "middle" : (i === 0 ? "start" : i === n - 1 ? "end" : "middle"));
+        label.setAttribute("class", "axis-label");
+        label.textContent = t.generated_at ? new Date(t.generated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : t.scan_id.slice(0, 6);
+        svg.appendChild(label);
+      }
+    });
+  }
+
+  function showTrendTooltip(t) {
+    var tooltip = document.getElementById("trendTooltip");
+    var lines = SEV_ORDER.filter(function (s) { return t.by_severity[s]; })
+      .map(function (s) { return s + ": <b>" + t.by_severity[s] + "</b>"; }).join("<br>");
+    tooltip.innerHTML = "<b>" + t.scan_id + "</b> — " + t.total + " total<br>" + (lines || "no findings");
+    tooltip.hidden = false;
+  }
+  function positionTrendTooltip(e, wrap) {
+    var tooltip = document.getElementById("trendTooltip");
+    var rect = wrap.getBoundingClientRect();
+    tooltip.style.left = (e.clientX - rect.left) + "px";
+    tooltip.style.top = (e.clientY - rect.top) + "px";
+  }
+
+  function renderCurrentRisk(latest) {
+    var list = document.getElementById("currentRiskList");
+    var meta = document.getElementById("currentRiskMeta");
+    list.innerHTML = "";
+    if (!latest) { meta.textContent = "—"; list.innerHTML = '<div class="card-empty">No completed scans yet — run a scan to see risk breakdown here.</div>'; return; }
+    meta.textContent = latest.scan_id;
+    var max = Math.max.apply(null, SEV_ORDER.map(function (s) { return latest.by_severity[s] || 0; }).concat([1]));
+    SEV_ORDER.forEach(function (sev) {
+      var count = latest.by_severity[sev] || 0;
+      var row = document.createElement("div");
+      row.className = "risk-row";
+      row.innerHTML =
+        '<span class="sev-name" style="color:' + SEV_COLOR[sev] + '">' + sev + "</span>" +
+        '<span class="sev-bar-track"><span class="sev-bar-fill" style="width:' + Math.round((count / max) * 100) + "%; background:" + SEV_COLOR[sev] + '"></span></span>' +
+        '<span class="sev-count">' + count + "</span>";
+      list.appendChild(row);
+    });
+  }
+
+  function renderTopModules(mods, coverage) {
+    var list = document.getElementById("topModulesList");
+    document.getElementById("coverageMeta").textContent = coverage.modules_with_findings + " / " + coverage.modules_total + " modules";
+    list.innerHTML = "";
+    if (!mods.length) { list.innerHTML = '<div class="card-empty">No findings recorded yet — run a scan to see which modules turn up the most risk.</div>'; return; }
+    var maxTotal = Math.max.apply(null, mods.map(function (m) { return m.total; }));
+    mods.forEach(function (m) {
+      var row = document.createElement("div");
+      row.className = "top-mod-row";
+      var segs = SEV_ORDER.filter(function (s) { return m[s]; })
+        .map(function (s) { return '<span style="flex:' + m[s] + '; background:' + SEV_COLOR[s] + '"></span>'; }).join("");
+      var widthPct = Math.max((m.total / maxTotal) * 100, 8);
+      var owaspCat = OWASP_MODULE_DEFAULT[m.module];
+      row.innerHTML =
+        '<span class="name">' + (owaspCat ? '<span class="owasp-badge" title="' + owaspCat + '" style="margin-right:6px;">' + owaspCode(owaspCat) + "</span>" : "") + '<span class="name-text"></span></span>' +
+        '<span class="top-mod-bar" style="width:' + widthPct + '%">' + segs + "</span>" +
+        '<span class="count">' + m.total + "</span>";
+      var nameTextEl = row.querySelector(".name-text");
+      nameTextEl.textContent = moduleLabel(m.module);
+      row.querySelector(".name").title = moduleLabel(m.module);
+      list.appendChild(row);
+    });
+  }
+
+  // ---------------------------------------------------------------- reports
+  async function loadReports() {
+    try {
+      var reports = await api("/api/reports");
+      document.getElementById("navReportsCount").textContent = reports.filter(function (r) { return r.type === "HTML"; }).length;
+      var list = document.getElementById("reportsList");
+      list.innerHTML = "";
+      if (!reports.length) { list.innerHTML = '<div class="card-empty">No reports on disk yet — run a scan to generate one.</div>'; return; }
+
+      // Grouped by target, same structure as the Scans tab -- a flat
+      // list here was fine for one engagement but unworkable once
+      // several targets' reports pile up together.
+      var byTarget = {};
+      var order = [];
+      reports.forEach(function (r) {
+        var key = r.target || "unknown target";
+        if (!byTarget[key]) { byTarget[key] = []; order.push(key); }
+        byTarget[key].push(r);
+      });
+
+      order.forEach(function (target) {
+        var items = byTarget[target];
+        var group = document.createElement("div");
+        group.className = "target-group";
+        var head = document.createElement("div");
+        head.className = "target-group-head";
+        head.innerHTML = '<span class="target"></span><span class="n">' + items.length + " report" + (items.length === 1 ? "" : "s") + "</span>";
+        head.querySelector(".target").textContent = target;
+        group.appendChild(head);
+
+        items.forEach(function (r) {
+          var el = document.createElement("details");
+          el.className = "report-item";
+          var kb = (r.size_bytes / 1024).toFixed(0) + " KB";
+          var when = r.modified_at ? new Date(r.modified_at).toLocaleString() : "—";
+          var label = r.scan_name ? (r.scan_name + " — " + r.filename) : r.filename;
+          el.innerHTML =
+            '<summary><span class="ficon">' + r.type + '</span><div class="rmeta"><div class="rn"></div><div class="rd"></div></div><span class="chev">›</span></summary>' +
+            '<div class="rbody"><span>Generated by <code class="inline">reporting/reporter.py</code>.</span></div>';
+          el.querySelector(".rn").textContent = label;
+          el.querySelector(".rd").textContent = when + " · " + kb;
+          var a = document.createElement("a");
+          a.className = "btn"; a.textContent = "Open " + r.type;
+          a.href = "/api/reports/" + r.filename; a.target = "_blank"; a.rel = "noopener";
+          el.querySelector(".rbody").appendChild(a);
+          group.appendChild(el);
+        });
+        list.appendChild(group);
+      });
+    } catch (e) {
+      toast("Could not load reports: " + e.message, true);
+    }
+  }
+
+  // ---------------------------------------------------------------- workflows / recording
+  async function loadWorkflows() {
+    try {
+      var workflows = await api("/api/workflows");
+      document.getElementById("navWorkflowsCount").textContent = workflows.length;
+      var list = document.getElementById("workflowsList");
+      list.innerHTML = "";
+      if (!workflows.length) { list.innerHTML = '<div class="card-empty">No workflows recorded yet — download the recorder script below to capture one.</div>'; return; }
+      workflows.forEach(function (w) {
+        var el = document.createElement("details");
+        el.className = "report-item";
+        var when = w.recorded_at ? new Date(w.recorded_at).toLocaleString() : "—";
+        el.innerHTML =
+          '<summary><span class="ficon">WF</span><div class="rmeta"><div class="rn"></div><div class="rd"></div></div><span class="chev">›</span></summary>' +
+          '<div class="rbody"><span></span></div>';
+        el.querySelector(".rn").textContent = w.name;
+        el.querySelector(".rd").textContent = when + " · " + w.action_count + " action(s)";
+        el.querySelector(".rbody span").textContent = "Target: " + w.target_url + " — select it under \"Recorded workflows to replay\" when starting a new scan.";
+        var delBtn = document.createElement("button");
+        delBtn.className = "btn"; delBtn.textContent = "Delete";
+        delBtn.style.borderColor = "var(--critical)"; delBtn.style.color = "var(--critical)"; delBtn.style.marginTop = "10px";
+        delBtn.addEventListener("click", async function (e) {
+          e.preventDefault();
+          var ok = await askConfirm('Delete workflow "' + w.name + '"?', "This permanently removes the recorded workflow file. This cannot be undone.", true);
+          if (!ok) return;
+          try {
+            await api("/api/workflows/" + w.workflow_id, { method: "DELETE" });
+            toast("Deleted " + w.name);
+            loadWorkflows();
+          } catch (err) {
+            toast("Could not delete workflow: " + err.message, true);
+          }
+        });
+        el.querySelector(".rbody").appendChild(delBtn);
+        list.appendChild(el);
+      });
+    } catch (e) {
+      toast("Could not load workflows: " + e.message, true);
+    }
+  }
+
+  document.getElementById("downloadRecorderBtn").addEventListener("click", function () {
+    window.location.href = API + "/api/recordings/standalone-script";
+  });
+
+  var uploadWorkflowInput = document.getElementById("uploadWorkflowInput");
+  document.getElementById("uploadWorkflowBtn").addEventListener("click", function () {
+    uploadWorkflowInput.value = "";
+    uploadWorkflowInput.click();
+  });
+  uploadWorkflowInput.addEventListener("change", async function () {
+    var file = uploadWorkflowInput.files[0];
+    if (!file) return;
+    var form = new FormData();
+    form.append("file", file, file.name);
+    try {
+      var result = await api("/api/workflows/upload", { method: "POST", headers: {}, body: form });
+      toast('Workflow "' + result.name + '" uploaded (' + result.action_count + ' action(s))');
+      loadWorkflows();
+    } catch (err) {
+      toast("Could not upload workflow: " + err.message, true);
+    }
+  });
+
+  // ---------------------------------------------------------------- boot
+  async function boot() {
+    // allSettled, not all -- every loader above already catches its own
+    // errors and toasts them, but this is the last line of defense: one
+    // unexpected throw here must never stop connectGlobalStream() (and
+    // the reconnect loop / recording check / 30s poll after it) from
+    // starting. Confirmed live: an unhandled rejection from a boot
+    // loader used to leave the health indicator stuck on "checking…"
+    // forever with no live updates and no error shown.
+    // loadModules() must resolve before loadScans() -- the latter attaches
+    // the Dashboard to a scan and replays its history through moduleLabel(),
+    // which silently falls back to raw module ids (e.g. "auth_tests"
+    // instead of "Authentication") when state.modules is still empty.
+    await loadModules().catch(function () {});
+    await Promise.allSettled([loadHealth(), loadConfig(), loadTesting(), loadScans(), loadReports(), loadWorkflows()]);
+    loadDashboardSummary();
+    connectGlobalStream();
+    // Router init: everything it can act on (scan list, findings) is
+    // loaded by this point, so a deep link (e.g. a bookmarked
+    // #/scans/{id} or #/findings/{scanId}/{findingId}) resolves
+    // correctly on a cold load, not just on in-app navigation.
+    if (!location.hash) location.hash = "#/dashboard"; else await handleRouteChange();
+    // renderDashboardScanSelect() (called from loadScans()) already
+    // attached to the most recent scan by default -- no special-casing
+    // for "a scan happens to be running" needed here anymore.
+    // Defensive backstop only -- the global socket is the primary
+    // live-update path. A slow poll here just guards against a missed
+    // push during a reconnect window, same pattern production
+    // push-based dashboards use.
+    setInterval(function () { loadScans(); loadReports(); }, 30000);
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

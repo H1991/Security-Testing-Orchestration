@@ -1,0 +1,121 @@
+{
+  "_meta": {
+    "purpose": "STOF IDOR/BOLA Vulnerability Knowledge Base -- generalized attack intelligence extracted from real, disclosed bug bounty reports, for building a deterministic IDOR/BOLA testing engine. Not a payload list: a taxonomy of HOW real IDORs occur, WHERE they occur, and WHAT evidence confirms them.",
+    "primary_source": "Broken Object Level Authorization in the Wild: An Empirical Taxonomy from 100+ Bug Bounty Disclosures (arXiv:2605.25865) -- a systematic review of 200 IDOR/Improper-Access-Control-tagged HackerOne reports, 84 confirmed in-scope after exclusion of mislabeled reports (XSS/SSRF/takeover, pure auth bypass with no object reference, business logic on the attacker's own resources).",
+    "supporting_examples": [
+      "HackerOne #3382343 (Nextcloud) -- BOLA in Out-of-Office API",
+      "HackerOne #3154983 (Mozilla) -- Account Deletion via Session, unbound email field",
+      "HackerOne #3219944 (SingleStore) -- projectID substitution in scheduled-job endpoint",
+      "HackerOne #2623715 (DoD/Salesforce Aura API) -- chained ContentDocument ID leak + download",
+      "HackerOne #2633771 -- GraphQL Global ID decode/increment/re-encode",
+      "Shopify #2855610 -- workflow-context BOLA on deactivated staff session",
+      "Cosmos SDK #2976481 -- object rebinding via msg.Sender field"
+    ],
+    "generated_for": "STOF stof/modules/idor_tests.py + bfla_tests.py + role_tests.py + mass_assignment_tests.py + graphql_tests.py",
+    "key_finding_for_detection_design": "42.0% of platform-tagged 'IDOR' reports were NOT actually BOLA on review -- tag-based signal alone overstates the class. A deterministic engine must confirm via response EVIDENCE (below), never via status code or tag alone. 85.7% of confirmed cases were horizontal (peer-to-peer); 11.9% vertical (user-to-admin) but disproportionately high severity."
+  },
+  "families": [
+    {
+      "id": "direct_object_reference",
+      "name": "Direct Object Reference BOLA",
+      "real_world_share": "36.9% (95% CI 27.4-47.6%)",
+      "generalized_transformation": "Substitute the object identifier in an already-known or trivially-predictable request with an identifier belonging to another user, without any prior information-gathering step. Applies to any identifier shape: sequential integer, UUID, hash, encoded/opaque ID, username, or email used as a lookup key.",
+      "identifier_format_breakdown": {
+        "sequential_integer": "60.8% of format-determined cases -- increment/decrement the numeric ID",
+        "non_sequential": "39.2% of format-determined cases -- UUID/hash/encoded ID/username/email, generally requires the id to be OBSERVED (leaked) rather than guessed"
+      },
+      "abstracted_endpoint_pattern": "GET /resource/{id}  or  GET /api/v{n}/{resource}/{id}[/sub-resource]",
+      "real_example": "Nextcloud: GET /ocs/v2.php/apps/dav/api/v1/outOfOffice/{userId} -- substituting another user's username in the path returned their Out-of-Office record.",
+      "evidence_signal": "The response body itself must contain data attributable to a DIFFERENT identity than the requesting session -- not just a 200 status. Concretely: a PII-shaped field (email, full name, phone, address) that differs from the requester's own known values, or content that is byte-for-byte distinct across two or more candidate IDs where an unauthorized app would return identical/empty/error content.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": ["TC-053.1 path-parameter substitution", "TC-053.2 query-parameter substitution", "TC-053.5 method-override read", "TC-053.6 object-id predictability analysis (analytical, no new requests -- new)"],
+        "gap": "candidate-id generation is a small static list; does not systematically harvest non-sequential (UUID/hash/encoded) identifiers observed elsewhere in the same scan the way real-world exploitation does (39.2% of cases). TC-053.6 partially offsets this by at least flagging WHEN a target's id scheme is the trivially-enumerable sequential-integer shape (60.8% of format-determined cases in this family) as a contributing risk factor, purely from ids already discovered elsewhere in the scan -- it classifies id shape only, it does not itself confirm unauthorized access. Live validation pending."
+      }
+    },
+    {
+      "id": "action_level_object",
+      "name": "Action-Level Object BOLA",
+      "real_world_share": "41.7% raw / 32.4% program-weighted (largest or co-largest family)",
+      "generalized_transformation": "Perform an unauthorized STATE-CHANGING operation (delete, modify, approve, transfer, trigger) against an object identified as belonging to another user, using a request shape (verb + endpoint) that only checks session validity, not per-object ownership.",
+      "action_type_breakdown": {"read": "52.4%", "state_changing_combined": "46.4% (modify + delete + trigger)", "delete_specific": "15.5%"},
+      "abstracted_endpoint_pattern": "POST|PATCH|PUT|DELETE /resource/{id}[/action]  or  POST /resource/destroy with an identifying field (e.g. email) in the body instead of the path",
+      "real_example": "Mozilla: POST /v1/account/destroy -- the endpoint accepted the VICTIM's email in the request body while authenticated as the ATTACKER's own session; the server deleted the account named in the body instead of the session's own account.",
+      "evidence_signal": "The operation must be CONFIRMED to have actually taken effect on the target object -- re-fetch the object afterward and show its state changed (deleted/modified/absent), or observe an unambiguous success signal tied to the specific target (not a generic 200/204 that could also mean 'no-op'). A bare successful status code on a write is NOT sufficient evidence by itself.",
+      "stof_coverage": {
+        "status": "covered with confirmed read-back evidence (closed the gap this family flagged as STOF's weakest confirmation)",
+        "techniques": ["TC-054.2 PUT object-id substitution (marker read-back confirmed)", "TC-054.3 DELETE object-id substitution (absence read-back confirmed)", "TC-054.5 PATCH object-id substitution (marker read-back confirmed, new)", "TC-055.2 privileged state-changing operation (currently SKIPPED by default gate)"],
+        "gap": "`_technique_bola_write_methods`/`_check_bola_write_candidate` now re-verify every write-success candidate before reporting a finding: DELETE is confirmed only if a follow-up GET shows the object genuinely gone (404 or DENIED per classify_response()); PUT/PATCH write a small unique marker and are confirmed only if a follow-up GET reflects it back. A write that returns 200/204 but doesn't actually change the target object now correctly reports PASS instead of a false FAIL. PATCH was also added to the invoked methods (previously only PUT/DELETE were wired). Remaining gap: still bounded to the 1-object-per-candidate probe shape; doesn't chase multi-step object lifecycles."
+      }
+    },
+    {
+      "id": "tenant_isolation",
+      "name": "Tenant Isolation BOLA",
+      "real_world_share": "8.3% (95% CI 3.8-16.5%)",
+      "generalized_transformation": "Substitute an organization/tenant/workspace identifier (distinct from a user identifier) with one belonging to a different organizational entity, in a request that validates session legitimacy but not organizational membership.",
+      "abstracted_endpoint_pattern": "Any endpoint whose body or query includes an `organization_id` / `company_id` / `tenant_id` / `workspace_id` -shaped field, most common in SaaS (57% of this family's cases) and social/consumer platforms.",
+      "real_example": "HackerOne: POST /bugs.json with an arbitrary `organization_id` in the body returned private bug reports belonging to an organization the attacker was never a member of.",
+      "evidence_signal": "Response contains records/resources scoped to the substituted organization -- e.g. a list endpoint returns entries whose owning-org field matches the SUBSTITUTED id, not the attacker's own org membership.",
+      "stof_coverage": {
+        "status": "covered (new)",
+        "techniques": ["TC-131.1 tenant/organization-scope parameter substitution (GET always runs; POST body substitution gated behind allow_state_changing_probes)"],
+        "gap": "New `_looks_like_tenant_scope_param` in `_idor_shared.py` distinguishes a tenant/org-scoping parameter (org_id/organization_id/tenant_id/tenantid/company_id/workspace_id) from a per-object identifier, kept as a separate function from `_looks_like_object_reference` per this family's own no-conflation rule. `tenant_tests.py` substitutes `IdorTestConfig.candidate_ids` into it and applies the same content-differential confirmation (`_probe_candidates`/`_content_fingerprint`) idor_tests.py already uses for object-id substitution. Remaining gap: this is single-session content-differential evidence only (no second-identity cross-tenant confirmation step yet, unlike TC-053's IDOR technique), and single-tenant targets (no org/tenant concept) will correctly SKIP/PASS rather than produce a false finding."
+      }
+    },
+    {
+      "id": "workflow_context",
+      "name": "Workflow-Context BOLA",
+      "real_world_share": "6.0% raw / 10.6% program-weighted (underrepresented in raw counts)",
+      "generalized_transformation": "The SAME request that would correctly fail on a normal-state object succeeds because the target object (or the acting session) is in a specific lifecycle state -- draft, archived, deactivated, deleted, or a user/staff account that has since been revoked but whose session token was never invalidated.",
+      "abstracted_endpoint_pattern": "Any endpoint whose authorization check validates session presence/validity but not the CURRENT state of the object or the acting principal at request time.",
+      "real_example": "Shopify: a staff member's access was administratively revoked when they left the company, but the customer-records endpoint only checked that the session token was still cryptographically valid, not whether that staff member's access had since been revoked -- state was checked at grant time, not access time.",
+      "evidence_signal": "The identical request/payload is denied against an object/session in its normal state but succeeds specifically when the object or actor is in an altered lifecycle state -- the state transition itself is the enabling condition, provable by a paired before/after or active/inactive comparison.",
+      "stof_coverage": {
+        "status": "not covered",
+        "techniques": [],
+        "gap": "Adjacent to this session's own 'session remains valid after logout' finding (TC-129.2, already confirmed live) but not generalized into a distinct object-lifecycle-state technique family."
+      }
+    },
+    {
+      "id": "chained_disclosure",
+      "name": "Chained Disclosure BOLA",
+      "real_world_share": "4.8% as a distinct family; cross-endpoint identifier leakage as a mechanism appears in 7.1% of all cases",
+      "generalized_transformation": "A two-step attack: (1) harvest an object identifier belonging to another user from a DIFFERENT endpoint's response (a list, search, or unrelated feature that incidentally includes it), then (2) present that identifier at a second endpoint that accepts it without an ownership check.",
+      "abstracted_endpoint_pattern": "Endpoint A (often a listing/search/activity-feed endpoint) leaks `{id}` values in its response; Endpoint B `GET /resource/{id}` or `/download/{id}` accepts any syntactically valid id.",
+      "real_example": "DoD/Salesforce Aura API: one internal endpoint returned ~2,000 ContentDocument IDs belonging to other users as an incidental side effect of its normal response; a separate, unrelated download endpoint accepted each of those IDs with no per-user ownership check.",
+      "evidence_signal": "An identifier value observed in one response (never supplied by the tester, never in the configured candidate list) is subsequently accepted and returns real content at a second endpoint.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": ["TC-053.4 ID enumeration via IDs leaked in other responses"],
+        "gap": "Already STOF's most directly real-world-aligned technique for this family -- good precedent, no changes needed."
+      }
+    },
+    {
+      "id": "object_rebinding",
+      "name": "Object Rebinding BOLA",
+      "real_world_share": "2.4% (95% CI 0.1-8.8%, smallest family, concentrated in fintech/government and complex message-passing architectures)",
+      "generalized_transformation": "Modify a client-supplied OWNERSHIP field in the request body (not which object to fetch, but WHO the object belongs to/acts on behalf of) -- `owner_id`, `account_id`, `user_id`, or an equivalent 'acting-as' field -- causing the server to trust the client-supplied value instead of deriving ownership from the authenticated session.",
+      "abstracted_endpoint_pattern": "POST|PATCH /resource with an ownership/actor field embedded in the JSON/form body, distinct from any role/permission field (that's mass-assignment privilege escalation, a related but separate pattern already covered).",
+      "real_example": "Cosmos SDK: a blockchain message-execution endpoint validated the `msg.Sender` field carried IN the request payload rather than the authenticated caller's own address, allowing funds to be moved from an arbitrary victim address supplied in the body.",
+      "evidence_signal": "The object's resulting OWNER (not its content) changes to match the attacker-supplied value -- distinguish from mass assignment by checking whose account/object the action was actually applied to, not just whether a privileged field was accepted.",
+      "stof_coverage": {
+        "status": "adjacent coverage only",
+        "techniques": ["TC-052.4 mass assignment (role/isAdmin injection) -- a related but distinct pattern"],
+        "gap": "mass_assignment_tests.py currently tests privilege-field injection (role/isAdmin), not ownership-field rebinding (owner_id/account_id redirecting an action to someone else's object). No technique confirms the post-action OWNER of the affected object."
+      }
+    }
+  ],
+  "graphql_specific": {
+    "pattern": "GraphQL Global ID (GID) exploitation",
+    "combined_mechanism_frequency": "9.6% (GID leakage + encoded-ID manipulation combined)",
+    "generalized_transformation": "A GraphQL Global ID appears opaque (base64-encoded) but typically decodes to `TypeName:sequential_integer`. Decode an observed GID, increment/decrement the trailing integer, re-encode as base64, and query with the modified GID.",
+    "real_examples": ["HackerOne #2633771", "GitLab #2528293", "DoD/Salesforce #2968391"],
+    "evidence_signal": "The re-encoded GID returns a node of the same TypeName with different field values than the original -- same pattern as direct_object_reference but requiring a decode/increment/re-encode step first.",
+    "stof_coverage": {"status": "not covered", "techniques": [], "gap": "graphql_tests.py covers field-level and object-level bypass (2/3 techniques) but does not do GID decode/increment/re-encode -- a well-evidenced, moderately common real-world pattern."}
+  },
+  "cross_cutting_evidence_principle": {
+    "rule": "A 200/201/204 status code is NEVER sufficient evidence on its own -- this is the single most repeated lesson across all six families.",
+    "read_families_evidence": "For read-shaped families (direct_object_reference, tenant_isolation, chained_disclosure): the response BODY must contain identity-attributable data (PII-shaped field, or content distinct from a baseline/other candidate) -- field-level differencing is stronger evidence than whole-body content-hash differencing alone, since it can name exactly what leaked (e.g. 'email field changed from attacker's own to a different address') rather than just 'content differs'.",
+    "write_families_evidence": "For write-shaped families (action_level_object, object_rebinding): the write's HTTP response is not evidence by itself -- confirm by re-reading the target object afterward (or observing its owner/state) and showing it actually changed, matching what a real attacker would need to prove impact."
+  }
+}

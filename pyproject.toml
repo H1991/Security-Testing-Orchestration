@@ -1,0 +1,80 @@
+[project]
+name = "stof"
+version = "0.1.0"
+description = "STOF — Security Testing Orchestration Framework"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "pydantic>=2,<3",
+    "click>=8,<9",
+    "playwright>=1.40,<2",
+    "jinja2>=3,<4",
+    "openpyxl>=3,<4",
+    "pillow>=10,<13",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-asyncio>=0.23,<1",
+]
+ui = [
+    "fastapi>=0.110,<1",
+    "uvicorn[standard]>=0.29,<1",
+]
+
+[project.scripts]
+stof = "stof.main:cli"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["stof*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 200  # matches this codebase's established long-line style
+
+[tool.ruff.lint]
+extend-select = ["B", "S", "RUF", "I", "FURB", "SIM"]
+ignore = [
+    # Every module quotes forward references ("Endpoint", "Session", ...)
+    # under `from __future__ import annotations`, deliberately, for
+    # readability at the call site -- not a bug pyupgrade should "fix".
+    "UP037",
+    "UP035", "UP041", "UP045",
+    # `datetime.now(timezone.utc)` is this codebase's established
+    # UTC-timestamp idiom (see e.g. findings/models.py's `_utcnow()`),
+    # predating `datetime.UTC` (3.11+); not worth a project-wide churn.
+    "UP017",
+    # Broad `except Exception` is a deliberate, documented resilience
+    # pattern throughout this codebase: "a probe failure must never
+    # take down the whole module" (see e.g. evidence/collector.py's own
+    # docstring). Narrowing every catch to Playwright's specific
+    # exception types would be a much larger, separate change.
+    "BLE001",
+    # False positive: flags `modules/results.py`'s TestCaseResult
+    # status constants (PASS = "PASS", FAIL = "FAIL") as hardcoded
+    # passwords purely because of the string "PASS" -- they're test
+    # outcome labels, not credentials.
+    "S105",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Bare `assert` is pytest's own idiom for a test assertion, not the
+# "assert used for a runtime check that vanishes under -O" issue S101
+# exists to catch. S106: every test fixture's UserConfig needs *some*
+# literal password string ("pw") to construct a valid object -- it's
+# fixture data, not a real credential. C408: `defaults = dict(...);
+# defaults.update(overrides); return Cls(**defaults)` is this test
+# suite's established pattern (7 files) for an overridable-fixture
+# builder -- a dict *literal* can't be `**`-merged with `overrides`
+# the same way mid-expression, so this isn't the redundant-`dict()`
+# case the rule targets.
+"tests/**/*.py" = ["S101", "S106", "C408"]

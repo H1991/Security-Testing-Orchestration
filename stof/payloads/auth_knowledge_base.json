@@ -1,0 +1,65 @@
+{
+  "_meta": {
+    "purpose": "STOF Authentication Weakness Knowledge Base -- generalized attack intelligence from real disclosed bug bounty reports and PortSwigger's authoritative technique documentation, for stof/modules/auth_tests.py.",
+    "sources": [
+      "HackerOne #1938693, #2160178, #1195325 (DoD/Trellix) -- default admin/admin credentials on real targets",
+      "HackerOne #226659 -- password reset link hijacking via Host header poisoning",
+      "PortSwigger Web Security Academy -- Password reset poisoning (Host header), Username enumeration via account lock",
+      "HackerOne #1166054 (UPchieve) -- user enumeration through forgot-password flow",
+      "Grav CVE-2025-66307-adjacent enumeration report -- distinct HTTP 500 vs normal response for valid/invalid account on forgot-password",
+      "OWASP Web Security Testing Guide (WSTG) -- WSTG-AUTHN-09 'Testing for Weak Security Question/Answer' (authoritative methodology and cited low-entropy question examples for TC-132)",
+      "OWASP Web Security Testing Guide (WSTG) -- WSTG-AUTHN-04 'Testing for Bypassing Authentication Schema' (authoritative methodology for request-shape auth-bypass variants for TC-133)",
+      "PortSwigger Web Security Academy -- Authentication documentation, secondary support for both WSTG-grounded techniques above (no bug-bounty disclosure used as primary evidence for TC-132/TC-133, per this pass's methodology change)"
+    ],
+    "generated_for": "STOF stof/modules/auth_tests.py",
+    "key_finding": "auth_tests.py is already unusually comprehensive against this class -- default creds, weak password policy, reset-token predictability/non-invalidation/current-password-bypass, reset-endpoint enumeration, referer-leak, and host-header reset-poisoning (TC-027.6) are ALL already implemented and match real disclosed patterns closely. Both real gaps found have now been closed: (1) login-endpoint username enumeration is now TC-022.5 (`_technique_login_enumeration`), a differential test (status/body-length/timing) against the login endpoint itself; (2) TC-022.1, TC-027.5, and TC-129.3 (TC-129.1 was already fixed) now fall back to a crawler-discovered HTML login form (via `find_login_endpoint()`, promoted from `sqli_tests.py` to `stof/modules/base.py`) when no JSON-API login/reset endpoint is configured, instead of silently SKIPPING. Verified live against this project's own real target (demo.testfire.net, a classic JSP form login with neither endpoint configured): all four techniques now RUN, and TC-129.3 surfaced a genuine, previously-invisible finding (no rate limiting on /doLogin)."
+  },
+  "patterns": [
+    {
+      "id": "login_username_enumeration",
+      "generalized_transformation": "Submit a known-valid username with a wrong password, and a definitely-invalid username with any password, against the LOGIN endpoint itself (not the password-reset endpoint, which is a separate, already-covered surface). Compare status code, response body/length, and response timing.",
+      "abstracted_endpoint_pattern": "POST to the discovered login form/endpoint (HTML or JSON) -- the single most common real-world location for this class per bug-bounty methodology guides, more common than reset-flow enumeration.",
+      "evidence_signal": "A response differential (status, body content/length, or a repeatable timing delta) between the valid-username/wrong-password case and the invalid-username case -- e.g. 'invalid password' vs 'no such user', or an account-lockout message that only appears for real usernames after repeated attempts.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-022.5"], "gap": "none -- TC-022.5 (_technique_login_enumeration, added this pass) applies the same differential test (status/body-length/timing) directly to the LOGIN endpoint itself, via login_json_endpoint or (new) a discovered HTML login form fallback. Verified live against demo.testfire.net: runs (doesn't SKIP) and correctly PASSes -- both a known-valid-username/wrong-password attempt and a nonexistent-username attempt return an indistinguishable HTTP 302 from the real JSP login form."}
+    },
+    {
+      "id": "default_credentials",
+      "generalized_transformation": "Try a small, curated list of vendor/common default credential pairs against the login endpoint or a fingerprinted admin panel.",
+      "real_example": "Multiple real DoD/Trellix disclosures of literal admin/admin or vendor-default credentials still active on production systems.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-022.1", "TC-022.2", "TC-022.3"], "gap": "shares the JSON-login-only limitation below."}
+    },
+    {
+      "id": "password_reset_host_header_poisoning",
+      "generalized_transformation": "Submit a password-reset request with a modified Host (or X-Forwarded-Host) header; if the server builds the reset link's domain from that header instead of a trusted server-side value, the generated link points at an attacker-controlled domain.",
+      "evidence_signal": "The reset link/token embedded in the server's own response (or a captured outbound request) reflects the attacker-supplied Host value.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-027.6"], "gap": "none significant -- already matches the real-world pattern closely, including the X-Forwarded-Host variant per this codebase's own docstring."}
+    },
+    {
+      "id": "json_login_only_limitation",
+      "generalized_transformation": "N/A -- this is an internal STOF detection-coverage gap, not an attacker technique.",
+      "stof_coverage": {"status": "closed", "techniques": ["TC-022.1", "TC-027.5", "TC-129.3"], "gap": "none -- `find_login_endpoint()` was promoted from `sqli_tests.py` to `stof/modules/base.py` (alongside `_is_transient_error`) as a pure code motion, and all three techniques now fall back to the discovered HTML login form (submitting via the form's own real field names) when their JSON endpoint config is absent, instead of SKIPping. Verified live against demo.testfire.net's real JSP form login (which has neither `login_json_endpoint` nor `reset_password_request_url` configured): all three now RUN instead of SKIPping. TC-022.1 and TC-027.5 correctly PASS (no default creds accepted; reset/login differential indistinguishable); TC-129.3 correctly FAILs (6 consecutive failed logins against the real /doLogin form produced no rate-limiting/lockout signal) -- a genuine, previously-invisible finding this fallback surfaced."}
+    },
+    {
+      "id": "weak_security_question_answer",
+      "generalized_transformation": "WSTG-AUTHN-09's own methodology: first determine whether the target's account-recovery/verification flow uses security questions AT ALL (most modern targets don't -- email/SMS OTP has largely replaced the pattern); only if one is found, classify the QUESTION's own text against WSTG's cited canonical low-entropy examples (mother's maiden name, first pet, favorite color, first school, city of birth, ...). Never attempts to guess or submit an answer -- the finding is about the answer SPACE being small/guessable/publicly-researchable, not about any specific answer being confirmed.",
+      "abstracted_endpoint_pattern": "A discovered form/page whose input field names/ids match a security-question-shaped hint list (securityQuestion, secretAnswer, recoveryQuestion, kbaQuestion, ...) -- typically an account-recovery or profile-verification page.",
+      "evidence_signal": "The discovered page's visible question text (fetched via a plain anonymous GET) contains a substring match against a small curated list of WSTG-cited low-entropy question patterns.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": ["TC-132.1"],
+        "gap": "none -- built discovery-first per this pass's explicit scope: SKIP is the correct, expected, honest outcome whenever no security-question-shaped field is discovered at all (verified live: demo.testfire.net has no such flow, and TC-132.1 SKIPped cleanly rather than fabricating a finding). FAIL only fires on an actual matched low-entropy question pattern found in a real discovered flow."
+      }
+    },
+    {
+      "id": "authentication_schema_bypass",
+      "generalized_transformation": "WSTG-AUTHN-04's own methodology: for an auth-gated URL that correctly denies a plain anonymous request, try a small bounded set of request-SHAPE variants of that SAME url (case-variation in the path, a trailing-slash/dot variant, a `;jsessionid=` path-parameter suffix some legacy routers strip pre-auth-check, a URL-encoded null byte) with NO session/credential at all. A variant that returns real authenticated-looking content where the unmodified baseline correctly denied it means the authentication CHECK itself -- not the identity behind it -- is bypassable by request shape alone.",
+      "abstracted_endpoint_pattern": "Any already-discovered auth-required GET endpoint whose unmodified URL, requested anonymously, correctly denies access (redirect/401/403/login-page body).",
+      "evidence_signal": "A request-shape variant of that same URL, still requested with zero session/credential, returns HTTP 200 with authenticated-looking content (dashboard/logout/welcome markers) where the unmodified baseline denied it.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": ["TC-133.1"],
+        "gap": "none -- deliberately scoped apart from `idor_tests.py`/`bfla_tests.py`'s existing forced-browsing/BFLA techniques, which test authorization (identity/role) gaps for an AUTHENTICATED-but-wrong-role caller. TC-133.1 tests the authentication CHECK itself, with no valid session at all; an endpoint already anonymously reachable at its unmodified URL is explicitly excluded from this technique's count (SKIPped from the per-endpoint check, not false-PASSed) since that's the other techniques' territory, not this one's."
+      }
+    }
+  ]
+}

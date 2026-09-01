@@ -1,0 +1,66 @@
+{
+  "target": {
+    "base_url": "https://demo.testfire.net",
+    "login_url": "https://demo.testfire.net/login.jsp",
+    "crawler_exclude_patterns": [
+      "content=inside_",
+      "survey_questions",
+      "privacypolicy"
+    ],
+    "idor_candidate_ids": [
+      "800000",
+      "800001",
+      "800002",
+      "800003",
+      "800004",
+      "800005",
+      "800006",
+      "800007",
+      "800008",
+      "800009",
+      "800010"
+    ],
+    "username_selector": "#uid",
+    "password_selector": "#passw",
+    "submit_selector": "input[name='btnSubmit']"
+  },
+  "browser": {
+    "headless": true,
+    "slowmo_ms": 0,
+    "proxy": null
+  },
+  "modules": {
+    "crawler": true,
+    "jwt_tests": true,
+    "auth_tests": true,
+    "idor_tests": true,
+    "configuration_tests": true,
+    "disclosure_tests": true,
+    "graphql_tests": true,
+    "deserialization_tests": true,
+    "sqli_tests": true,
+    "ssrf_tests": true,
+    "xss_tests": true,
+    "oauth_tests": false,
+    "csrf_tests": true,
+    "injection_variants_tests": true,
+    "cache_tests": true,
+    "business_logic_tests": true
+  },
+  "output": {
+    "reports_dir": "data/reports",
+    "evidence_dir": "data/evidence",
+    "generate_walkthrough": true
+  },
+  "burp": {
+    "enabled": false,
+    "api_url": "http://127.0.0.1:1337",
+    "api_key": "",
+    "scan_timeout_s": 1800,
+    "poll_interval_s": 5,
+    "collaborator_url": "abc123.oastify.com"
+  },
+  "testing": {
+    "allow_state_changing_probes": false
+  }
+}

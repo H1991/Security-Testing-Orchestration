@@ -1,0 +1,10 @@
+DejaVuSansMono.ttf / DejaVuSansMono-Bold.ttf
+
+DejaVu fonts are a derivative of the Bitstream Vera fonts and are
+released under a permissive, GPL-compatible license that explicitly
+allows embedding and redistribution. Full license text:
+https://dejavu-fonts.github.io/License.html
+
+Bundled here so evidence image rendering (`request_response_image.py`)
+doesn't depend on a specific font being installed on the host running
+STOF.

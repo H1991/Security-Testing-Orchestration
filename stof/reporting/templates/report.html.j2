@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>STOF Security Report{% if scan_metadata.target %} — {{ scan_metadata.target }}{% endif %}</title>
+<style>
+  :root {
+    --critical: #c00000; --high: #e97132; --medium: #ffc000; --low: #70ad47; --info: #8ea9db;
+    --bg: #f4f6f8; --card: #ffffff; --ink: #1a2433; --muted: #5b6b7c; --border: #e1e6eb;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, Arial, sans-serif; background: var(--bg); color: var(--ink); }
+  header { background: #1f4e78; color: #fff; padding: 28px 32px; }
+  header h1 { margin: 0 0 6px; font-size: 22px; }
+  header .meta { color: #cfe0ee; font-size: 13px; }
+  main { max-width: 980px; margin: 0 auto; padding: 24px 20px 60px; }
+  .summary { display: flex; gap: 14px; flex-wrap: wrap; margin: 20px 0 30px; }
+  .summary .card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px 20px; min-width: 110px; text-align: center; }
+  .summary .card .n { font-size: 26px; font-weight: 700; }
+  .summary .card .label { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .card.total .n { color: var(--ink); }
+  .card.critical .n { color: var(--critical); }
+  .card.high .n { color: var(--high); }
+  .card.medium .n { color: var(--medium); }
+  .card.low .n { color: var(--low); }
+  .card.info .n { color: var(--info); }
+  .finding { background: var(--card); border: 1px solid var(--border); border-left: 6px solid var(--border); border-radius: 8px; padding: 20px 22px; margin-bottom: 18px; }
+  .finding.sev-critical { border-left-color: var(--critical); }
+  .finding.sev-high { border-left-color: var(--high); }
+  .finding.sev-medium { border-left-color: var(--medium); }
+  .finding.sev-low { border-left-color: var(--low); }
+  .finding.sev-info { border-left-color: var(--info); }
+  .finding-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .finding-head h2 { font-size: 17px; margin: 0; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; color: #fff; text-transform: uppercase; letter-spacing: .03em; }
+  .badge.sev-critical { background: var(--critical); }
+  .badge.sev-high { background: var(--high); }
+  .badge.sev-medium { background: var(--medium); color: #4d3800; }
+  .badge.sev-low { background: var(--low); }
+  .badge.sev-info { background: var(--info); }
+  .finding dl { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; margin: 14px 0; font-size: 13.5px; }
+  .finding dt { color: var(--muted); }
+  .finding dd { margin: 0; word-break: break-word; }
+  .finding pre { background: #0f1720; color: #d8e2ec; padding: 10px 12px; border-radius: 6px; font-size: 12px; overflow-x: auto; margin: 4px 0; }
+  .evidence-gallery { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 12px; }
+  .finding .screenshot { margin: 0; flex: 1 1 320px; max-width: 480px; }
+  .finding .screenshot img { max-width: 100%; border: 1px solid var(--border); border-radius: 6px; display: block; }
+  .finding .screenshot figcaption { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: 6px; }
+  .empty { text-align: center; color: var(--muted); padding: 60px 0; }
+  footer { text-align: center; color: var(--muted); font-size: 12px; padding: 20px; }
+  .section-title { font-size: 15px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 34px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+  .module-notes { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+  .module-note { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 12px 16px; font-size: 13.5px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .module-note .name { font-weight: 700; }
+  .module-note .count { color: var(--muted); font-size: 12px; }
+  .module-note .note { color: var(--muted); font-size: 12.5px; width: 100%; }
+  .recon-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .recon-card { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 16px 18px; }
+  .recon-card h3 { margin: 0 0 10px; font-size: 13.5px; }
+  .recon-card .n { font-size: 22px; font-weight: 700; }
+  .recon-card ul { margin: 8px 0 0; padding-left: 18px; font-size: 12.5px; }
+  .recon-card li { margin-bottom: 4px; word-break: break-word; }
+  .tech-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .tech-tag { background: #eef2f7; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
+  .recon-empty { color: var(--muted); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>STOF Security Testing Report</h1>
+  <div class="meta">
+    {% if scan_metadata.target %}Target: {{ scan_metadata.target }} &nbsp;·&nbsp; {% endif %}
+    {% if scan_metadata.scan_id %}Scan ID: {{ scan_metadata.scan_id }} &nbsp;·&nbsp; {% endif %}
+    Generated: {{ generated_at }}
+    {% if scan_metadata.modules_run %} &nbsp;·&nbsp; Modules: {{ scan_metadata.modules_run | join(", ") }}{% endif %}
+  </div>
+  <div class="meta" style="margin-top:6px; opacity:0.85;">
+    * Severity Score is this program's own illustrative approximation of impact, not a calculated CVSS vector
+    score (no CVSS vector -- AV/AC/PR/UI/S/C/I/A -- is computed for any finding). Use severity (Critical/High/
+    Medium/Low/Info) as the authoritative rating; treat the numeric score as a rough ranking aid only.
+  </div>
+</header>
+<main>
+  <div class="summary">
+    <div class="card total"><div class="n">{{ summary.total_findings }}</div><div class="label">Total</div></div>
+    <div class="card critical"><div class="n">{{ summary.by_severity.Critical }}</div><div class="label">Critical</div></div>
+    <div class="card high"><div class="n">{{ summary.by_severity.High }}</div><div class="label">High</div></div>
+    <div class="card medium"><div class="n">{{ summary.by_severity.Medium }}</div><div class="label">Medium</div></div>
+    <div class="card low"><div class="n">{{ summary.by_severity.Low }}</div><div class="label">Low</div></div>
+    <div class="card info"><div class="n">{{ summary.by_severity.Info }}</div><div class="label">Info</div></div>
+  </div>
+
+  {% if summary.by_source %}
+  <h2 class="section-title">Findings by Scanner</h2>
+  <div class="summary">
+    {% for source, count in summary.by_source.items() %}
+    <div class="card total"><div class="n">{{ count }}</div><div class="label">{{ source }}</div></div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <h2 class="section-title">Vulnerability Findings</h2>
+  {% if findings %}
+    {% for f in findings %}
+    <article class="finding sev-{{ f.severity | lower }}">
+      <div class="finding-head">
+        <h2>{{ f.vuln_type }}</h2>
+        <span class="badge sev-{{ f.severity | lower }}">{{ f.severity }} &middot; Severity Score {{ f.cvss_score }}*</span>
+      </div>
+      <dl>
+        <dt>Endpoint</dt><dd>{{ f.endpoint.method }} {{ f.endpoint.url }}</dd>
+        <dt>Tested as role</dt><dd>{{ f.user_role }}</dd>
+        <dt>Found by</dt><dd>{{ "Burp Suite Pro" if f.scanner_source == "burp" else "STOF" }}</dd>
+        <dt>Discovered</dt><dd>{{ f.discovered_at }}</dd>
+        <dt>Description</dt><dd>{{ f.description }}</dd>
+        <dt>Recommendation</dt><dd>{{ f.recommendation }}</dd>
+      </dl>
+      <details>
+        <summary>Request / response evidence</summary>
+        <pre>{{ f.request_raw }}</pre>
+        <pre>{{ f.response_raw }}</pre>
+      </details>
+      {% if f.evidence_images %}
+      <div class="evidence-gallery">
+        {% for img in f.evidence_images %}
+        <figure class="screenshot">
+          <img src="{{ img.data_uri }}" alt="{{ img.label }} evidence for {{ f.vuln_type }}">
+          <figcaption>{{ img.label }}</figcaption>
+        </figure>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </article>
+    {% endfor %}
+  {% else %}
+    <div class="empty">No findings were confirmed in this scan.</div>
+  {% endif %}
+
+  {% if module_notes %}
+  <h2 class="section-title">Modules Run</h2>
+  <div class="module-notes">
+    {% for m in module_notes %}
+    <div class="module-note">
+      <span class="name">{{ m.module }}</span>
+      <span class="count">{{ m.finding_count }} finding(s)</span>
+      {% if m.note %}<span class="note">{{ m.note }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if recon %}
+  <h2 class="section-title">Reconnaissance / Information Gathering</h2>
+  <div class="recon-grid">
+    <div class="recon-card">
+      <h3>Technology Stack</h3>
+      <div class="n">{{ recon.distinct_tech | length }}</div>
+      {% if recon.distinct_tech %}
+      <div class="tech-tags">
+        {% for t in recon.distinct_tech %}<span class="tech-tag">{{ t }}</span>{% endfor %}
+      </div>
+      {% else %}
+      <div class="recon-empty">No technology signatures matched on the {{ recon.pages_analyzed }} page(s) analyzed.</div>
+      {% endif %}
+    </div>
+    <div class="recon-card">
+      <h3>Pages Missing Security Headers</h3>
+      <div class="n">{{ recon.missing_headers_count }}</div>
+      {% if recon.missing_headers_sample %}
+      <ul>
+        {% for url, missing in recon.missing_headers_sample %}
+        <li>{{ url }} &mdash; missing: {{ missing | join(", ") }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    <div class="recon-card">
+      <h3>Exposed Paths / Files</h3>
+      <div class="n">{{ recon.exposed_paths | length }}</div>
+      {% if recon.exposed_paths %}
+      <ul>
+        {% for p in recon.exposed_paths %}<li>{{ p.url }} (HTTP {{ p.status_code }})</li>{% endfor %}
+      </ul>
+      {% else %}
+      <div class="recon-empty">None found among the common paths probed.</div>
+      {% endif %}
+    </div>
+    <div class="recon-card">
+      <h3>Error Message Disclosures</h3>
+      <div class="n">{{ recon.error_disclosures | length }}</div>
+      {% if recon.error_disclosures %}
+      <ul>
+        {% for e in recon.error_disclosures %}<li>{{ e.url }} &mdash; {{ e.leaked }}</li>{% endfor %}
+      </ul>
+      {% else %}
+      <div class="recon-empty">No stack traces or verbose errors observed.</div>
+      {% endif %}
+    </div>
+    <div class="recon-card">
+      <h3>Secrets in Page Source</h3>
+      <div class="n">{{ recon.secrets | length }}</div>
+      {% if recon.secrets %}
+      <ul>
+        {% for s in recon.secrets %}<li>{{ s.label }} &mdash; {{ s.match_preview }}</li>{% endfor %}
+      </ul>
+      {% else %}
+      <div class="recon-empty">No API keys, tokens, or credentials matched in rendered page source.</div>
+      {% endif %}
+    </div>
+    <div class="recon-card">
+      <h3>Endpoints with Parameters</h3>
+      <div class="n">{{ recon.parameters_count }}</div>
+      <div class="recon-empty">Discovered form/query/body parameters, fed into the IDOR module's candidate selection.</div>
+    </div>
+  </div>
+  {% endif %}
+</main>
+<footer>Generated by STOF — Security Testing Orchestration Framework</footer>
+</body>
+</html>

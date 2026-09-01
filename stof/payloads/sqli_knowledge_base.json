@@ -1,0 +1,81 @@
+{
+  "_meta": {
+    "purpose": "STOF SQL Injection Vulnerability Knowledge Base -- generalized attack intelligence extracted from real, disclosed bug bounty reports, for improving a deterministic SQLi testing engine. A taxonomy of HOW real SQLi occurs, WHERE it occurs, and WHAT evidence confirms it -- not a payload list.",
+    "sources": [
+      "HackerOne #3395221 (Revive Adserver) -- error-based + time-based SQLi in the 'keyword' parameter of admin-search.php",
+      "HackerOne #2737595 (U.S. DoD) -- blind SQLi confirmed via sqlmap boolean+time techniques against a 'filter[event]' parameter",
+      "HackerOne #2759243 -- time-based blind SQLi via WAITFOR DELAY '0:0:5'-- in a 'sortBy' parameter",
+      "HackerOne #3006666 -- error-based blind SQLi across 'sites'/'rods'/'ous' parameters",
+      "reddelexc/hackerone-reports TOPSQLI.md -- curated sample of top-paid disclosed SQLi reports",
+      "Multiple second-order SQLi writeups (Medium, PortSwigger KB, Bug Bounty Playbook) -- stored-input-reused-unsafely pattern"
+    ],
+    "generated_for": "STOF stof/modules/sqli_tests.py",
+    "key_finding_for_detection_design": "Every high-quality disclosed report confirms via a SPECIFIC signal tied to the injection, never a bare status code: a database error message/fingerprint, a measured timing delta against a baseline, or a true/false response differential. Several notable real disclosures were NOT in the request body/query at all -- 'sortBy' (an ordering parameter, easy to overlook as an injection point) and second-order cases where the injection point and the execution point are two entirely different requests."
+  },
+  "patterns": [
+    {
+      "id": "error_based",
+      "generalized_transformation": "Inject a syntax-breaking string (unescaped quote/paren) into a parameter and inspect the response for a database error message or stack trace that leaks the underlying query/engine.",
+      "abstracted_endpoint_pattern": "Any GET/POST parameter that flows into a WHERE/ORDER BY/search clause -- notably including 'sort'/'order'/'sortBy'-shaped parameters, which are real disclosed injection points but easy to deprioritize as 'just an ordering field'.",
+      "evidence_signal": "A recognizable DB-error fingerprint in the response body (MySQL/Postgres/MSSQL/Oracle driver error signature, or a stack trace naming the query).",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-127.1"], "gap": "candidate parameter set does not specifically prioritize sort/order-shaped parameter names, which real disclosures show are commonly overlooked and vulnerable."}
+    },
+    {
+      "id": "boolean_blind",
+      "generalized_transformation": "Send a true-condition payload and a false-condition payload for the same parameter; the server's response differs (content, length, or a specific rendered element) between the two even though neither triggers a visible error.",
+      "abstracted_endpoint_pattern": "Any parameter used in a WHERE clause where the application swallows DB errors but the query still structurally succeeds/fails.",
+      "evidence_signal": "A measurable content/length differential between the true and false payload responses, against an unmodified baseline that matches neither.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-127.2"], "gap": "none significant -- matches real-world confirmation shape closely."}
+    },
+    {
+      "id": "time_based_blind",
+      "generalized_transformation": "Inject a conditional or unconditional time-delay expression (SLEEP()/WAITFOR DELAY/pg_sleep()) and measure whether the response time increases by approximately the injected delay, against a timed baseline request.",
+      "abstracted_endpoint_pattern": "Same as boolean-blind; used specifically when the application shows no content differential at all (fully blind).",
+      "real_example": "WAITFOR DELAY '0:0:5'-- in a 'sortBy' parameter; SLEEP() via sqlmap's boolean+time (BT) technique against a 'filter[event]' parameter.",
+      "evidence_signal": "A repeatable, multi-second timing delta between the delayed payload and a baseline request -- a single slow response is not sufficient (network jitter); real reports confirm with a repeat.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-127.3"], "gap": "capped at 5 (endpoint, param) pairs by deliberate design (DoS-avoidance on a shared live target) -- a real scope/safety tradeoff, not an evidence-quality gap."}
+    },
+    {
+      "id": "login_bypass",
+      "generalized_transformation": "Inject an always-true boolean condition into a login form's username/password field so the authentication query returns a row without valid credentials.",
+      "abstracted_endpoint_pattern": "POST to a discovered HTML/JSON login endpoint.",
+      "evidence_signal": "The response after submitting the payload looks authenticated (redirect to a logged-in page, session cookie issued, or an authenticated-only marker) compared to a definitely-wrong-credentials baseline.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-127.4"], "gap": "none -- live-confirmed against this project's own real target this session (CVSS 9.8)."}
+    },
+    {
+      "id": "second_order",
+      "generalized_transformation": "Submit a syntax-breaking or delay-triggering payload into a field that is STORED (registration, profile update, display name, feedback form) rather than immediately queried. The injection only fires later, when a DIFFERENT request/endpoint/role reads that stored value back into a new, unsanitized query (e.g. an admin search/listing page, an export/report generator, or an email-notification template that queries by the stored value).",
+      "abstracted_endpoint_pattern": "Two-act: Endpoint A accepts and stores the value (POST /profile, /register, /feedback); Endpoint B (often admin-only, or an export/report feature) later queries using that stored value.",
+      "why_scanners_miss_it": "There is no single request/response pair that reveals it -- detection requires correlating a write at one endpoint with a read/behavior change at a DIFFERENT endpoint, frequently under a DIFFERENT role (the attacker plants it as a low-priv user, an admin's later action triggers it). Real writeups note this is 'the one developers almost never think to test' and that automated scanners miss it entirely for exactly this reason.",
+      "evidence_signal": "A time-delay or error signature that manifests specifically when a SEPARATE endpoint/role subsequently processes the previously-stored value -- not at the moment of the original write.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-127.6"], "gap": "none significant -- plant phase submits one error-based payload into a bounded set (default 3) of free-text-shaped POST fields via a low-priv authenticated context; verify phase checks a bounded set (default 3) of likely-privileged endpoints via a SEPARATE high-priv authenticated context for a DB-error fingerprint, total bounded at 3x3=9 probes. Error-based signal only (no time-based second-order, deliberately, per timing-attribution-across-a-gap risk). Plant phase gated behind allow_state_changing_probes, same convention as every other write-verb technique in this codebase."}
+    },
+    {
+      "id": "header_based",
+      "generalized_transformation": "Inject into a request HEADER the application logs, geolocates, or otherwise queries against -- most commonly `User-Agent`, `X-Forwarded-For`, `Referer`, or a custom API key/tenant header -- rather than a body or query parameter.",
+      "abstracted_endpoint_pattern": "Any endpoint at all; the injection point is header-based, not tied to a specific route. Particularly common where a header value is logged to an analytics/audit table or used for geo/IP lookups.",
+      "evidence_signal": "Same as error-based/boolean-blind/time-based (DB error fingerprint / content differential / timing delta) but with the payload placed in the header rather than the body/query.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-127.5"], "gap": "none significant -- `_injection_shared.send_probe` gained an optional `extra_headers` parameter (default None, zero behavior change for every existing call site); TC-127.5 injects the existing TC-127.1 error-based payload set into User-Agent/X-Forwarded-For/Referer across a bounded set (default 5) of discovered endpoints, reusing `looks_like_sql_error()` unchanged."}
+    },
+    {
+      "id": "json_body",
+      "generalized_transformation": "Inject a syntax-breaking string into a field of a JSON request body (application/json) instead of a query string or an application/x-www-form-urlencoded body -- the exact same error-based payload set and detection logic, only the wire format of the request differs.",
+      "abstracted_endpoint_pattern": "A discovered REST/JSON API endpoint (POST/PUT/PATCH) with at least one parameter -- overwhelmingly common in modern single-page-app backends, where nearly every write/search/filter call is a JSON POST rather than a form submission. A scanner that only ever sends form-encoded or query-string payloads structurally cannot reach this surface at all, no matter how good its payload list is: the server-side JSON deserializer/router for a JSON-only endpoint often never even parses a form-encoded body, so the injection point is invisible to a form/query-only prober.",
+      "why_scanners_miss_it": "Distinct from the header/cookie gaps above (those are about WHERE the payload goes on an otherwise-normal request); this one is about the request's own wire format. A prober that only ever calls `context.request.post(url, form=params)` never once emits a JSON body, so any endpoint whose route only accepts `Content-Type: application/json` is completely untested by every other technique in this module, independent of how good the payload list is.",
+      "evidence_signal": "Same DB-error fingerprint oracle as error-based (`looks_like_sql_error()`), unchanged -- only the request's Content-Type and body serialization differ.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-127.7"], "gap": "`_injection_shared.send_probe` gained an optional `json_body` flag (default False, zero behavior change for every existing call site) that serializes `params` as a JSON object with `Content-Type: application/json` instead of a form body; TC-127.7 reuses the TC-127.1 error-based payload set and `looks_like_sql_error()` unchanged, targeting a bounded set (default 5) of endpoints tagged `endpoint_type == 'api'` on a body-bearing method with at least one parameter. Honest limitation: this project's crawler doesn't yet capture a precise per-endpoint Content-Type, so `endpoint_type == 'api'` is a best-effort heuristic for 'this looks like a JSON API', not a guarantee every matched endpoint actually accepts JSON -- an endpoint that rejects the JSON body outright (415/400 with no DB-error text) just produces a clean PASS, not a false negative claim."}
+    },
+    {
+      "id": "cookie_based",
+      "generalized_transformation": "Inject a syntax-breaking string into a cookie value the application reads back into a query -- e.g. a locale/currency/tracking-preference cookie the app stores and later filters/joins on -- rather than a body/query parameter or a generic logged header. OWASP's Web Security Testing Guide (WSTG-INPV-05, SQL Injection) explicitly lists the `Cookie` header as its own distinct injection point alongside query/body parameters, precisely because cookies frequently carry personalization/tracking data an application persists or queries against server-side without the same sanitization discipline applied to a visible form field.",
+      "abstracted_endpoint_pattern": "Any endpoint at all, so long as the request carries a non-session cookie the application reads into a query -- a locale/currency/theme preference, a tracking/affiliate id, a recently-viewed-item id, or similar app-set (not auth-framework-set) cookie.",
+      "why_scanners_miss_it": "A cookie is invisible to a payload-in-body/query-only prober, and testing it correctly requires distinguishing 'a cookie this session legitimately owns and controls' from 'the actual session/auth token' -- blindly fuzzing every cookie including the session token itself is a materially different (and far riskier / out-of-scope-for-this-project's-safety-posture) test than fuzzing an app-set preference cookie the authenticated user is already entitled to set.",
+      "evidence_signal": "Same DB-error fingerprint oracle as error-based/header-based (`looks_like_sql_error()`), unchanged -- only the injection point (an explicit `Cookie` request header) differs, and only for a cookie name that doesn't match a session/auth-token naming pattern.",
+      "stof_coverage": {"status": "covered", "techniques": ["TC-127.8"], "gap": "`_injection_shared.send_probe` gained an optional `extra_cookies` parameter (default None, zero behavior change for every existing call site), following the identical additive pattern `extra_headers` established for TC-127.5; TC-127.8 reuses the TC-127.1 error-based payload set and `looks_like_sql_error()` unchanged, restricted to cookie names on the role's own `Session.cookies` that don't match `_AUTH_COOKIE_NAME_HINTS` (session/jsession/phpsess/connect.sid/auth/token/jwt/csrf/sid) -- the real session/auth cookie is never overwritten with a payload. Skips cleanly when a session carries no such non-auth cookie (the common case on a target with a single, purely-authentication cookie)."}
+    }
+  ],
+  "cross_cutting_evidence_principle": {
+    "rule": "Never trust a bare status code. Error-based needs a real DB error fingerprint; boolean/time-based need a differential or timing delta against an unmodified baseline, repeatable at least once; login-bypass needs an authenticated-looking result, not just HTTP 200.",
+    "scope_discipline": "Match this codebase's own established boundary: signal-only detection (error fingerprint / differential / timing), never actual data extraction (no UNION-based dumping), matching deserialization_tests.py's precedent and this session's own sqli_tests.py safety design."
+  }
+}

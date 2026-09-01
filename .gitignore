@@ -1,0 +1,46 @@
+AIntoes
+AIntoes.txt
+
+# Local tool/agent config -- reinstallable, not project source
+.claude/
+.agents/
+skills-lock.json
+
+# Sprint-planning / tracker artifacts and their generators -- not the
+# tool itself, just adjacent planning material
+STOF_Vulnerability_tracker.xlsx
+dummy_STOF_Vulnerability_tracker.xlsx
+Vulnerability_Testing_Sprint_Plan.xlsx
+testcases.xlsx
+scripts/build_tracker_xlsx.py
+scripts/gen_dummy_tracker.py
+scripts/generate_dashboard_data.py
+scripts/generate_dummy_dashboard_data.py
+scripts/watch_tracker.py
+
+# Standalone demo/showcase dashboards -- separate static pages, not
+# part of the actual stof/ui/ console
+dashboard/
+dummy_showcase/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+*.egg-info/
+
+data/sessions/
+data/evidence/
+data/workflows/*.json
+data/reports/
+data/logs/
+data/findings/
+data/recon/
+data/findings.json
+data/recon_results.json
+data/endpoints.json
+data/stof.db
+data/passive_observations.json
+data/scan_names.json
+!data/workflows/.gitkeep
