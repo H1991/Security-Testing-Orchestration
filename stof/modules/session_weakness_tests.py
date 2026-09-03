@@ -115,6 +115,29 @@ for the full research behind each):
   purely-numeric tokens, or very low character-set variety. Never
   attempts to guess or brute-force another user's session -- both
   values it compares come from this module's own two logins.
+
+Two further techniques, closing tracker gaps TC-049 and TC-107:
+
+- TC-129.9 -- Back/refresh cache weakness (tracker TC-049): a real,
+  fresh login followed by a single authenticated GET, checking whether
+  the response's Cache-Control header includes `no-store`/`no-cache`.
+  A missing directive on an authenticated HTML page means a shared or
+  public browser's back-button/disk cache can replay that page's
+  content even after logout -- WSTG's own "Testing for Browser Cache
+  Weaknesses" check, structurally simpler and more honestly testable
+  than actually driving a real browser Back button click, which
+  observes the identical underlying HTTP-caching contract.
+- TC-129.10 -- Rate limiting on password-reset requests (tracker
+  TC-107): TC-129.3's exact bounded-attempt-count / lockout-signal
+  shape, retargeted at `AuthTestConfig.reset_password_request_url`
+  (already a config field this module's host class, `AuthTestsModule`,
+  exposes for TC-027's own password-reset techniques) instead of the
+  login endpoint -- the real gap TC-107 in the tracker names: rate
+  limiting frequently only covers login, leaving password-reset/OTP
+  endpoints open to spam or enumeration at scale. SKIPs cleanly when
+  no such endpoint is configured -- there is no generic, safe way to
+  auto-discover "the sensitive non-login endpoint" from crawl data
+  alone.
 """
 from __future__ import annotations
 
@@ -214,6 +237,24 @@ def _new_or_changed_cookies(anon_cookies: list[dict], authenticated_cookies: lis
         if prior is None or prior.get("value") != cookie.get("value"):
             changed[name] = cookie
     return changed
+
+
+def _cache_control_issue(content_type: str, cache_control: str | None) -> str | None:
+    """Pure, directly-unit-testable check for TC-129.9 (back/refresh
+    cache weakness, tracker id TC-049): an authenticated HTML response
+    that omits both `no-store` and `no-cache` from Cache-Control lets a
+    shared/public browser's back-button or disk cache replay sensitive
+    content after the user has logged out -- WSTG's own "Testing for
+    Browser Cache Weaknesses" check. Only applies to HTML responses
+    (never flags a JSON/API/static-asset response, which legitimately
+    has different caching needs); `None` on a clean response or a
+    non-HTML content-type."""
+    if "text/html" not in content_type.lower():
+        return None
+    directive = (cache_control or "").lower()
+    if "no-store" in directive or "no-cache" in directive:
+        return None
+    return "authenticated response has no Cache-Control: no-store/no-cache directive"
 
 
 def _cookie_flag_issue(cookie: dict, is_https_target: bool) -> str | None:
@@ -790,6 +831,95 @@ class SessionWeaknessTechniquesMixin:
         )
         return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
 
+    # --- TC-129.9 Back/refresh cache weakness (tracker id TC-049) ---------
+
+    async def _technique_cache_control_weakness(self, endpoints, session_manager, session_pool) -> TestCaseResult:
+        test_id, tid = "TC-129", "TC-129.9"
+        technique = "Authenticated response missing no-store/no-cache Cache-Control (back/refresh cache weakness)"
+        vuln_type = "Sensitive Content Cacheable After Logout (Back/Refresh Attack)"
+        role = self.config.test_role
+        if not role:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, "no test_role configured for this target")
+        target_url = endpoints[0].url if endpoints else self.config.login_json_endpoint
+        if not target_url:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, "no discovered endpoint / configured URL available to probe")
+
+        try:
+            _session, context = await self._force_fresh_login(session_manager, session_pool, role, target_url)
+        except KeyError as exc:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        try:
+            resp = await context.request.get(target_url, max_redirects=0)
+        except Exception as exc:
+            return self._result(test_id, tid, technique, vuln_type, "ERROR", f"probe failed: {exc}")
+        headers = {k.lower(): v for k, v in resp.headers.items()}
+        content_type = headers.get("content-type", "")
+        cache_control = headers.get("cache-control")
+        issue = _cache_control_issue(content_type, cache_control)
+        if issue is None:
+            return self._result(test_id, tid, technique, vuln_type, PASS,
+                                 f"authenticated response from '{target_url}' (Content-Type: {content_type or 'unknown'}) "
+                                 f"correctly sets Cache-Control: {cache_control!r}")
+
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="Low", cvss_score=3.7,
+            endpoint=_synthetic_endpoint(target_url, "GET"), user_role=role,
+            request_raw=f"GET {target_url} (authenticated, role '{role}')",
+            response_raw=f"Content-Type: {content_type}\nCache-Control: {cache_control}",
+            description=(
+                f"'{target_url}' {issue} -- a shared or public browser's back-button/disk cache can "
+                "replay this authenticated page's content even after the user has logged out."
+            ),
+            recommendation="Set Cache-Control: no-store (and Pragma: no-cache for older HTTP/1.0 caches) on every authenticated response.",
+        )
+        return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+
+    # --- TC-129.10 Rate limiting on password-reset request (tracker id TC-107) ---
+
+    async def _technique_reset_endpoint_rate_limiting(self, session_pool) -> TestCaseResult:
+        test_id, tid = "TC-129", "TC-129.10"
+        technique = "No rate limiting across repeated password-reset requests"
+        vuln_type = "Missing Rate Limiting On Sensitive Non-Login Endpoint"
+        reset_url = self.config.reset_password_request_url
+        if not reset_url:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED,
+                                 "no reset_password_request_url configured for this target -- no sensitive "
+                                 "non-login endpoint this technique can generically discover to probe")
+
+        anon_context = await session_pool.new_anonymous_context()
+        try:
+            status, body = 0, ""
+            for attempt in range(1, _RATE_LIMIT_ATTEMPT_COUNT + 1):
+                email = f"stof-ratelimit-reset-{attempt}@example.invalid"
+                try:
+                    resp = await anon_context.request.post(
+                        reset_url, data=json_module.dumps({"email": email, "username": email}),
+                        headers={"Content-Type": "application/json"},
+                    )
+                    status, body = resp.status, await resp.text()
+                except Exception as exc:
+                    status, body = 0, str(exc)
+                decision = classify_response(status, body)
+                if decision == AuthorizationDecision.CHALLENGED or any(marker in body.lower() for marker in _LOCKOUT_SIGNAL_MARKERS):
+                    return self._result(test_id, tid, technique, vuln_type, PASS,
+                                         f"a rate-limiting/lockout signal (HTTP {status}, or a CAPTCHA/lockout-shaped response) appeared after {attempt} request(s)")
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
+                endpoint=_synthetic_endpoint(reset_url, "POST"), user_role="unauthenticated",
+                request_raw=f"{_RATE_LIMIT_ATTEMPT_COUNT}x POST {reset_url} (distinct made-up email addresses)",
+                response_raw=f"HTTP {status} on every attempt, no 429/CAPTCHA/lockout signal observed",
+                description=(
+                    f"{_RATE_LIMIT_ATTEMPT_COUNT} consecutive password-reset requests against '{reset_url}' "
+                    "produced no HTTP 429, CAPTCHA, or lockout-shaped response -- this sensitive endpoint has "
+                    "no observable rate limiting, enabling mass password-reset-email spam or account enumeration at scale."
+                ),
+                recommendation="Apply per-IP and/or per-account rate limiting to password-reset (and similarly sensitive OTP/verification) endpoints, not just the login endpoint.",
+            )
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+        finally:
+            await anon_context.close()
+
     # --- TC-129.7 Concurrent sessions are not revoked on a second login ---
 
     async def _technique_concurrent_session_not_revoked(self, endpoints, session_manager, session_pool) -> TestCaseResult:
@@ -891,6 +1021,194 @@ class SessionWeaknessTechniquesMixin:
                              f"{len(shared_names)} shared session cookie(s) compared across two independent logins for "
                              f"role '{role}'; none showed a low-entropy/predictable pattern")
 
+    # --- TC-129.11 Lockout bypass via spoofed X-Forwarded-For (tracker TC-023) ---
+
+    async def _technique_lockout_bypass_via_xff(self, endpoints, session_pool) -> TestCaseResult:
+        test_id, tid = "TC-129", "TC-129.11"
+        technique = "Login lockout/rate-limit is bypassable via a spoofed X-Forwarded-For header"
+        vuln_type = "Weak Lockout Mechanism (IP-Header Bypass)"
+        login_url = self.config.login_json_endpoint
+        login_endpoint, fields = None, None
+        if not login_url:
+            login_endpoint = find_login_endpoint(endpoints)
+            if login_endpoint is None:
+                return self._result(test_id, tid, technique, vuln_type, SKIPPED,
+                                     "no JSON login endpoint configured, and no discovered HTML login form to fall back to")
+            fields = _form_login_fields(login_endpoint)
+            if fields is None:
+                return self._result(test_id, tid, technique, vuln_type, SKIPPED, "discovered login form is missing an expected username/password field")
+
+        anon_context = await session_pool.new_anonymous_context()
+        try:
+            status, body = 0, ""
+            triggered = False
+            for attempt in range(1, _RATE_LIMIT_ATTEMPT_COUNT + 1):
+                username = f"stof-lockout-probe-{attempt}@example.invalid"
+                if login_endpoint is not None:
+                    username_param, password_param = fields
+                    status, body = await _attempt_wrong_form_login(anon_context, login_endpoint, username_param, password_param, username, "WrongPassword!123")
+                else:
+                    status, body = await _attempt_wrong_login(anon_context, login_url, username, "WrongPassword!123")
+                decision = classify_response(status, body)
+                if decision == AuthorizationDecision.CHALLENGED or any(marker in body.lower() for marker in _LOCKOUT_SIGNAL_MARKERS):
+                    triggered = True
+                    break
+            if not triggered:
+                return self._result(test_id, tid, technique, vuln_type, SKIPPED,
+                                     f"no rate-limiting/lockout signal appeared within {_RATE_LIMIT_ATTEMPT_COUNT} attempts -- nothing to test "
+                                     "bypassing (see TC-129.3 for the missing-rate-limiting finding itself)")
+
+            # Lockout genuinely triggered -- retry the SAME wrong-credential
+            # shape once more, this time with a spoofed X-Forwarded-For/
+            # X-Real-IP claiming a different origin IP. A server that keys
+            # its lockout purely off these attacker-controlled headers
+            # (rather than the real connecting IP plus/instead the account
+            # identifier) will accept this next attempt without a
+            # challenge -- proving the lockout is bypassable, not that the
+            # spoofed credential pair itself succeeded.
+            spoofed_ip = "203.0.113.77"  # TEST-NET-3 (RFC 5737) -- never a real routable address
+            probe_username = "stof-lockout-probe-bypass@example.invalid"
+            if login_endpoint is not None:
+                username_param, password_param = fields
+                params = {n: placeholder_value(n) for n in login_endpoint.parameters}
+                params[username_param] = probe_username
+                params[password_param] = "WrongPassword!123"
+                probe = await send_probe(anon_context, login_endpoint, params, login_endpoint.location_for(username_param),
+                                          extra_headers={"X-Forwarded-For": spoofed_ip, "X-Real-IP": spoofed_ip})
+                bypass_status, bypass_body = (probe[0], probe[1]) if probe else (0, "")
+            else:
+                try:
+                    resp = await anon_context.request.post(
+                        login_url, data=json_module.dumps({"username": probe_username, "email": probe_username, "password": "WrongPassword!123"}),
+                        headers={"Content-Type": "application/json", "X-Forwarded-For": spoofed_ip, "X-Real-IP": spoofed_ip},
+                    )
+                    bypass_status, bypass_body = resp.status, await resp.text()
+                except Exception as exc:
+                    bypass_status, bypass_body = 0, str(exc)
+
+            bypass_decision = classify_response(bypass_status, bypass_body)
+            still_challenged = bypass_decision == AuthorizationDecision.CHALLENGED or any(marker in bypass_body.lower() for marker in _LOCKOUT_SIGNAL_MARKERS)
+            if still_challenged:
+                return self._result(test_id, tid, technique, vuln_type, PASS,
+                                     f"lockout triggered after real attempts and remained in effect (HTTP {bypass_status}) even with a spoofed "
+                                     "X-Forwarded-For/X-Real-IP header -- lockout is not keyed off attacker-controlled IP headers alone")
+
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
+                endpoint=(login_endpoint or _synthetic_endpoint(login_url, "POST")), user_role="unauthenticated",
+                request_raw=f"POST {(login_endpoint.url if login_endpoint else login_url)}\nX-Forwarded-For: {spoofed_ip}\nX-Real-IP: {spoofed_ip}",
+                response_raw=f"HTTP {bypass_status} -- no rate-limiting/lockout signal, after lockout had already triggered without the spoofed header",
+                description=(
+                    "A login lockout/rate-limit signal was observed after repeated failed attempts, but a follow-up attempt with a spoofed "
+                    "X-Forwarded-For/X-Real-IP header was accepted without triggering the same challenge -- the lockout mechanism appears to key "
+                    "off an attacker-controlled header rather than (or in addition to) the real connecting IP or account identifier."
+                ),
+                recommendation="Key rate-limiting/lockout off the real connecting IP (from the trusted proxy layer, never an unvalidated client-supplied header) and/or the account identifier, never a client-controlled header alone.",
+            )
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+        finally:
+            await anon_context.close()
+
+    # --- TC-129.12 Rate limiting on authenticated API endpoints (tracker TC-108) ---
+
+    async def _technique_api_token_rate_limiting(self, endpoints, session_manager, session_pool) -> TestCaseResult:
+        test_id, tid = "TC-129", "TC-129.12"
+        technique = "No rate limiting across repeated authenticated API requests"
+        vuln_type = "Missing Rate Limiting At The API/Token Level"
+        role = self.config.test_role
+        if not role:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, "no test_role configured for this target")
+        api_endpoint = next((e for e in endpoints if e.endpoint_type == "api" and e.method == "GET"), None)
+        if api_endpoint is None:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, "no discovered GET API endpoint to probe")
+
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, role, api_endpoint.url)
+        except KeyError as exc:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        status, body = 0, ""
+        for _attempt in range(1, _RATE_LIMIT_ATTEMPT_COUNT + 1):
+            probe = await self._probe_get(context, api_endpoint.url)
+            if probe is None:
+                continue
+            status, body = probe
+            decision = classify_response(status, body)
+            if decision == AuthorizationDecision.CHALLENGED or any(marker in body.lower() for marker in _LOCKOUT_SIGNAL_MARKERS):
+                return self._result(test_id, tid, technique, vuln_type, PASS,
+                                     f"a rate-limiting signal (HTTP {status}, or a throttling-shaped response) appeared while repeatedly "
+                                     f"calling '{api_endpoint.url}' as an authenticated role '{role}' session")
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
+            endpoint=api_endpoint, user_role=role,
+            request_raw=f"{_RATE_LIMIT_ATTEMPT_COUNT}x GET {api_endpoint.url} (authenticated, role '{role}')",
+            response_raw=f"HTTP {status} on every attempt, no 429/throttling signal observed",
+            description=(
+                f"{_RATE_LIMIT_ATTEMPT_COUNT} consecutive authenticated requests to '{api_endpoint.url}' produced no HTTP 429 or "
+                "throttling-shaped response -- this API endpoint has no observable rate limiting at the authenticated/token level, "
+                "beyond whatever login-only limiting TC-129.3 already checks."
+            ),
+            recommendation="Apply per-token/per-account rate limiting to authenticated API endpoints, not just the unauthenticated login endpoint.",
+        )
+        return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+
+    # --- TC-129.13 Session not bound to client fingerprint (tracker TC-046) ---
+
+    async def _technique_session_not_bound_to_client(self, endpoints, session_manager, session_pool) -> TestCaseResult:
+        test_id, tid = "TC-129", "TC-129.13"
+        technique = "Session cookie is accepted from a different client fingerprint (User-Agent)"
+        vuln_type = "Session Not Bound To Client Fingerprint (Hijacking Risk)"
+        role = self.config.test_role
+        if not role:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, "no test_role configured for this target")
+        target_url = endpoints[0].url if endpoints else self.config.login_json_endpoint
+        if not target_url:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, "no discovered endpoint / configured URL available to probe")
+
+        try:
+            session, _context = await self._force_fresh_login(session_manager, session_pool, role, target_url)
+        except KeyError as exc:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        cookies = dict(session.cookies)
+        if not cookies:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED,
+                                 f"role '{role}' session carries no cookies at all (non-cookie-based auth) -- nothing to replay")
+
+        # A different browser/OS entirely -- not just a version bump -- to
+        # make this a real fingerprint mismatch, not a coincidental match
+        # some UA-sniffing middleware might tolerate.
+        _DIFFERENT_UA = "Mozilla/5.0 (Linux; Android 14; SM-S928B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Mobile Safari/537.36"
+        replay_context = await session_pool.new_anonymous_context()
+        try:
+            await replay_context.set_extra_http_headers({"User-Agent": _DIFFERENT_UA})
+            await replay_context.add_cookies(_cookies_to_playwright(cookies, target_url))
+            probe = await self._probe_get(replay_context, target_url)
+        finally:
+            await replay_context.close()
+
+        if probe is None:
+            return self._result(test_id, tid, technique, vuln_type, "ERROR", "could not replay the session cookie under a different User-Agent (probe request failed)")
+        status, body = probe
+        decision = classify_response(status, body)
+        if decision == AuthorizationDecision.ALLOWED:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Low", cvss_score=3.7,
+                endpoint=_synthetic_endpoint(target_url, "GET"), user_role=role,
+                request_raw=f"GET {target_url} using role '{role}''s session cookie, with a completely different User-Agent (desktop login vs. mobile replay)",
+                response_raw=f"HTTP {status}, {len(body)} bytes",
+                description=(
+                    f"The session cookie for role '{role}' is accepted from a client presenting a completely different User-Agent "
+                    "than the one that logged in -- the session is not bound to any client fingerprint, so a stolen cookie alone "
+                    "(no other client secret) is sufficient to hijack the session from a different device/browser."
+                ),
+                recommendation="This is a defense-in-depth gap, not a standalone vulnerability (per-request client-binding is unusual and has real usability tradeoffs) -- consider it alongside session lifetime/rotation controls, not as a required fix on its own.",
+            )
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+        return self._result(test_id, tid, technique, vuln_type, PASS,
+                             f"replaying the session cookie under a different User-Agent against '{target_url}' returned HTTP {status} "
+                             f"({decision.value}) -- session appears bound to the original client in some way")
+
     async def _techniques_tc129(self, endpoints, session_manager, session_pool, evidence) -> list[TestCaseResult]:
         return [
             await self._safe_result(
@@ -925,4 +1243,24 @@ class SessionWeaknessTechniquesMixin:
                 self._technique_session_token_entropy(endpoints, session_manager, session_pool),
                 "TC-129", "TC-129.8", "Session token is low-entropy or predictable across independent logins",
                 "Predictable / Low-Entropy Session Token", role=self.config.test_role),
+            await self._safe_result(
+                self._technique_cache_control_weakness(endpoints, session_manager, session_pool),
+                "TC-129", "TC-129.9", "Authenticated response missing no-store/no-cache Cache-Control (back/refresh cache weakness)",
+                "Sensitive Content Cacheable After Logout (Back/Refresh Attack)", role=self.config.test_role),
+            await self._safe_result(
+                self._technique_reset_endpoint_rate_limiting(session_pool),
+                "TC-129", "TC-129.10", "No rate limiting across repeated password-reset requests",
+                "Missing Rate Limiting On Sensitive Non-Login Endpoint", role=self.config.test_role),
+            await self._safe_result(
+                self._technique_lockout_bypass_via_xff(endpoints, session_pool),
+                "TC-129", "TC-129.11", "Login lockout/rate-limit is bypassable via a spoofed X-Forwarded-For header",
+                "Weak Lockout Mechanism (IP-Header Bypass)", role=self.config.test_role),
+            await self._safe_result(
+                self._technique_api_token_rate_limiting(endpoints, session_manager, session_pool),
+                "TC-129", "TC-129.12", "No rate limiting across repeated authenticated API requests",
+                "Missing Rate Limiting At The API/Token Level", role=self.config.test_role),
+            await self._safe_result(
+                self._technique_session_not_bound_to_client(endpoints, session_manager, session_pool),
+                "TC-129", "TC-129.13", "Session cookie is accepted from a different client fingerprint (User-Agent)",
+                "Session Not Bound To Client Fingerprint (Hijacking Risk)", role=self.config.test_role),
         ]

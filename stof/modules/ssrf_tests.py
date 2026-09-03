@@ -127,6 +127,14 @@ _URL_PARAM_HINTS: tuple[str, ...] = (
     "url", "uri", "link", "href", "src", "source", "image", "avatar",
     "callback", "redirect", "webhook", "endpoint", "target", "dest",
     "destination", "file", "download", "import", "feed", "proxy", "host", "domain",
+    # Added alongside TC-137.7 (open redirect): these are common
+    # real-world redirect-parameter names (Django's own `next`,
+    # countless OAuth/SSO flows' `return_to`/`returnUrl`, generic
+    # `continue`) that the original SSRF-focused hint list above
+    # didn't cover -- still URL-shaped by nature, so broadening this
+    # shared list also strengthens every other SSRF technique's own
+    # candidate set, not just the new one.
+    "next", "return_to", "returnurl", "continue",
 )
 
 # RFC 2606 .invalid -- guaranteed never to resolve, so a request here
@@ -512,6 +520,71 @@ class SsrfTestsModule(VulnModule):
         )
         return self._result(tid, technique, vuln_type, SKIPPED, detail, role=self.config.low_priv_role)
 
+    async def _technique_open_redirect(
+        self, candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
+    ) -> TestCaseResult:
+        """Open Redirect (CWE-601) — a distinct bug class from SSRF (the
+        server sends the browser SOMEWHERE, rather than fetching a URL
+        itself), but grouped here because it shares this module's own
+        URL-shaped-parameter discovery (`_param_candidates`) rather than
+        duplicating that detection logic in a new module for one
+        technique. Added after cross-referencing a real Burp Active Scan
+        run against this target and finding no STOF equivalent.
+
+        Sends an external marker URL (`https://stof-redirect-check.
+        invalid/<random>`) into every candidate, without following the
+        redirect (`max_redirects=0`, matching every other technique in
+        this file), and checks the response's own `Location` header.
+
+        False-positive guard: only flags a 3xx response whose `Location`
+        header's host EXACTLY matches the marker host STOF itself
+        injected -- a same-origin redirect (the overwhelmingly common,
+        completely normal case: bouncing a param back to itself, or to
+        a login page) never matches an `.invalid` marker host, so this
+        can't confuse ordinary redirect behavior for a vulnerability.
+        """
+        tid, technique = "TC-137.7", "Open redirect via URL-shaped parameter"
+        vuln_type = "Open Redirect"
+        if not candidates:
+            return self._result(tid, technique, vuln_type, SKIPPED, "no URL-shaped parameter discovered to probe")
+
+        for endpoint, param, location in candidates:
+            marker_host = f"stof-redirect-{uuid.uuid4().hex[:10]}.invalid"
+            marker_url = f"https://{marker_host}/"
+            probe = await send_probe(context, endpoint, build_params(endpoint, param, marker_url), location)
+            if probe is None:
+                continue
+            status, _body, _elapsed, headers = probe
+            location_header = (headers or {}).get("location", "")
+            if 300 <= status < 400 and marker_host in location_header:
+                finding = Finding(
+                    module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.1,
+                    endpoint=endpoint, user_role=self.config.low_priv_role,
+                    request_raw=f"{endpoint.method} {endpoint.url}\n{param}={marker_url!r}",
+                    response_raw=f"HTTP {status}\nLocation: {location_header}",
+                    description=(
+                        f"'{endpoint.url}' parameter '{param}' ({location}) accepted an external URL and "
+                        f"redirected the browser there (HTTP {status}, Location: {location_header}). An "
+                        "attacker can craft a link on this trusted domain that silently redirects a victim to "
+                        "an attacker-controlled site -- commonly abused for phishing (the URL bar shows the "
+                        "trusted domain right up until the redirect fires) or to bypass an OAuth/SSO "
+                        "redirect_uri allowlist that trusts this host."
+                    ),
+                    recommendation=(
+                        "Validate redirect targets against an explicit allowlist of same-origin/known-partner "
+                        "destinations server-side, or require an intermediate confirmation page for any "
+                        "off-site redirect."
+                    ),
+                )
+                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"open-redirect-{param}") if evidence else []
+                return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+
+        return self._result(
+            tid, technique, vuln_type, PASS,
+            f"{len(candidates)} URL-shaped parameter(s) probed with an external marker URL, none redirected there",
+            role=self.config.low_priv_role,
+        )
+
     async def run_techniques(
         self,
         endpoints: "list[Endpoint]",
@@ -529,6 +602,7 @@ class SsrfTestsModule(VulnModule):
             ("TC-137.4", "Internal service reachability via loopback port sweep", "Server-Side Request Forgery (internal service reachability)"),
             ("TC-137.5", "IP/hostname parsing bypass (alternate loopback representations)", "Server-Side Request Forgery (allowlist parsing bypass)"),
             ("TC-137.6", "Out-of-band (OOB) callback probe via configured collaborator", "Server-Side Request Forgery (blind, out-of-band)"),
+            ("TC-137.7", "Open redirect via URL-shaped parameter", "Open Redirect"),
         )
         if not candidates:
             for tid, technique, vuln_type in techniques:
@@ -550,4 +624,5 @@ class SsrfTestsModule(VulnModule):
         results.append(await self._safe_result(self._technique_internal_port_sweep(candidates, context, evidence), "TC-137", "TC-137.4", techniques[3][1], techniques[3][2], role=self.config.low_priv_role))
         results.append(await self._safe_result(self._technique_ip_parsing_bypass(candidates, context, evidence), "TC-137", "TC-137.5", techniques[4][1], techniques[4][2], role=self.config.low_priv_role))
         results.append(await self._safe_result(self._technique_oob_callback(candidates, context, evidence), "TC-137", "TC-137.6", techniques[5][1], techniques[5][2], role=self.config.low_priv_role))
+        results.append(await self._safe_result(self._technique_open_redirect(candidates, context, evidence), "TC-137", "TC-137.7", techniques[6][1], techniques[6][2], role=self.config.low_priv_role))
         return results

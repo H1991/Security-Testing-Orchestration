@@ -84,6 +84,19 @@ class SessionManager:
             _log.info(f"authenticated fresh session for role '{role}'")
             return new_session
 
+    def seed_session(self, session: Session) -> None:
+        """Directly install an already-established `Session` (e.g.
+        `stof/auth/assisted_login.py`'s `AssistedLoginProvider`,
+        confirmed against a real, human-operated browser before the
+        scan's normal per-technique flow starts) as `session.role`'s
+        current session -- the public counterpart to `invalidate()`.
+        `get_session()` will then return it directly (no
+        `provider.refresh()`/`authenticate()` call) for as long as
+        `needs_refresh()` says it's still fresh, exactly as if it had
+        been cached from a normal `authenticate()` call."""
+        self._sessions[session.role] = session
+        self._store.save(session)
+
     def invalidate(self, role: str) -> None:
         """Mark a role's session invalid (e.g. after a vulnerability
         module confirms a logout/session-fixation finding), forcing

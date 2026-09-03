@@ -19,7 +19,9 @@ from stof.findings.models import Finding
 from stof.main import (
     _KNOWN_MODULES,
     _apply_application_profile,
+    _attach_assisted_login_contexts,
     _build_form_login_provider,
+    _build_login_provider,
     _build_module_builders,
     _burp_scope_prefix,
     _burp_seed_urls,
@@ -523,6 +525,117 @@ def test_build_form_login_provider_uses_configured_selectors_when_set():
     assert provider._username_selector == "#email"
     assert provider._password_selector == "#password"
     assert provider._submit_selector == "#loginButton"
+
+
+def test_build_login_provider_returns_form_login_by_default():
+    """requires_assisted_login defaults to False -- every normal target
+    is completely unaffected by the assisted-login feature."""
+    from stof.auth.form_login import FormLoginProvider
+
+    provider = _build_login_provider(_config())
+
+    assert isinstance(provider, FormLoginProvider)
+
+
+def test_build_login_provider_returns_assisted_login_when_flagged():
+    from stof.auth.assisted_login import AssistedLoginProvider
+
+    config = _config(requires_assisted_login=True)
+
+    provider = _build_login_provider(config)
+
+    assert isinstance(provider, AssistedLoginProvider)
+    assert provider._login_url == "https://x/login"
+
+
+def test_build_login_provider_forwards_success_selector_when_assisted():
+    from stof.auth.assisted_login import AssistedLoginProvider
+
+    config = _config(requires_assisted_login=True, success_selector="text=Dashboard")
+
+    provider = _build_login_provider(config)
+
+    assert isinstance(provider, AssistedLoginProvider)
+    assert provider._success_selector == "text=Dashboard"
+
+
+# ---------------------------------------------------------------------------
+# _attach_assisted_login_contexts
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_attach_assisted_login_contexts_noop_when_flag_unset():
+    """Zero behavior change for a normal target: never even tries to
+    connect over CDP."""
+    config = _config()  # requires_assisted_login defaults False
+    pw = AsyncMock()
+
+    await _attach_assisted_login_contexts(pw, config, AsyncMock(), AsyncMock(), AsyncMock(), {}, lambda *a: None)
+
+    pw.chromium.connect_over_cdp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_attach_assisted_login_contexts_noop_when_no_form_login_roles():
+    config = _config(requires_assisted_login=True)
+    pw = AsyncMock()
+    users_by_role = {"api-user": _user_config("api-user", "jwt")}
+
+    await _attach_assisted_login_contexts(pw, config, AsyncMock(), AsyncMock(), AsyncMock(), users_by_role, lambda *a: None)
+
+    pw.chromium.connect_over_cdp.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_attach_assisted_login_contexts_raises_clear_error_when_cdp_connect_fails():
+    config = _config(requires_assisted_login=True)
+    pw = AsyncMock()
+    pw.chromium.connect_over_cdp = AsyncMock(side_effect=Exception("connection refused"))
+    users_by_role = {"admin": _user_config("admin", "form_login")}
+
+    with pytest.raises(click.ClickException, match="no assisted-login browser session was found"):
+        await _attach_assisted_login_contexts(pw, config, AsyncMock(), AsyncMock(), AsyncMock(), users_by_role, lambda *a: None)
+
+
+@pytest.mark.asyncio
+async def test_attach_assisted_login_contexts_raises_when_not_enough_contexts_open():
+    config = _config(requires_assisted_login=True)
+    pw = AsyncMock()
+    external_browser = AsyncMock()
+    external_browser.contexts = []  # operator hasn't logged in / opened a window yet
+    pw.chromium.connect_over_cdp = AsyncMock(return_value=external_browser)
+    users_by_role = {"admin": _user_config("admin", "form_login")}
+
+    with pytest.raises(click.ClickException, match="needs one confirmed browser context"):
+        await _attach_assisted_login_contexts(pw, config, AsyncMock(), AsyncMock(), AsyncMock(), users_by_role, lambda *a: None)
+
+
+@pytest.mark.asyncio
+async def test_attach_assisted_login_contexts_happy_path_seeds_session_and_attaches_context():
+    config = _config(requires_assisted_login=True)
+    pw = AsyncMock()
+    external_browser = AsyncMock()
+    fake_context = AsyncMock()
+    fake_page = AsyncMock()
+    fake_context.pages = [fake_page]
+    external_browser.contexts = [fake_context]
+    pw.chromium.connect_over_cdp = AsyncMock(return_value=external_browser)
+
+    session_pool = AsyncMock()
+    session_manager = AsyncMock()
+    login_provider = AsyncMock()
+    fake_session = object()
+    login_provider.authenticate = AsyncMock(return_value=fake_session)
+    users_by_role = {"admin": _user_config("admin", "form_login")}
+    messages = []
+
+    await _attach_assisted_login_contexts(pw, config, session_pool, session_manager, login_provider, users_by_role, messages.append)
+
+    login_provider.authenticate.assert_awaited_once_with(users_by_role["admin"], fake_page)
+    session_manager.seed_session.assert_called_once_with(fake_session)
+    session_pool.attach_external_context.assert_awaited_once_with("admin", fake_context)
+    assert any("Assisted login confirmed" in m for m in messages)
 
 
 # ---------------------------------------------------------------------------

@@ -167,3 +167,29 @@ async def test_detect_forms_skips_mailto_and_tel_action_urls():
     endpoints = await detect_forms(page)
 
     assert endpoints == []
+
+
+@pytest.mark.asyncio
+async def test_detect_forms_tags_file_input_location_as_file():
+    """`file_upload_tests.py`'s only discovery mechanism is
+    `param_locations.get(name) == "file"` -- an `<input type=file>` must
+    be tagged that way regardless of the form's own method, distinctly
+    from every other field which still gets "body"/"query"."""
+    page = _page(
+        "https://x/upload",
+        [
+            {
+                "action": "submit-file",
+                "method": "POST",
+                "inputs": [
+                    {"name": "avatar", "type": "file"},
+                    {"name": "description", "type": "text"},
+                ],
+            }
+        ],
+    )
+
+    endpoints = await detect_forms(page)
+
+    assert endpoints[0].param_locations["avatar"] == "file"
+    assert endpoints[0].param_locations["description"] == "body"

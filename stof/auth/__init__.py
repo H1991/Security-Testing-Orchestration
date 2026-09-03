@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from stof.config import ConfigError
 
+from .assisted_login import AssistedLoginProvider
 from .base import AuthExpiredError, AuthFailedError, AuthProvider
 from .form_login import FormLoginProvider
 from .jwt_auth import JWTAuthProvider
@@ -20,6 +21,12 @@ from .jwt_auth import JWTAuthProvider
 AUTH_PROVIDERS: dict[str, type[AuthProvider]] = {
     "form_login": FormLoginProvider,
     "jwt": JWTAuthProvider,
+    # Not auto-selected by any UserConfig.auth_type value -- a target
+    # opts into this by setting TargetConfig.requires_assisted_login,
+    # which swaps `FormLoginProvider` out for this one entirely for
+    # that target's scan (see stof/main.py), rather than requiring a
+    # separate per-user auth_type value.
+    "assisted_manual": AssistedLoginProvider,
     # Phase 2:
     # "oauth": OAuthProvider,
     # "saml":  SAMLProvider,
@@ -35,6 +42,7 @@ def get_provider(auth_type: str, **kwargs: object) -> AuthProvider:
 
 __all__ = [
     "AUTH_PROVIDERS",
+    "AssistedLoginProvider",
     "AuthExpiredError",
     "AuthFailedError",
     "AuthProvider",

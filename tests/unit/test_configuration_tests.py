@@ -1,4 +1,5 @@
 """Unit tests for Layer 9 — stof.modules.configuration_tests (TC-017)."""
+import ssl
 from unittest.mock import AsyncMock
 
 import pytest
@@ -6,14 +7,22 @@ import pytest
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
 from stof.modules.configuration_tests import (
+    _ADMIN_PANEL_PATH_STACK,
+    _SAMPLE_FILE_PATH_STACK,
     ConfigurationTestConfig,
     ConfigurationTestsModule,
     _csp_missing_or_weak,
     _find_cloud_storage_urls,
     _is_bucket_listing,
     _missing_security_headers,
+    _mixed_content_hosts,
+    _narrow_paths_for_stack,
+    _password_autocomplete_gap,
+    _path_relative_stylesheet_hrefs,
+    _referrer_policy_gap,
 )
-from stof.modules.results import ERROR, FAIL, PASS
+from stof.modules.results import ERROR, FAIL, PASS, SKIPPED
+from stof.recon.target_profile import TargetProfile
 
 
 def _response(status: int, body: str, headers: dict | None = None):
@@ -28,6 +37,28 @@ def _pool_with_context(context) -> SessionPool:
     browser = AsyncMock()
     browser.new_context = AsyncMock(return_value=context)
     return SessionPool(browser)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_tls_handshake(monkeypatch):
+    """TC-017.15 (`_technique_tls_certificate`) does a genuine `ssl`/
+    `socket` TLS handshake, not a Playwright-mocked HTTP call -- without
+    this, every test in this file that calls `run_techniques()` (nearly
+    all of them) would attempt a real network connection to whatever
+    fake host the test's endpoint URL happens to use (e.g. "https://x/").
+    That happened to fail fast via near-instant DNS resolution failure
+    in this sandbox, but relying on that is fragile and not hermetic --
+    stub it to a fixed, valid-for-90-days result so every test in this
+    file is a real unit test, not an accidental integration test.
+    Tests that specifically exercise TC-017.14/.15 override this
+    per-test via `monkeypatch` themselves."""
+    from datetime import datetime, timedelta, timezone
+
+    import stof.modules.configuration_tests as _mod
+    monkeypatch.setattr(_mod, "_fetch_tls_certificate", lambda hostname, port=443, timeout=8.0: {
+        "not_after": datetime.now(timezone.utc) + timedelta(days=90),
+        "days_remaining": 90,
+    })
 
 
 @pytest.mark.asyncio
@@ -65,6 +96,106 @@ async def test_admin_panel_passes_when_nothing_reachable():
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-017.1"].status == PASS
+
+
+def test_narrow_paths_for_stack_unknown_returns_everything():
+    paths = ("/wp-admin", "/admin", "/manager/html")
+    assert _narrow_paths_for_stack(paths, _ADMIN_PANEL_PATH_STACK, "unknown") == list(paths)
+
+
+def test_narrow_paths_for_stack_java_drops_php_only_paths():
+    paths = ("/wp-admin", "/admin", "/manager/html", "/phpmyadmin")
+    result = _narrow_paths_for_stack(paths, _ADMIN_PANEL_PATH_STACK, "java")
+    assert result == ["/admin", "/manager/html"]
+
+
+def test_narrow_paths_for_stack_php_drops_java_only_paths():
+    paths = ("/wp-admin", "/admin", "/manager/html")
+    result = _narrow_paths_for_stack(paths, _ADMIN_PANEL_PATH_STACK, "php")
+    assert result == ["/wp-admin", "/admin"]
+
+
+def test_narrow_paths_for_stack_keeps_generic_paths_for_any_family():
+    paths = ("/install.php", "/.env", "/web.config")
+    result = _narrow_paths_for_stack(paths, _SAMPLE_FILE_PATH_STACK, "dotnet")
+    assert result == ["/.env", "/web.config"]
+
+
+@pytest.mark.asyncio
+async def test_admin_panel_narrows_candidates_for_detected_java_stack():
+    """Real-world regression: demo.testfire.net fingerprints as
+    Apache-Coyote/Java -- /wp-admin, /phpmyadmin, /adminer.php are
+    guaranteed-dead probes there and should be skipped, never FAIL
+    just because they weren't tried."""
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    probed_urls = []
+
+    async def fake_get(url, max_redirects=0):
+        probed_urls.append(url)
+        return _response(404, "not found")
+
+    context = AsyncMock()
+    context.request.get = AsyncMock(side_effect=fake_get)
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    config = ConfigurationTestConfig(target_profile=TargetProfile(stack_family="java", confidence="high"))
+    module = ConfigurationTestsModule(config=config)
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.1"].status == PASS
+    assert "narrowed" in by_id["TC-017.1"].detail
+    assert not any(u.endswith(("/wp-admin", "/phpmyadmin")) for u in probed_urls)
+    assert any(u.endswith("/admin") for u in probed_urls)
+
+
+@pytest.mark.asyncio
+async def test_admin_panel_does_not_narrow_when_stack_unknown():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    probed_urls = []
+
+    async def fake_get(url, max_redirects=0):
+        probed_urls.append(url)
+        return _response(404, "not found")
+
+    context = AsyncMock()
+    context.request.get = AsyncMock(side_effect=fake_get)
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()  # no target_profile configured -- defaults to None/"unknown"
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.1"].status == PASS
+    assert "narrowed" not in by_id["TC-017.1"].detail
+    assert any(u.endswith("/wp-admin") for u in probed_urls)
+
+
+@pytest.mark.asyncio
+async def test_sample_files_narrows_candidates_for_detected_dotnet_stack():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    probed_urls = []
+
+    async def fake_get(url, max_redirects=0):
+        probed_urls.append(url)
+        return _response(404, "not found")
+
+    context = AsyncMock()
+    context.request.get = AsyncMock(side_effect=fake_get)
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    config = ConfigurationTestConfig(target_profile=TargetProfile(stack_family="dotnet", confidence="high"))
+    module = ConfigurationTestsModule(config=config)
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.4"].status == PASS
+    assert not any(u.endswith(("/install.php", "/phpinfo.php")) for u in probed_urls)
+    assert any(u.endswith("/web.config") for u in probed_urls)
+    assert any(u.endswith("/.env") for u in probed_urls)  # generic path never narrowed away
 
 
 @pytest.mark.asyncio
@@ -691,3 +822,311 @@ async def test_cloud_storage_passes_when_no_urls_referenced():
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-017.10"].status == PASS
+
+
+# --- TC-017.11: Referrer-Policy leakage ---
+
+@pytest.mark.parametrize(
+    "content_type,headers,expected",
+    [
+        ("text/html", {}, None),  # missing header falls back to browser's own safe default -- not flagged
+        ("text/html", {"referrer-policy": "strict-origin-when-cross-origin"}, None),
+        ("text/html", {"referrer-policy": "no-referrer"}, None),
+        ("text/html", {"referrer-policy": "unsafe-url"}, "Referrer-Policy is explicitly set to 'unsafe-url', which leaks the full URL (including any query string) to every cross-origin link and sub-resource this page loads"),
+        ("application/json", {"referrer-policy": "unsafe-url"}, None),  # non-HTML not applicable
+    ],
+)
+def test_referrer_policy_gap_pure_helper(content_type, headers, expected):
+    assert _referrer_policy_gap(content_type, headers) == expected
+
+
+@pytest.mark.asyncio
+async def test_referrer_policy_fails_on_unsafe_url():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(
+        200, "<html></html>", headers={"content-type": "text/html", "referrer-policy": "unsafe-url"},
+    ))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.11"].status == FAIL
+
+
+@pytest.mark.asyncio
+async def test_referrer_policy_passes_when_absent():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "<html></html>", headers={"content-type": "text/html"}))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.11"].status == PASS
+
+
+# --- TC-017.12: mixed content ---
+
+@pytest.mark.parametrize(
+    "page_url,content_type,body,expected",
+    [
+        ("https://x/", "text/html", '<script src="http://cdn.example.com/a.js"></script>', ["cdn.example.com"]),
+        ("https://x/", "text/html", '<img src="https://cdn.example.com/a.png">', []),  # already HTTPS
+        ("http://x/", "text/html", '<script src="http://cdn.example.com/a.js"></script>', []),  # page itself is HTTP -- not mixed content
+        ("https://x/", "text/html", 'see http://example.com for details', []),  # plain text mention, not a src/href
+        ("https://x/", "application/json", '<script src="http://cdn.example.com/a.js"></script>', []),  # non-HTML
+    ],
+)
+def test_mixed_content_hosts_pure_helper(page_url, content_type, body, expected):
+    assert _mixed_content_hosts(page_url, content_type, body) == expected
+
+
+@pytest.mark.asyncio
+async def test_mixed_content_fails_on_http_subresource():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(
+        200, '<html><script src="http://cdn.example.com/a.js"></script></html>',
+        headers={"content-type": "text/html"},
+    ))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.12"].status == FAIL
+    assert "cdn.example.com" in by_id["TC-017.12"].finding.description
+
+
+@pytest.mark.asyncio
+async def test_mixed_content_passes_when_all_https():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(
+        200, '<html><script src="https://cdn.example.com/a.js"></script></html>',
+        headers={"content-type": "text/html"},
+    ))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.12"].status == PASS
+
+
+# --- TC-017.13: password autocomplete ---
+
+@pytest.mark.parametrize(
+    "content_type,body,expected_count",
+    [
+        ("text/html", '<input type="password" name="pw">', 1),
+        ("text/html", '<input type="password" name="pw" autocomplete="off">', 0),
+        ("text/html", '<input type="password" name="pw" autocomplete="new-password">', 0),
+        ("text/html", '<input type="text" name="username">', 0),
+        ("text/html", '<input type="password"><input type="password" autocomplete="off">', 1),
+        ("application/json", '<input type="password">', 0),  # non-HTML
+    ],
+)
+def test_password_autocomplete_gap_pure_helper(content_type, body, expected_count):
+    assert _password_autocomplete_gap(content_type, body) == expected_count
+
+
+@pytest.mark.asyncio
+async def test_password_autocomplete_fails_when_enabled():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(
+        200, '<html><input type="password" name="pw"></html>', headers={"content-type": "text/html"},
+    ))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.13"].status == FAIL
+    assert by_id["TC-017.13"].finding.severity == "Info"
+
+
+@pytest.mark.asyncio
+async def test_password_autocomplete_passes_when_disabled_or_absent():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "<html></html>", headers={"content-type": "text/html"}))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.13"].status == PASS
+
+
+# --- TC-017.14: path-relative stylesheet import (PRSSI) ---
+
+@pytest.mark.parametrize(
+    "content_type,body,expected",
+    [
+        ("text/html", '<link rel="stylesheet" href="css/app.css">', ["css/app.css"]),
+        ("text/html", '<link rel="stylesheet" href="/css/app.css">', []),  # root-relative -- safe
+        ("text/html", '<link rel="stylesheet" href="https://cdn.example.com/app.css">', []),  # absolute -- safe
+        ("text/html", '<link rel="stylesheet" href="//cdn.example.com/app.css">', []),  # protocol-relative -- safe
+        ("application/json", '<link rel="stylesheet" href="css/app.css">', []),  # non-HTML
+        ("text/html", '<link rel="alternate" href="css/app.css">', []),  # not a stylesheet link
+    ],
+)
+def test_path_relative_stylesheet_hrefs_pure_helper(content_type, body, expected):
+    assert _path_relative_stylesheet_hrefs(content_type, body) == expected
+
+
+@pytest.mark.asyncio
+async def test_prssi_fails_on_relative_stylesheet_href():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(
+        200, '<html><link rel="stylesheet" href="css/app.css"></html>', headers={"content-type": "text/html"},
+    ))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.14"].status == FAIL
+    assert "css/app.css" in by_id["TC-017.14"].finding.description
+
+
+@pytest.mark.asyncio
+async def test_prssi_passes_on_root_relative_stylesheet_href():
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(
+        200, '<html><link rel="stylesheet" href="/css/app.css"></html>', headers={"content-type": "text/html"},
+    ))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.14"].status == PASS
+
+
+# --- TC-017.15: TLS certificate expiry / chain / hostname validation ---
+
+@pytest.mark.asyncio
+async def test_tls_certificate_skipped_for_http_target():
+    endpoint = Endpoint(url="http://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "<html></html>", headers={"content-type": "text/html"}))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.15"].status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_tls_certificate_passes_when_valid_and_not_expiring_soon(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import stof.modules.configuration_tests as _mod
+    monkeypatch.setattr(_mod, "_fetch_tls_certificate", lambda hostname, port=443, timeout=8.0: {
+        "not_after": datetime.now(timezone.utc) + timedelta(days=90), "days_remaining": 90,
+    })
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "<html></html>", headers={"content-type": "text/html"}))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.15"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_tls_certificate_fails_when_expired(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import stof.modules.configuration_tests as _mod
+    monkeypatch.setattr(_mod, "_fetch_tls_certificate", lambda hostname, port=443, timeout=8.0: {
+        "not_after": datetime.now(timezone.utc) - timedelta(days=5), "days_remaining": -5,
+    })
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "<html></html>", headers={"content-type": "text/html"}))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.15"].status == FAIL
+    assert by_id["TC-017.15"].finding.severity == "Critical"
+
+
+@pytest.mark.asyncio
+async def test_tls_certificate_fails_when_expiring_soon(monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    import stof.modules.configuration_tests as _mod
+    monkeypatch.setattr(_mod, "_fetch_tls_certificate", lambda hostname, port=443, timeout=8.0: {
+        "not_after": datetime.now(timezone.utc) + timedelta(days=7), "days_remaining": 7,
+    })
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "<html></html>", headers={"content-type": "text/html"}))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.15"].status == FAIL
+    assert by_id["TC-017.15"].finding.severity == "Medium"
+
+
+@pytest.mark.asyncio
+async def test_tls_certificate_fails_when_handshake_raises(monkeypatch):
+    import stof.modules.configuration_tests as _mod
+
+    def _raise(hostname, port=443, timeout=8.0):
+        raise ssl.SSLCertVerificationError("hostname mismatch")
+
+    monkeypatch.setattr(_mod, "_fetch_tls_certificate", _raise)
+    endpoint = Endpoint(url="https://x/", method="GET", endpoint_type="page")
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "<html></html>", headers={"content-type": "text/html"}))
+    context.close = AsyncMock()
+    pool = _pool_with_context(context)
+    module = ConfigurationTestsModule()
+
+    results = await module.run_techniques([endpoint], None, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-017.15"].status == FAIL
+    assert by_id["TC-017.15"].finding.severity == "High"
+    assert "hostname mismatch" in by_id["TC-017.15"].finding.description

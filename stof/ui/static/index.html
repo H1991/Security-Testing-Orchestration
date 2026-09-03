@@ -102,13 +102,14 @@
   }
 
   * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
   html, body { height: 100%; overflow: hidden; }
   body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
     font-family: var(--sans);
-    font-size: 14px;
+    font-size: 15px;
     line-height: 1.5;
     -webkit-font-smoothing: antialiased;
   }
@@ -122,12 +123,22 @@
   /* ---------------------------------------------------------------- shell */
   .shell {
     display: grid;
-    grid-template-columns: 246px 1fr;
+    /* VS Code-style icon rail by default (--nav-width: 64px) -- a
+       narrow icon-only strip, not the old always-expanded 246px
+       labeled list. body.nav-expanded (toggled by the same navToggle
+       button that already drove the mobile drawer) widens it back out
+       with full labels, a real click-to-pin affordance rather than a
+       hover-only overlay -- a hover overlay would need position:fixed
+       breaking out of this grid cell cleanly, which risks jank; a
+       width toggle on the grid track itself does not. */
+    --nav-width: 64px;
+    grid-template-columns: var(--nav-width) 1fr;
     grid-template-rows: 84px 1fr;
     grid-template-areas:
       "brand topbar"
       "nav   main";
     height: 100dvh;
+    transition: grid-template-columns 160ms ease;
     /* Deliberately no min-height: it used to be 640px, which forced
        .shell taller than the viewport on any shorter window and made
        the WHOLE PAGE (including the sidebar) scroll instead of just
@@ -137,28 +148,48 @@
        overflow correctly on their own; .shell just needs to stay
        exactly viewport-height, never taller. */
   }
+  body.nav-expanded .shell { --nav-width: 246px; }
 
   .brand {
     grid-area: brand;
     display: flex;
     flex-direction: column;
     justify-content: center;
+    align-items: center;
     gap: 5px;
-    padding: 0 24px;
+    padding: 0 10px;
     border-right: 1px solid var(--sidebar-border);
     background: var(--sidebar-bg);
+    transition: padding 160ms ease, align-items 160ms ease;
+    overflow: hidden;
   }
+  body.nav-expanded .brand { align-items: flex-start; padding: 0 24px; }
+  /* Collapsed rail: the full wordmark logo just gets clipped by the
+     64px-wide column (illegible), so a small monogram badge stands in
+     for it instead -- swapped for the real logo once expanded, not
+     shown alongside it. */
+  .mark-monogram {
+    display: flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: 7px; flex-shrink: 0;
+    background: var(--sidebar-accent-soft); color: var(--sidebar-accent-text);
+    font-family: var(--sans); font-weight: 700; font-size: 14px;
+  }
+  body.nav-expanded .mark-monogram { display: none; }
   .brand .mark {
-    display: flex; align-items: center; gap: 9px;
+    display: none; align-items: center; gap: 9px;
   }
-  .brand .mark img { height: 18px; width: auto; display: block; }
+  body.nav-expanded .brand .mark { display: flex; }
+  .brand .mark img { height: 18px; width: auto; display: block; flex-shrink: 0; }
   .brand .mark::after {
     content: "";
     width: 1px; height: 14px;
     background: rgba(255,255,255,0.18);
+    display: none;
   }
-  .brand .name { font-weight: 700; font-size: 14.5px; letter-spacing: -0.01em; color: #fff; }
-  .brand .name small { display: block; font-weight: 500; font-size: 10px; color: rgba(255,255,255,0.42); letter-spacing: 0.08em; text-transform: uppercase; margin-top: 3px; }
+  body.nav-expanded .brand .mark::after { display: block; }
+  .brand .name { font-weight: 700; font-size: 15.5px; letter-spacing: -0.01em; color: #fff; display: none; white-space: nowrap; }
+  body.nav-expanded .brand .name { display: block; }
+  .brand .name small { display: block; font-weight: 500; font-size: 11px; color: rgba(255,255,255,0.42); letter-spacing: 0.08em; text-transform: uppercase; margin-top: 3px; }
 
   .topbar {
     grid-area: topbar;
@@ -187,7 +218,7 @@
     border: 1px solid var(--border);
     border-radius: 999px;
     padding: 6px 14px 6px 10px;
-    font-size: 12.5px;
+    font-size: 13.5px;
   }
   .target-picker .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pass); box-shadow: 0 0 0 3px var(--low-soft); }
   .target-picker .url { font-family: var(--mono); color: var(--text); }
@@ -195,7 +226,7 @@
   .topbar-right { display: flex; align-items: center; gap: 10px; }
   .btn {
     font-family: var(--sans);
-    font-size: 13px; font-weight: 600;
+    font-size: 14px; font-weight: 600;
     border-radius: 6px;
     padding: 8px 14px;
     border: 1px solid var(--border);
@@ -215,29 +246,40 @@
     padding: 5px 10px 5px 5px;
     border: 1px solid var(--border);
     border-radius: 999px;
-    font-size: 12.5px;
+    font-size: 13.5px;
     font-weight: 600;
   }
-  .org-pill .av { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-3); display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--text-muted); }
+  .org-pill .av { width: 24px; height: 24px; border-radius: 50%; background: var(--surface-3); display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--text-muted); }
 
   /* ---------------------------------------------------------------- nav */
   .nav {
     grid-area: nav;
     background: var(--sidebar-bg);
     border-right: 1px solid var(--sidebar-border);
-    padding: 14px 12px 16px;
+    padding: 14px 8px 16px;
     display: flex;
     flex-direction: column;
     gap: 2px;
+    overflow-x: hidden;
     overflow-y: auto;
+    transition: padding 160ms ease;
   }
-  .nav-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--sidebar-label); padding: 14px 10px 6px; }
+  body.nav-expanded .nav { padding: 14px 12px 16px; }
+
+  /* Collapsed (default): section labels and item text/counts hidden,
+     icons centered -- a real icon-only rail, not just a narrower
+     version of the labeled list. Each item's `title` attribute (set in
+     the HTML) becomes the browser's native hover tooltip -- the
+     "hover to see what this is" affordance, at zero extra JS/CSS cost
+     and with none of an overlay's z-index/reflow risk. */
+  .nav-label { font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--sidebar-label); padding: 14px 10px 6px; white-space: nowrap; display: none; }
   .nav-label:first-child { padding-top: 4px; }
+  body.nav-expanded .nav-label { display: block; }
   .nav-item {
     display: flex; align-items: center; gap: 10px;
-    padding: 8px 10px;
+    padding: 9px 10px;
     border-radius: 7px;
-    font-size: 13.5px; font-weight: 500;
+    font-size: 15.5px; font-weight: 500;
     color: var(--sidebar-text);
     cursor: pointer;
     border: 1px solid transparent;
@@ -246,16 +288,34 @@
     text-align: left;
     width: 100%;
     font-family: var(--sans);
-    transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    transition: background 120ms ease, color 120ms ease, border-color 120ms ease, justify-content 120ms ease;
+    justify-content: center;
   }
+  body.nav-expanded .nav-item { justify-content: flex-start; }
   .nav-item:hover { background: rgba(255,255,255,0.06); color: var(--sidebar-text-hover); }
   .nav-item.active { background: var(--sidebar-accent-soft); color: var(--sidebar-accent-text); font-weight: 700; border-left-color: var(--sidebar-accent); }
-  .nav-item .ic { width: 16px; text-align: center; flex-shrink: 0; opacity: 0.85; }
-  .nav-item .count { margin-left: auto; font-family: var(--mono); font-size: 11px; color: var(--sidebar-label); }
+  .nav-item .ic { width: 22px; text-align: center; flex-shrink: 0; opacity: 0.9; font-size: 20px; }
+  .nav-item .label-text, .nav-item .count { display: none; white-space: nowrap; }
+  body.nav-expanded .nav-item .label-text, body.nav-expanded .nav-item .count { display: inline; }
+  .nav-item .count { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--sidebar-label); }
   .nav-item.active .count { color: var(--sidebar-accent-text); }
-  .nav-foot { margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 11.5px; color: rgba(255,255,255,0.32); display: flex; flex-direction: column; gap: 4px; }
-  .nav-foot .row { display: flex; justify-content: space-between; }
+  .nav-foot { margin-top: auto; padding: 12px 10px 4px; border-top: 1px solid rgba(255,255,255,0.08); font-size: 12.5px; color: rgba(255,255,255,0.32); display: none; flex-direction: column; gap: 4px; }
+  body.nav-expanded .nav-foot { display: flex; }
+  .nav-foot .row { display: flex; justify-content: space-between; gap: 10px; }
   .nav-foot .v { font-family: var(--mono); color: rgba(255,255,255,0.55); }
+
+  /* Pin/expand toggle -- lives at the top of the rail itself (not just
+     the mobile topbar hamburger, which this button IS, reused) so it's
+     reachable without hunting for it once collapsed to icon-only. */
+  .nav-rail-toggle {
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 34px; margin-bottom: 10px; border-radius: 7px;
+    border: 1px solid var(--sidebar-border); background: rgba(255,255,255,0.04); color: var(--sidebar-text);
+    cursor: pointer; transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .nav-rail-toggle:hover { background: rgba(255,255,255,0.1); color: var(--sidebar-text-hover); border-color: rgba(255,255,255,0.24); }
+  .nav-rail-toggle svg { transition: transform 160ms ease; }
+  body.nav-expanded .nav-rail-toggle svg { transform: rotate(180deg); }
 
   /* ---------------------------------------------------------------- main */
   .main { grid-area: main; overflow-y: auto; padding: 26px 30px 60px; }
@@ -265,11 +325,11 @@
 
   .breadcrumb {
     display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-    font-family: var(--mono); font-size: 11.5px; color: var(--text-faint);
+    font-family: var(--mono); font-size: 12.5px; color: var(--text-faint);
     margin-bottom: 16px; min-height: 16px;
   }
   .breadcrumb a, .breadcrumb button.crumb {
-    font-family: var(--mono); font-size: 11.5px; color: var(--text-muted);
+    font-family: var(--mono); font-size: 12.5px; color: var(--text-muted);
     background: none; border: none; padding: 0; cursor: pointer; text-decoration: none;
   }
   .breadcrumb a:hover, .breadcrumb button.crumb:hover { color: var(--accent); text-decoration: underline; }
@@ -277,15 +337,15 @@
   .breadcrumb .sep { color: var(--text-faint); }
 
   .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 22px; }
-  .page-head h1 { font-size: 21px; letter-spacing: -0.01em; }
-  .page-head p { margin: 4px 0 0; color: var(--text-muted); font-size: 13px; }
+  .page-head h1 { font-size: 22px; letter-spacing: -0.01em; }
+  .page-head p { margin: 4px 0 0; color: var(--text-muted); font-size: 14px; }
 
   /* kpis */
   .kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 22px; }
   .kpi { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 16px 14px; box-shadow: var(--shadow); }
-  .kpi .lbl { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); }
-  .kpi .val { font-family: var(--mono); font-size: 26px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
-  .kpi .sub { font-size: 11.5px; color: var(--text-muted); margin-top: 3px; }
+  .kpi .lbl { font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-faint); }
+  .kpi .val { font-family: var(--mono); font-size: 27px; font-weight: 700; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .kpi .sub { font-size: 12.5px; color: var(--text-muted); margin-top: 3px; }
   .kpi.crit .val { color: var(--critical); }
   .kpi.high .val { color: var(--high); }
 
@@ -294,19 +354,33 @@
   .row-3 { display: grid; grid-template-columns: 1.3fr 0.85fr 1fr; gap: 16px; align-items: start; }
 
   .risk-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; }
-  .risk-row .sev-name { width: 62px; flex-shrink: 0; font-size: 12px; font-weight: 600; }
+  .risk-row .sev-name { width: 62px; flex-shrink: 0; font-size: 13px; font-weight: 600; }
   .risk-row .sev-bar-track { flex: 1; height: 8px; border-radius: 2px; background: var(--surface-3); overflow: hidden; }
   .risk-row .sev-bar-fill { display: block; height: 100%; border-radius: 2px; transition: width 300ms ease; }
-  .risk-row .sev-count { width: 26px; text-align: right; font-family: var(--mono); font-size: 12px; color: var(--text-muted); flex-shrink: 0; }
+  .risk-row .sev-count { width: 26px; text-align: right; font-family: var(--mono); font-size: 13px; color: var(--text-muted); flex-shrink: 0; }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
-  .card-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); }
-  .card-head h3 { font-size: 13.5px; font-weight: 700; }
-  .card-head .meta { font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); }
+  .card-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--border); gap: 10px; }
+  .card-head h3 { font-size: 14.5px; font-weight: 700; flex: 1; }
+  .card-head .meta { font-size: 12.5px; color: var(--text-faint); font-family: var(--mono); }
+  .icon-chip {
+    width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0;
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted);
+    display: flex; align-items: center; justify-content: center; font-size: 17px;
+    font-family: var(--mono); font-weight: 700;
+  }
+  .icon-chip svg { width: 18px; height: 18px; }
   .card-body { padding: 6px 0; }
-  .card-empty { padding: 32px 18px; text-align: center; color: var(--text-faint); font-size: 12.5px; }
+  .card-empty { padding: 32px 18px; text-align: center; color: var(--text-faint); font-size: 13.5px; }
+  .settings-status {
+    display: inline-block; margin-left: 8px; padding: 1px 7px; border-radius: 10px;
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em;
+    background: var(--surface-2); color: var(--text-faint); vertical-align: middle;
+  }
+  .settings-status.ok { background: var(--pass-soft, var(--accent-soft)); color: var(--pass, var(--accent-text)); }
+  .settings-status.warn { background: var(--surface-3); color: var(--text-muted); }
 
   /* module progress list */
-  .mod-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 18px; border-bottom: 1px solid var(--border); border-left: 2px solid transparent; font-size: 13px; transition: background 120ms ease, border-color 120ms ease; }
+  .mod-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 11px 18px; border-bottom: 1px solid var(--border); border-left: 2px solid transparent; font-size: 14px; transition: background 120ms ease, border-color 120ms ease; }
   .mod-row:last-child { border-bottom: none; }
   .mod-row:hover { background: var(--surface-2); }
   .mod-row:has(.mod-state.running) { background: var(--accent-soft); border-left-color: var(--accent); }
@@ -317,12 +391,12 @@
   .mod-state.queued { background: var(--text-faint); opacity: 0.5; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
   .mod-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .mod-name .tc { font-family: var(--mono); font-size: 11px; color: var(--text-faint); font-weight: 400; margin-left: 6px; }
+  .mod-name .tc { font-family: var(--mono); font-size: 12px; color: var(--text-faint); font-weight: 400; margin-left: 6px; }
   .mod-counts { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; justify-content: flex-end; max-width: 260px; }
-  .mod-counts .dur { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); white-space: nowrap; }
-  .mod-counts .status-text { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
+  .mod-counts .dur { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+  .mod-counts .status-text { font-family: var(--mono); font-size: 12.5px; color: var(--text-muted); }
   .count-badge {
-    font-family: var(--mono); font-size: 10.5px; font-weight: 700; line-height: 1;
+    font-family: var(--mono); font-size: 11.5px; font-weight: 700; line-height: 1;
     padding: 3px 7px; border-radius: 5px; white-space: nowrap; font-variant-numeric: tabular-nums;
   }
   .count-badge.pass { background: var(--low-soft); color: var(--pass); }
@@ -330,7 +404,7 @@
   .count-badge.skip { background: var(--surface-3); color: var(--text-muted); }
   .count-badge.err { background: var(--critical-soft); color: var(--critical); }
   .module-progress-pill {
-    font-family: var(--mono); font-size: 11px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
+    font-family: var(--mono); font-size: 12px; font-weight: 700; padding: 3px 9px; border-radius: 999px;
     background: var(--surface-3); color: var(--text-muted);
   }
   .module-progress-pill.running { background: var(--accent-soft); color: var(--accent-text); }
@@ -347,12 +421,12 @@
   .feed-wrap { position: relative; }
   .feed-toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--border); background: var(--surface); }
   .feed-toolbar input {
-    flex: 1; font-family: var(--mono); font-size: 11.5px; border: 1px solid var(--border); border-radius: 6px;
+    flex: 1; font-family: var(--mono); font-size: 12.5px; border: 1px solid var(--border); border-radius: 6px;
     padding: 5px 9px; background: var(--surface); color: var(--text); outline: none;
   }
   .feed-toolbar input:focus { border-color: var(--accent); }
   .feed-toolbar input::placeholder { color: var(--text-faint); }
-  .feed { font-family: var(--mono); font-size: 12px; padding: 10px 10px; height: 296px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; background: var(--surface-2); }
+  .feed { font-family: var(--mono); font-size: 13px; padding: 10px 10px; height: 296px; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; background: var(--surface-2); }
   .feed .line {
     display: flex; gap: 8px; white-space: pre-wrap; word-break: break-word;
     opacity: 0; animation: feedIn 260ms ease forwards; padding: 4px 8px; border-radius: 5px;
@@ -368,7 +442,7 @@
   .feed-jump {
     position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
     background: var(--accent); color: #fff; border: none; border-radius: 999px;
-    font-family: var(--sans); font-size: 11.5px; font-weight: 700; padding: 6px 14px;
+    font-family: var(--sans); font-size: 12.5px; font-weight: 700; padding: 6px 14px;
     cursor: pointer; box-shadow: 0 4px 12px -2px rgba(0,0,0,0.25);
     display: none; align-items: center; gap: 6px;
   }
@@ -395,13 +469,13 @@
   .bulk-bar {
     display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin-bottom: 10px;
     background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 8px;
-    font-size: 12.5px; color: var(--accent-text);
+    font-size: 13.5px; color: var(--accent-text);
   }
   table.findings td.select-cell, table.findings th.select-cell { width: 34px; text-align: center; }
   table.findings tr.row-selected { background: var(--accent-soft); }
   .chip-filter { display: flex; gap: 6px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 999px; padding: 3px; }
   .chip-filter button {
-    font-family: var(--sans); font-size: 12px; font-weight: 600;
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
     border: none; background: none; color: var(--text-muted);
     padding: 6px 12px; border-radius: 999px; cursor: pointer;
   }
@@ -409,20 +483,20 @@
   .chip-filter button .n { font-family: var(--mono); margin-left: 5px; color: var(--text-faint); }
   .search { flex: 1; min-width: 180px; max-width: 320px; }
   .search input {
-    width: 100%; font-family: var(--sans); font-size: 13px;
+    width: 100%; font-family: var(--sans); font-size: 14px;
     padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--surface); color: var(--text);
   }
   .search input::placeholder { color: var(--text-faint); }
   .select {
-    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    font-family: var(--sans); font-size: 14px; font-weight: 600;
     padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--surface); color: var(--text); cursor: pointer;
   }
 
-  table.findings { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table.findings { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   table.findings thead th {
-    text-align: left; font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+    text-align: left; font-size: 11.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
     color: var(--text-faint); padding: 0; border-bottom: 1px solid var(--border);
     position: sticky; top: 0; background: var(--surface);
   }
@@ -433,16 +507,16 @@
     padding: 10px 14px; width: 100%;
   }
   .th-sort:hover { color: var(--text); }
-  .th-sort::after { content: "↕"; opacity: 0.4; font-size: 10px; }
+  .th-sort::after { content: "↕"; opacity: 0.4; font-size: 11px; }
   .th-sort[data-active="asc"]::after { content: "↑"; opacity: 1; color: var(--accent); }
   .th-sort[data-active="desc"]::after { content: "↓"; opacity: 1; color: var(--accent); }
   table.findings td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
   table.findings tbody tr:hover { background: var(--surface-2); }
   table.findings tbody tr:last-child td { border-bottom: none; }
-  .tc-id { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); }
+  .tc-id { font-family: var(--mono); font-size: 12.5px; color: var(--text-muted); }
   .finding-name { font-weight: 600; }
-  .finding-endpoint { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 2px; }
-  .sev { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; padding: 3px 8px 3px 6px; border-radius: 4px; }
+  .finding-endpoint { font-family: var(--mono); font-size: 12.5px; color: var(--text-faint); margin-top: 2px; }
+  .sev { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 700; letter-spacing: 0.02em; padding: 3px 8px 3px 6px; border-radius: 4px; }
   .sev::before { content: ""; width: 6px; height: 6px; border-radius: 50%; }
   .sev.Critical { background: var(--critical-soft); color: var(--critical); }
   .sev.Critical::before { background: var(--critical); }
@@ -454,13 +528,13 @@
   .sev.Low::before { background: var(--low); }
   .sev.Info { background: var(--surface-3); color: var(--text-muted); }
   .sev.Info::before { background: var(--text-faint); }
-  .status-badge { font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 3px 7px; border-radius: 4px; }
+  .status-badge { font-family: var(--mono); font-size: 12px; font-weight: 600; padding: 3px 7px; border-radius: 4px; }
   .status-badge.FAIL { background: var(--critical-soft); color: var(--critical); }
   .status-badge.PASS { background: var(--low-soft); color: var(--pass); }
   .status-badge.SKIPPED { background: var(--surface-3); color: var(--text-faint); }
   .status-badge.running { background: var(--accent-soft); color: var(--accent-text); }
   .owasp-badge {
-    display: inline-block; font-family: var(--mono); font-size: 11px; font-weight: 700;
+    display: inline-block; font-family: var(--mono); font-size: 12px; font-weight: 700;
     padding: 3px 7px; border-radius: 4px; background: var(--surface-3); color: var(--text-muted);
     cursor: default;
   }
@@ -474,30 +548,30 @@
   .mod-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   .mod-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
   .mod-card-top::-webkit-details-marker { display: none; }
-  .mod-card h4 { font-size: 13.5px; font-weight: 700; }
-  .mod-card .layer { font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); margin-top: 3px; }
+  .mod-card h4 { font-size: 14.5px; font-weight: 700; }
+  .mod-card .layer { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
   .mod-card-foot { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 4px; }
-  .tc-count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+  .tc-count { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
   .mod-tc-list { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
   .mod-tc-row { background: var(--surface-2); border-radius: 6px; padding: 10px 12px; }
   .mod-tc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .mod-tc-head .finding-name { font-size: 12.5px; flex: 1; }
-  .mod-tc-desc { margin: 6px 0 0; font-size: 11.5px; color: var(--text-muted); line-height: 1.55; }
-  .mod-tc-compliance { margin-top: 6px; font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
+  .mod-tc-head .finding-name { font-size: 13.5px; flex: 1; }
+  .mod-tc-desc { margin: 6px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.55; }
+  .mod-tc-compliance { margin-top: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
 
   /* risk trend chart */
-  .sev-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; font-size: 11.5px; color: var(--text-muted); }
+  .sev-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12.5px; color: var(--text-muted); }
   .sev-legend .item { display: flex; align-items: center; gap: 6px; }
   .sev-legend .swatch { width: 9px; height: 9px; border-radius: 2px; flex-shrink: 0; }
   .chart-wrap { position: relative; width: 100%; }
   .chart-wrap svg { width: 100%; height: 200px; display: block; overflow: visible; }
   .chart-wrap .bar-seg { cursor: pointer; }
-  .chart-wrap .axis-label { font-family: var(--mono); font-size: 9px; fill: var(--text-faint); }
+  .chart-wrap .axis-label { font-family: var(--mono); font-size: 10px; fill: var(--text-faint); }
   .chart-wrap .grid-line { stroke: var(--border); stroke-width: 1; }
   .chart-tooltip {
     position: absolute; pointer-events: none; z-index: 5;
     background: var(--text); color: var(--surface);
-    font-size: 11px; font-family: var(--sans); line-height: 1.5;
+    font-size: 12px; font-family: var(--sans); line-height: 1.5;
     padding: 7px 10px; border-radius: 6px; white-space: nowrap;
     transform: translate(-50%, -100%); margin-top: -8px;
   }
@@ -505,7 +579,7 @@
   @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chart-tooltip { background: var(--surface-3); color: var(--text); border: 1px solid var(--border); } }
   .chart-tooltip b { font-weight: 700; }
 
-  .top-mod-row { display: grid; grid-template-columns: 130px 1fr 44px; align-items: center; gap: 10px; padding: 7px 0; font-size: 12px; }
+  .top-mod-row { display: grid; grid-template-columns: 130px 1fr 44px; align-items: center; gap: 10px; padding: 7px 0; font-size: 13px; }
   .top-mod-row .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .top-mod-bar { height: 8px; border-radius: 2px; background: var(--surface-3); display: flex; overflow: hidden; gap: 2px; }
   .top-mod-bar span { display: block; height: 100%; }
@@ -519,13 +593,24 @@
   .switch input:checked + .track::before { transform: translateX(15px); }
   .switch input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
 
-  /* settings */
+  /* settings -- a real two-column layout (not a single 640px-wide
+     stack) so total page length is roughly halved -- the same
+     side-by-side card distribution the New Scan page's own
+     .scan-new-grid already established, applied here for the same
+     "this was one long scroll with wasted space beside it" reason. */
+  .settings-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
+  .settings-col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .settings-col .card, .settings-col .settings-grid { max-width: none !important; }
+  @media (max-width: 900px) {
+    .settings-layout { grid-template-columns: 1fr; }
+  }
+
   .settings-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; max-width: 900px; }
   .setting-row { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
-  .setting-row .k { font-size: 12.5px; font-weight: 600; }
-  .setting-row .k small { display: block; font-weight: 400; color: var(--text-faint); font-size: 11px; margin-top: 2px; }
-  .setting-row .v { font-family: var(--mono); font-size: 12.5px; color: var(--text-muted); }
-  .danger-banner { display: flex; gap: 12px; align-items: flex-start; background: var(--high-soft); border: 1px solid var(--high); color: var(--high); padding: 12px 16px; border-radius: var(--radius); font-size: 12.5px; margin-bottom: 16px; }
+  .setting-row .k { font-size: 13.5px; font-weight: 600; }
+  .setting-row .k small { display: block; font-weight: 400; color: var(--text-faint); font-size: 12px; margin-top: 2px; }
+  .setting-row .v { font-family: var(--mono); font-size: 13.5px; color: var(--text-muted); }
+  .danger-banner { display: flex; gap: 12px; align-items: flex-start; background: var(--high-soft); border: 1px solid var(--high); color: var(--high); padding: 12px 16px; border-radius: var(--radius); font-size: 13.5px; margin-bottom: 16px; }
   .danger-banner b { display: block; margin-bottom: 2px; color: var(--high); }
   .danger-banner span { color: var(--text-muted); }
   .danger-banner.on { background: var(--critical-soft); border-color: var(--critical); }
@@ -536,40 +621,47 @@
   .report-item { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
   .report-item summary { list-style: none; display: flex; align-items: center; gap: 14px; padding: 14px 18px; cursor: pointer; }
   .report-item summary::-webkit-details-marker { display: none; }
-  .report-item .ficon { width: 34px; height: 34px; border-radius: 7px; background: var(--accent-soft); color: var(--accent-text); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; font-family: var(--mono); flex-shrink: 0; }
+  .report-item .ficon { width: 34px; height: 34px; border-radius: 7px; background: var(--accent-soft); color: var(--accent-text); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; font-family: var(--mono); flex-shrink: 0; }
   .report-item .rmeta { flex: 1; }
-  .report-item .rmeta .rn { font-weight: 700; font-size: 13px; }
-  .report-item .rmeta .rd { font-size: 11.5px; color: var(--text-faint); font-family: var(--mono); margin-top: 2px; }
+  .report-item .rmeta .rn { font-weight: 700; font-size: 14px; }
+  .report-item .rmeta .rd { font-size: 12.5px; color: var(--text-faint); font-family: var(--mono); margin-top: 2px; }
   .report-item .chev { color: var(--text-faint); transition: transform 150ms ease; }
   .report-item[open] .chev { transform: rotate(90deg); }
-  .report-item .rbody { padding: 0 18px 16px 66px; font-size: 12.5px; color: var(--text-muted); display: flex; flex-direction: column; gap: 10px; }
+  .report-item .rbody { padding: 0 18px 16px 66px; font-size: 13.5px; color: var(--text-muted); display: flex; flex-direction: column; gap: 10px; }
   .report-item .rbody a.btn { text-decoration: none; align-self: flex-start; }
 
-  code.inline { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+  code.inline { font-family: var(--mono); background: var(--surface-2); padding: 1px 5px; border-radius: 4px; font-size: 12.5px; }
   .steps { list-style: none; margin: 0; padding: 0; counter-reset: step; display: flex; flex-direction: column; gap: 10px; }
-  .steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 12.5px; color: var(--text-muted); line-height: 1.6; }
+  .steps li { display: flex; gap: 10px; align-items: flex-start; font-size: 13.5px; color: var(--text-muted); line-height: 1.6; }
   .steps li::before {
     counter-increment: step; content: counter(step);
     flex: 0 0 20px; width: 20px; height: 20px; border-radius: 50%;
     background: var(--accent-soft); color: var(--accent-text);
-    font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center;
     margin-top: 1px;
   }
   .steps code.inline { color: var(--text); }
 
   /* forms (Settings) */
   .form-body { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; }
+  /* A card's intro paragraph sits between .card-head and .form-body,
+     outside either -- it was relying on no padding of its own (flush
+     against the card edges) while .form-body right below it is inset
+     18px, reading as misaligned/floating. Matches .form-body's own
+     horizontal inset and tightens the gap before the form starts. */
+  .card-desc { margin: 14px 18px 10px; font-size: 13px; color: var(--text-muted); line-height: 1.6; }
+  .card-desc:first-child { margin-top: 14px; }
   .field { display: flex; flex-direction: column; gap: 5px; }
-  .field label { font-size: 12px; font-weight: 600; color: var(--text); }
+  .field label { font-size: 13px; font-weight: 600; color: var(--text); }
   .field label small { font-weight: 400; color: var(--text-faint); margin-left: 4px; }
   .field label { display: flex; align-items: center; justify-content: space-between; }
   .btn-link-remove {
-    background: none; border: none; padding: 0; font-family: var(--sans); font-size: 11px;
+    background: none; border: none; padding: 0; font-family: var(--sans); font-size: 12px;
     font-weight: 600; color: var(--critical); cursor: pointer; text-decoration: underline;
   }
   .btn-link-remove:hover { color: var(--critical); opacity: 0.75; }
   .field input {
-    font-family: var(--sans); font-size: 13px; padding: 8px 12px;
+    font-family: var(--sans); font-size: 14px; padding: 8px 12px;
     border-radius: 6px; border: 1px solid var(--border);
     background: var(--surface); color: var(--text);
   }
@@ -580,10 +672,10 @@
   .modal-backdrop { position: fixed; inset: 0; background: rgba(10, 14, 18, 0.5); display: none; align-items: center; justify-content: center; z-index: 50; }
   .modal-backdrop.open { display: flex; }
   .modal { width: 440px; max-width: calc(100vw - 40px); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); padding: 22px; }
-  .modal h3 { font-size: 15.5px; margin-bottom: 6px; }
-  .modal p { font-size: 12.5px; color: var(--text-muted); margin: 0 0 14px; line-height: 1.6; }
-  .modal .target-line { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; }
-  .modal label.confirm { display: flex; align-items: flex-start; gap: 10px; font-size: 12.5px; color: var(--text); cursor: pointer; margin-bottom: 18px; }
+  .modal h3 { font-size: 16.5px; margin-bottom: 6px; }
+  .modal p { font-size: 13.5px; color: var(--text-muted); margin: 0 0 14px; line-height: 1.6; }
+  .modal .target-line { font-family: var(--mono); font-size: 13.5px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin-bottom: 14px; }
+  .modal label.confirm { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; color: var(--text); cursor: pointer; margin-bottom: 18px; }
   .modal label.confirm input { margin-top: 2px; }
   .modal .modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
   .modal-module-list {
@@ -592,13 +684,99 @@
     border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; background: var(--surface-2);
   }
   .modal-module-list label {
-    display: flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 4px 2px;
+    display: flex; align-items: center; gap: 7px; font-size: 13.5px; padding: 4px 2px;
     cursor: pointer; border-radius: 4px;
   }
   .modal-module-list label:hover { background: var(--surface); }
   .modal-module-list input { margin: 0; flex-shrink: 0; }
   .health-check-row { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
   .health-check-row #healthCheckStatus { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  /* New Scan page (replaces the old cramped popup -- a real, dedicated
+     page with room to actually see what's being launched, the same
+     pattern enterprise DAST consoles (Burp Enterprise's own "new scan"
+     flow) use instead of a modal for a decision this consequential). */
+  .scan-new-head { align-items: flex-start; }
+  .scan-new-target-line {
+    font-family: var(--mono); font-size: 13px; color: var(--text-muted);
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+    padding: 7px 12px; margin-top: 10px; display: inline-block;
+  }
+  .scan-new-grid { display: grid; grid-template-columns: 1fr 300px; gap: 20px; align-items: start; }
+  .scan-new-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .scan-new-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; position: sticky; top: 0; }
+  .scan-new-name-field { margin: 0; }
+
+  .scan-new-module-search {
+    display: flex; align-items: center; gap: 8px; padding: 8px 11px; margin: 0 0 12px;
+    border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2);
+  }
+  .scan-new-module-search svg { flex-shrink: 0; color: var(--text-faint); }
+  .scan-new-module-search input {
+    border: none; background: transparent; outline: none; font-size: 13.5px;
+    color: var(--text); width: 100%; font-family: var(--sans);
+  }
+  .scan-new-module-search input::placeholder { color: var(--text-faint); }
+
+  .scan-new-module-family { margin-bottom: 16px; }
+  .scan-new-module-family:last-child { margin-bottom: 0; }
+  .scan-new-module-family-label {
+    display: flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 700;
+    letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-faint);
+    margin: 0 0 8px 2px;
+  }
+  .scan-new-module-family-label .n { font-family: var(--mono); font-weight: 400; letter-spacing: normal; text-transform: none; }
+  .scan-new-module-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px;
+  }
+  .scan-new-module-grid label {
+    display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; padding: 10px 12px;
+    cursor: pointer; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
+    transition: border-color 0.15s ease, background 0.15s ease, transform 100ms ease;
+  }
+  .scan-new-module-grid label:hover { border-color: var(--accent); background: var(--surface); }
+  .scan-new-module-grid label:active { transform: scale(0.98); }
+  .scan-new-module-grid label:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
+  .scan-new-module-grid input { margin: 2px 0 0; flex-shrink: 0; }
+  .scan-new-module-grid .mod-name { font-weight: 600; display: block; }
+  .scan-new-module-grid .mod-tc-count { display: block; font-size: 12px; color: var(--text-faint); margin-top: 1px; font-family: var(--mono); }
+  .scan-new-module-no-match { padding: 20px 4px; text-align: center; color: var(--text-faint); font-size: 13.5px; }
+
+  .scan-new-module-skeleton-card {
+    height: 54px; border-radius: 8px; border: 1px solid var(--border);
+    background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
+    background-size: 400% 100%; animation: shimmer 1.4s ease infinite;
+  }
+
+  .scan-new-workflow-list label {
+    display: flex; align-items: center; gap: 8px; font-size: 13.5px; padding: 7px 4px; cursor: pointer; border-radius: 6px;
+  }
+  .scan-new-workflow-list label:hover { background: var(--surface-2); }
+
+  /* Scan scope: a live, always-visible readout of what's about to run --
+     replaces a cramped "3 / 15 selected" text with the kind of
+     at-a-glance scope summary enterprise DAST consoles show before
+     launch. */
+  .scan-new-summary-card { border-top: 2px solid var(--accent); }
+  .scan-new-summary-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; }
+  .scan-new-summary-row { display: flex; align-items: baseline; gap: 8px; }
+  .scan-new-summary-num { font-family: var(--mono); font-size: 27px; font-weight: 700; color: var(--accent-text); line-height: 1; min-width: 34px; transition: color 150ms ease; }
+  .scan-new-summary-label { font-size: 13px; color: var(--text-muted); }
+  .scan-new-summary-row.is-empty .scan-new-summary-num { color: var(--text-faint); }
+
+  .scan-new-footer {
+    position: sticky; bottom: 0; margin-top: 20px; display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px 20px; box-shadow: var(--shadow); flex-wrap: wrap;
+  }
+  .scan-new-footer label.confirm { display: flex; align-items: flex-start; gap: 10px; font-size: 13.5px; color: var(--text); cursor: pointer; }
+  .scan-new-footer label.confirm input { margin-top: 2px; }
+  @media (max-width: 860px) {
+    .scan-new-grid { grid-template-columns: 1fr; }
+    .scan-new-side { position: static; }
+  }
 
   /* wide scan-summary modal + target-grouped Scans tab */
   .modal-wide {
@@ -609,33 +787,33 @@
   .modal-x {
     position: absolute; top: 14px; right: 16px; z-index: 2;
     width: 28px; height: 28px; border-radius: 6px; border: none;
-    background: transparent; color: var(--text-faint); font-size: 20px; line-height: 1;
+    background: transparent; color: var(--text-faint); font-size: 21px; line-height: 1;
     cursor: pointer; transition: background 120ms ease, color 120ms ease;
   }
   .modal-x:hover { background: var(--surface-2); color: var(--text); }
   .modal-wide-head { padding: 26px 56px 18px 26px; border-bottom: 1px solid var(--border); background: var(--surface-2); }
-  .modal-wide-eyebrow { display: inline-block; font-size: 10.5px; font-weight: 700; letter-spacing: 0.08em; color: var(--sev-accent, var(--accent)); text-transform: uppercase; margin-bottom: 8px; }
-  .modal-wide-head h3 { font-family: var(--mono); font-size: 17px; font-weight: 600; margin-bottom: 6px; word-break: break-all; color: var(--text); }
+  .modal-wide-eyebrow { display: inline-block; font-size: 11.5px; font-weight: 700; letter-spacing: 0.08em; color: var(--sev-accent, var(--accent)); text-transform: uppercase; margin-bottom: 8px; }
+  .modal-wide-head h3 { font-family: var(--mono); font-size: 18px; font-weight: 600; margin-bottom: 6px; word-break: break-all; color: var(--text); }
   .summary-name-row { display: flex; align-items: center; gap: 10px; margin: 6px 0; }
-  .summary-name-row #summaryScanName { font-size: 15px; font-weight: 700; color: var(--text); }
+  .summary-name-row #summaryScanName { font-size: 16px; font-weight: 700; color: var(--text); }
   .summary-name-row #summaryScanName:empty::before { content: "Unnamed scan"; color: var(--text-faint); font-weight: 400; font-style: italic; }
-  .modal-wide-meta { font-size: 12px; color: var(--text-muted); margin: 0; }
+  .modal-wide-meta { font-size: 13px; color: var(--text-muted); margin: 0; }
   .summary-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; padding: 20px 26px 0; margin-bottom: 6px; }
   .summary-kpis .kpi { padding: 14px; box-shadow: none; background: var(--surface-2); border-color: var(--border); }
-  .summary-kpis .kpi .val { font-size: 21px; }
+  .summary-kpis .kpi .val { font-size: 22px; }
   .summary-body { display: grid; grid-template-columns: 0.8fr 1.3fr 0.9fr; gap: 24px; padding: 18px 26px; margin-bottom: 0; min-width: 0; }
   .summary-reports-list { display: flex; flex-direction: column; gap: 6px; }
   .summary-report-link {
     display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px;
-    border: 1px solid var(--border); font-size: 12px; color: var(--text); text-decoration: none;
+    border: 1px solid var(--border); font-size: 13px; color: var(--text); text-decoration: none;
   }
   .summary-report-link:hover { border-color: var(--accent); background: var(--surface-2); }
   .summary-report-link .ext {
-    font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.03em;
+    font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em;
     background: var(--surface-2); color: var(--text-muted); border-radius: 4px; padding: 2px 5px; flex-shrink: 0;
   }
-  .summary-body h4 { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 12px; }
-  .summary-finding-row { padding: 10px 0 10px 12px; border-left: 3px solid var(--border); border-bottom: none; margin-bottom: 8px; font-size: 12px; background: var(--surface-2); border-radius: 0 6px 6px 0; }
+  .summary-body h4 { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 12px; }
+  .summary-finding-row { padding: 10px 0 10px 12px; border-left: 3px solid var(--border); border-bottom: none; margin-bottom: 8px; font-size: 13px; background: var(--surface-2); border-radius: 0 6px 6px 0; }
   .summary-finding-row.Critical { border-left-color: var(--critical); }
   .summary-finding-row.High { border-left-color: var(--high); }
   .summary-finding-row.Medium { border-left-color: var(--medium); }
@@ -643,16 +821,16 @@
   .summary-finding-row .head { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; padding-right: 10px; }
   .finding-detail-section { padding: 18px 26px; border-bottom: 1px solid var(--border); }
   .finding-detail-section:last-child { border-bottom: none; }
-  .finding-detail-section h4 { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 10px; }
+  .finding-detail-section h4 { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-faint); margin: 0 0 10px; }
   .finding-detail-badges { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 4px; }
   .finding-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px 20px; }
-  .finding-detail-grid .kv-label { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 3px; }
-  .finding-detail-grid .kv-val { font-size: 13px; color: var(--text); word-break: break-word; }
-  .finding-detail-text { font-size: 13px; color: var(--text-muted); line-height: 1.65; margin: 0; white-space: pre-wrap; }
+  .finding-detail-grid .kv-label { font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-faint); margin-bottom: 3px; }
+  .finding-detail-grid .kv-val { font-size: 14px; color: var(--text); word-break: break-word; }
+  .finding-detail-text { font-size: 14px; color: var(--text-muted); line-height: 1.65; margin: 0; white-space: pre-wrap; }
   .finding-raw-block { position: relative; }
   .finding-raw-block pre {
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
-    padding: 14px; font-family: var(--mono); font-size: 11.5px; line-height: 1.6;
+    padding: 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.6;
     color: var(--text); white-space: pre-wrap; word-break: break-all; max-height: 320px; overflow-y: auto; margin: 0;
   }
   .finding-raw-block + .finding-raw-block { margin-top: 14px; }
@@ -674,20 +852,20 @@
   #summaryModules, #summaryFindings { min-width: 0; overflow-wrap: break-word; }
   #summaryModules .mod-row { display: grid; grid-template-columns: 14px 1fr; align-items: baseline; column-gap: 8px; row-gap: 2px; padding: 8px 0; }
   #summaryModules .mod-name { grid-column: 2; }
-  #summaryModules .mod-counts { grid-column: 2; white-space: normal; font-size: 11px; color: var(--text-muted); }
+  #summaryModules .mod-counts { grid-column: 2; white-space: normal; font-size: 12px; color: var(--text-muted); }
 
   .target-group { margin-bottom: 20px; }
-  .target-group-head { display: flex; align-items: center; gap: 10px; padding: 10px 2px; font-size: 13px; font-weight: 700; }
-  .target-group-head .n { font-weight: 400; color: var(--text-faint); font-family: var(--mono); font-size: 11.5px; }
+  .target-group-head { display: flex; align-items: center; gap: 10px; padding: 10px 2px; font-size: 14px; font-weight: 700; }
+  .target-group-head .n { font-weight: 400; color: var(--text-faint); font-family: var(--mono); font-size: 12.5px; }
   .scan-row { display: flex; align-items: center; gap: 14px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); margin-bottom: 8px; cursor: pointer; transition: background 120ms ease; }
   .scan-row:hover { background: var(--surface-2); }
-  .scan-row .sid { font-family: var(--mono); font-size: 11.5px; color: var(--text-muted); width: 76px; flex-shrink: 0; }
-  .scan-row .sname { font-weight: 700; font-size: 13px; width: 190px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .scan-row .when { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); width: 150px; flex-shrink: 0; }
-  .scan-row .sevs { display: flex; gap: 10px; flex: 1; font-size: 11.5px; }
+  .scan-row .sid { font-family: var(--mono); font-size: 12.5px; color: var(--text-muted); width: 76px; flex-shrink: 0; }
+  .scan-row .sname { font-weight: 700; font-size: 14px; width: 190px; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scan-row .when { font-family: var(--mono); font-size: 12.5px; color: var(--text-faint); width: 150px; flex-shrink: 0; }
+  .scan-row .sevs { display: flex; gap: 10px; flex: 1; font-size: 12.5px; }
   .scan-row .sevs span { font-family: var(--mono); }
 
-  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 12px 16px; font-size: 12.5px; z-index: 60; opacity: 0; transform: translateY(6px); transition: opacity 180ms ease, transform 180ms ease; }
+  .toast { position: fixed; bottom: 20px; right: 20px; background: var(--surface); border: 1px solid var(--border); box-shadow: var(--shadow); border-radius: 8px; padding: 12px 16px; font-size: 13.5px; z-index: 60; opacity: 0; transform: translateY(6px); transition: opacity 180ms ease, transform 180ms ease; }
   .toast.show { opacity: 1; transform: none; }
   .toast.err { border-color: var(--critical); color: var(--critical); }
 
@@ -739,6 +917,7 @@
 
 <div class="shell">
   <div class="brand">
+    <div class="mark-monogram" aria-hidden="true">S</div>
     <div class="mark"><img src="/nusummit-logo.svg" alt="NuSummit" /></div>
     <div class="name">STOF Console<small>Security Testing Orchestration</small></div>
   </div>
@@ -759,18 +938,21 @@
   </div>
 
   <nav class="nav" id="primaryNav" aria-label="Primary">
+    <button type="button" class="nav-rail-toggle" id="navRailToggle" title="Expand sidebar" aria-label="Expand sidebar">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="9 18 15 12 9 6"/></svg>
+    </button>
     <div class="nav-label">Overview</div>
-    <button class="nav-item active" data-panel="dashboard" aria-current="page"><span class="ic" aria-hidden="true">◧</span> Dashboard</button>
-    <button class="nav-item" data-panel="scans"><span class="ic" aria-hidden="true">⟳</span> Scans <span class="count" id="navScanCount">0</span></button>
+    <button class="nav-item active" data-panel="dashboard" aria-current="page" title="Dashboard"><span class="ic" aria-hidden="true">◧</span><span class="label-text">Dashboard</span></button>
+    <button class="nav-item" data-panel="scans" title="Scans"><span class="ic" aria-hidden="true">⟳</span><span class="label-text">Scans</span> <span class="count" id="navScanCount">0</span></button>
 
     <div class="nav-label">Results</div>
-    <button class="nav-item" data-panel="findings"><span class="ic" aria-hidden="true">▲</span> Findings <span class="count" id="navFindingsCount">0</span></button>
-    <button class="nav-item" data-panel="reports"><span class="ic" aria-hidden="true">▤</span> Reports <span class="count" id="navReportsCount">0</span></button>
+    <button class="nav-item" data-panel="findings" title="Findings"><span class="ic" aria-hidden="true">▲</span><span class="label-text">Findings</span> <span class="count" id="navFindingsCount">0</span></button>
+    <button class="nav-item" data-panel="reports" title="Reports"><span class="ic" aria-hidden="true">▤</span><span class="label-text">Reports</span> <span class="count" id="navReportsCount">0</span></button>
 
     <div class="nav-label">Configuration</div>
-    <button class="nav-item" data-panel="modules"><span class="ic" aria-hidden="true">▦</span> Modules <span class="count" id="navModulesCount">0</span></button>
-    <button class="nav-item" data-panel="workflows"><span class="ic" aria-hidden="true">●</span> Workflows <span class="count" id="navWorkflowsCount">0</span></button>
-    <button class="nav-item" data-panel="settings"><span class="ic" aria-hidden="true">⚙</span> Settings</button>
+    <button class="nav-item" data-panel="modules" title="Modules"><span class="ic" aria-hidden="true">▦</span><span class="label-text">Modules</span> <span class="count" id="navModulesCount">0</span></button>
+    <button class="nav-item" data-panel="workflows" title="Workflows"><span class="ic" aria-hidden="true">●</span><span class="label-text">Workflows</span> <span class="count" id="navWorkflowsCount">0</span></button>
+    <button class="nav-item" data-panel="settings" title="Settings"><span class="ic" aria-hidden="true">⚙</span><span class="label-text">Settings</span></button>
 
     <div class="nav-foot">
       <div class="row"><span>Engine</span><span class="v">Playwright · async</span></div>
@@ -825,7 +1007,7 @@
 
       <div class="page-head">
         <div>
-          <h1 style="font-size: 16px;">Scan detail</h1>
+          <h1 style="font-size: 17px;">Scan detail</h1>
           <p id="dashboardSub">No scan selected yet &mdash; run one, or pick a past scan from the Scans tab.</p>
         </div>
         <select class="select" id="dashboardScanSelect" style="display:none;"></select>
@@ -878,6 +1060,116 @@
       </div>
 
       <div id="scansByTarget"><div class="card-empty">No scans yet — click "Run Scan" to launch one.</div></div>
+    </section>
+
+    <!-- ============================================================ NEW SCAN -->
+    <section class="panel" id="panel-scan-new" aria-labelledby="h1-scan-new">
+      <div class="page-head scan-new-head">
+        <div>
+          <h1 id="h1-scan-new">New Scan</h1>
+          <p>Sends real requests to the configured target — including attack payloads from every selected module.</p>
+          <div class="scan-new-target-line" id="scanNewTarget">&mdash;</div>
+        </div>
+        <button class="btn" id="scanNewCancel">← Back to Scans</button>
+      </div>
+
+      <div class="scan-new-grid">
+        <div class="scan-new-main">
+          <div class="field scan-new-name-field">
+            <label>Scan name <small>optional — helps tell scans apart later</small></label>
+            <input type="text" id="scanNewName" placeholder="e.g. Pre-release regression, Client X round 2" autocomplete="off" />
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span class="icon-chip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><rect x="3.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.3"/></svg></span>
+              <h3>Modules to run</h3>
+              <div class="meta" id="scanNewModuleCount"></div>
+              <span>
+                <button type="button" class="btn-link-remove" id="scanNewModulesAll" style="color: var(--accent-text);">All</button>
+                <button type="button" class="btn-link-remove" id="scanNewModulesNone" style="color: var(--text-faint); margin-left: 8px;">None</button>
+              </span>
+            </div>
+            <div class="card-body" style="padding: 14px 18px;">
+              <div class="scan-new-module-search">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+                <input type="text" id="scanNewModuleSearch" placeholder="Filter modules by name…" autocomplete="off" />
+              </div>
+              <div id="scanNewModuleList">
+                <div class="scan-new-module-grid scan-new-module-skeleton" id="scanNewModuleSkeleton">
+                  <div class="scan-new-module-skeleton-card" style="animation-delay: 0ms"></div>
+                  <div class="scan-new-module-skeleton-card" style="animation-delay: 60ms"></div>
+                  <div class="scan-new-module-skeleton-card" style="animation-delay: 120ms"></div>
+                  <div class="scan-new-module-skeleton-card" style="animation-delay: 180ms"></div>
+                  <div class="scan-new-module-skeleton-card" style="animation-delay: 240ms"></div>
+                  <div class="scan-new-module-skeleton-card" style="animation-delay: 300ms"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="scanNewWorkflowField" hidden>
+            <div class="card-head">
+              <span class="icon-chip" aria-hidden="true">▶</span>
+              <h3>Recorded workflows to replay</h3>
+              <div class="meta">optional — login flow, checkout, a signup wizard...</div>
+            </div>
+            <div class="card-body" style="padding: 10px 18px;">
+              <div class="scan-new-workflow-list" id="scanNewWorkflowList"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="scan-new-side">
+          <div class="card scan-new-summary-card">
+            <div class="card-head">
+              <span class="icon-chip" aria-hidden="true">◈</span>
+              <h3>Scan scope</h3>
+            </div>
+            <div class="card-body scan-new-summary-body">
+              <div class="scan-new-summary-row">
+                <span class="scan-new-summary-num" id="scanNewSummaryModules">0</span>
+                <span class="scan-new-summary-label">module<span id="scanNewSummaryModulesPlural">s</span> selected</span>
+              </div>
+              <div class="scan-new-summary-row">
+                <span class="scan-new-summary-num" id="scanNewSummaryTechniques">0</span>
+                <span class="scan-new-summary-label">technique<span id="scanNewSummaryTechniquesPlural">s</span> will run</span>
+              </div>
+              <div class="scan-new-summary-row" id="scanNewSummaryWorkflowsRow" hidden>
+                <span class="scan-new-summary-num" id="scanNewSummaryWorkflows">0</span>
+                <span class="scan-new-summary-label">workflow<span id="scanNewSummaryWorkflowsPlural">s</span> replayed</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-head">
+              <span class="icon-chip" aria-hidden="true">✓</span>
+              <h3>Readiness</h3>
+            </div>
+            <div class="card-body" style="padding: 16px 18px; display: flex; flex-direction: column; gap: 14px;">
+              <div>
+                <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">Is STOF itself working correctly? Advisory only — a failing suite doesn't block the scan.</div>
+                <div class="health-check-row" style="margin: 0;">
+                  <button type="button" class="btn" id="healthCheckBtn">Check tool health</button>
+                  <span id="healthCheckStatus" class="meta">not checked this session</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="scan-new-footer">
+        <label class="confirm" style="margin: 0;">
+          <input type="checkbox" id="scanNewConfirm" />
+          <span>I confirm I am authorized to run a security scan against this target.</span>
+        </label>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn" id="scanNewCancel2">Cancel</button>
+          <button class="btn btn-primary" id="scanNewStart" disabled>▶ Start scan</button>
+        </div>
+      </div>
     </section>
 
     <!-- ============================================================ FINDINGS -->
@@ -972,7 +1264,7 @@
           <div class="meta">runs on your own machine</div>
         </div>
         <div class="card-body" style="padding: 16px 18px;">
-          <p style="margin:0 0 14px; font-size: 12.5px; color: var(--text-muted); line-height: 1.6;">
+          <p style="margin:0 0 14px; font-size: 13.5px; color: var(--text-muted); line-height: 1.6;">
             Recording always happens on your own laptop with a small standalone script, fully offline from this
             server — no debug port needs to be reachable over the network, no matter where this console is deployed.
           </p>
@@ -1006,29 +1298,43 @@
         <div><b id="probesBannerTitle">State-changing probes are off</b><span>Techniques that write data (account creation, cache poisoning confirmation, workflow-step probes) are skipped until this is turned on for an authorized engagement window.</span></div>
       </div>
 
-      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+      <div class="settings-layout">
+        <div class="settings-col">
+
+      <div class="card" id="settings-target" style="max-width: 640px; margin-bottom: 16px;">
         <div class="card-head"><h3>Target</h3><div class="meta">config.json → target</div></div>
         <form id="targetForm" class="form-body">
           <div class="field"><label>Base URL</label><input type="url" name="base_url" required placeholder="https://example.com" /></div>
           <div class="field"><label>Login page URL</label><input type="url" name="login_url" required placeholder="https://example.com/login" /></div>
-          <p style="margin: 4px 0 0; font-size: 11.5px; color: var(--text-faint); line-height: 1.6;">
+          <p style="margin: 4px 0 0; font-size: 12.5px; color: var(--text-faint); line-height: 1.6;">
             That's all most targets need — STOF auto-detects the login form's fields on any application (no CSS selectors required). If a particular app's login page is unusual and auto-detect picks the wrong field, either set an exact override below, or use <b>Workflows → Upload a workflow</b> to capture the real login by recording it once with <code class="inline">tools/record_workflow.py</code>.
           </p>
           <details style="margin-top: 6px;">
-            <summary style="cursor:pointer; font-size: 12px; font-weight: 600; color: var(--text-muted);">Advanced: manual selector overrides</summary>
+            <summary style="cursor:pointer; font-size: 13px; font-weight: 600; color: var(--text-muted);">Advanced: manual selector overrides</summary>
             <div style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
               <div class="field"><label>Username field selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="username_selector" placeholder="#username" /></div>
               <div class="field"><label>Password field selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="password_selector" placeholder="#password" /></div>
               <div class="field"><label>Submit button selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="submit_selector" placeholder="button[type=submit]" /></div>
             </div>
           </details>
+          <!-- Assisted Login is paused (Cloudflare Turnstile flags any
+               CDP-driven browser as a bot regardless of who clicks it --
+               needs a headed-in-Xvfb rework, tracked separately). This
+               field/checkbox stays wired (hidden) so re-enabling later is
+               a one-line UI change, not new plumbing -- and so the
+               requires_assisted_login form field the JS reads always
+               exists, even while hidden. -->
+          <label class="checkbox-row" style="margin-top: 10px; display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-muted);" hidden>
+            <input type="checkbox" name="requires_assisted_login" id="requiresAssistedLogin" />
+            This target sits behind a bot/CAPTCHA challenge (Cloudflare, etc.)
+          </label>
           <div class="form-actions"><button type="submit" class="btn btn-primary">Save target</button></div>
         </form>
       </div>
 
-      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+      <div class="card" id="settings-credentials" style="max-width: 640px; margin-bottom: 16px;">
         <div class="card-head"><h3>Credentials</h3><div class="meta">users.json + .env</div></div>
-        <p style="margin: 0 0 12px; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+        <p class="card-desc">
           Only got one account for this target? Leave the other role's fields blank, or click
           <b>Remove</b> below if it's already configured — every module and Verify Login already
           adapt to whatever's actually here, from one account up.
@@ -1038,19 +1344,37 @@
             <label>Admin username <button type="button" class="btn-link-remove" id="removeAdminBtn" hidden>Remove</button></label>
             <input type="text" name="admin_username" autocomplete="off" placeholder="leave blank if this target has no admin account" />
           </div>
-          <div class="field"><label>Admin password <small>write-only, never shown back</small></label><input type="password" name="admin_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
+          <div class="field">
+            <label>Admin login method</label>
+            <select class="select" name="admin_auth_type" id="adminAuthType">
+              <option value="form_login">Form login (auto-detected, no setup needed)</option>
+              <option value="jwt">API token / JWT (no login form at all)</option>
+            </select>
+          </div>
+          <div class="field"><label id="adminPasswordLabel">Admin password <small>write-only, never shown back</small></label><input type="password" name="admin_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
           <div class="field">
             <label>Normal-user username <button type="button" class="btn-link-remove" id="removeNormalBtn" hidden>Remove</button></label>
             <input type="text" name="normal_username" autocomplete="off" placeholder="leave blank if this target has no normal-user account" />
           </div>
-          <div class="field"><label>Normal-user password <small>write-only, never shown back</small></label><input type="password" name="normal_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
+          <div class="field">
+            <label>Normal-user login method</label>
+            <select class="select" name="normal_auth_type" id="normalAuthType">
+              <option value="form_login">Form login (auto-detected, no setup needed)</option>
+              <option value="jwt">API token / JWT (no login form at all)</option>
+            </select>
+          </div>
+          <div class="field"><label id="normalPasswordLabel">Normal-user password <small>write-only, never shown back</small></label><input type="password" name="normal_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
+          <p style="margin: 0; font-size: 12px; color: var(--text-faint);">
+            Neither fits (SSO/OAuth redirect to another domain, or a bot/CAPTCHA challenge)?
+            Skip these fields and use <b>Manual Session Cookies</b> further down instead.
+          </p>
           <div class="form-actions"><button type="submit" class="btn btn-primary">Save credentials</button></div>
         </form>
       </div>
 
-      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+      <div class="card" id="settings-verify" style="max-width: 640px; margin-bottom: 16px;">
         <div class="card-head"><h3>Verify Login</h3><div class="meta">runs a real login, shows you the result</div></div>
-        <p style="margin: 0 0 12px; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+        <p class="card-desc">
           Drives a real browser through the login form as the selected account and shows you a
           screenshot of what it actually reached — works the same whether this console is open on
           this machine or on another one over the network, since nothing pops up on the server's
@@ -1071,10 +1395,40 @@
         </div>
       </div>
 
-      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+        </div>
+        <div class="settings-col">
+
+      <div class="card" id="settings-manual-session" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head"><h3>Manual Session Cookies<span class="settings-status" id="manualSessionStatus">Not set</span></h3><div class="meta">for targets STOF can't log into automatically</div></div>
+        <p class="card-desc">
+          Log in as this account in your own real browser, then copy the cookie header from
+          devtools (Network tab → any request → <b>Cookie</b> header, or Application → Cookies)
+          and paste it below. The scan reuses this session directly and skips login entirely for
+          this role. Note: a target that binds its cookie to the browser/network that earned it
+          (e.g. Cloudflare's bot-challenge cookie) may still reject this if the scan runs from a
+          different machine — this works reliably for ordinary session-cookie auth.
+        </p>
+        <form id="manualSessionForm" class="form-body">
+          <div class="field">
+            <label>Account</label>
+            <select class="select" name="role" id="manualSessionRole"></select>
+          </div>
+          <div class="field">
+            <label>Cookie header <small>name=value; name2=value2</small></label>
+            <textarea name="cookies" rows="3" placeholder="JSESSIONID=abc123; auth_token=xyz789" style="resize: vertical; font-family: var(--mono, monospace); font-size: 13px;"></textarea>
+          </div>
+          <div class="field"><label>Keep valid for <small>hours</small></label><input type="number" name="expires_hours" value="6" min="1" max="72" style="max-width: 120px;" /></div>
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">Save session</button>
+            <button type="button" class="btn" id="manualSessionClearBtn">Clear</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="card" id="settings-oob" style="max-width: 640px; margin-bottom: 16px;">
         <div class="card-head"><h3>Out-of-band testing</h3><div class="meta">config.json → burp.collaborator_url</div></div>
         <form id="oobForm" class="form-body">
-          <p style="margin: 0; font-size: 12px; color: var(--text-muted); line-height: 1.6;">
+          <p style="margin: 0; font-size: 13px; color: var(--text-muted); line-height: 1.6;">
             Point this at your own OOB collaborator (Burp Collaborator, interactsh, or any equivalent host you control) to enable <code class="inline">ssrf_tests</code>' TC-137.6 — it sends a unique callback URL per candidate parameter; STOF doesn't poll for the callback itself, so check your collaborator's own dashboard for a hit.
           </p>
           <div class="field"><label>Collaborator host</label><input type="text" name="collaborator_url" placeholder="e.g. abc123.oastify.com or https://your-collaborator.example" /></div>
@@ -1082,60 +1436,53 @@
         </form>
       </div>
 
-      <div class="settings-grid">
+      <div class="card" id="settings-burp" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head"><h3>Burp Suite Pro integration<span class="settings-status" id="burpStatus">Not set</span></h3><div class="meta">config.json → burp</div></div>
+        <form id="burpForm" class="form-body">
+          <p style="margin: 0; font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+            Connects to a running Burp Suite Pro instance via its REST API (Settings → Suite → REST API in Burp).
+            <b>Evidence capture</b> (proxying STOF's own traffic through Burp so it shows up in Proxy history) and
+            <b>Active Scan</b> (Burp's own much slower vulnerability scanner) are separate toggles on purpose —
+            turning one on never silently turns on the other.
+          </p>
+          <div class="field">
+            <label style="display: flex; align-items: center; justify-content: space-between;">
+              <span>Enable Burp integration</span>
+              <label class="switch" style="margin: 0;"><input type="checkbox" name="enabled" id="burpEnabled" /><span class="track"></span></label>
+            </label>
+          </div>
+          <div class="field">
+            <label style="display: flex; align-items: center; justify-content: space-between;">
+              <span>Run Burp Active Scan alongside STOF <small>much slower — a real, separate scan of its own</small></span>
+              <label class="switch" style="margin: 0;"><input type="checkbox" name="run_active_scan" id="burpRunActiveScan" /><span class="track"></span></label>
+            </label>
+          </div>
+          <div class="field"><label>REST API URL <small>Burp's own default is http://127.0.0.1:1337</small></label><input type="text" name="api_url" placeholder="http://127.0.0.1:1337" /></div>
+          <div class="field"><label>API key <small id="burpApiKeyHint">write-only, never shown back</small></label><input type="password" name="api_key" autocomplete="off" placeholder="leave blank to keep unchanged" /></div>
+          <div class="field"><label>Proxy URL <small>Burp's intercepting proxy listener — default 127.0.0.1:8080</small></label><input type="text" name="proxy_url" placeholder="http://127.0.0.1:8080" /></div>
+          <div style="display: flex; gap: 12px;">
+            <div class="field" style="flex: 1;"><label>Scan timeout <small>seconds</small></label><input type="number" name="scan_timeout_s" min="60" step="60" /></div>
+            <div class="field" style="flex: 1;"><label>Poll interval <small>seconds</small></label><input type="number" name="poll_interval_s" min="1" /></div>
+          </div>
+          <div class="form-actions" style="align-items: center; gap: 12px;">
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" class="btn" id="burpTestBtn">Test connection</button>
+            <span id="burpTestStatus" class="meta">not checked this session</span>
+          </div>
+        </form>
+      </div>
+
+      <div class="settings-grid" id="settings-general">
         <div class="setting-row"><div class="k">Browser<small>Playwright headless mode</small></div><label class="switch"><input type="checkbox" id="headlessToggle" /><span class="track"></span></label></div>
         <div class="setting-row"><div class="k">Report output<small>Where HTML/JSON/Excel land</small></div><div class="v" id="settingsReportsDir">&mdash;</div></div>
         <div class="setting-row"><div class="k">Allow state-changing probes<small>Required for write-verb techniques (TC-135/136, etc.)</small></div><label class="switch"><input type="checkbox" id="probesToggle" /><span class="track"></span></label></div>
-        <div class="setting-row"><div class="k">Burp Suite integration<small>Layer 3C — Phase 2</small></div><div class="v" id="settingsBurp">&mdash;</div></div>
+      </div>
+
+        </div>
       </div>
     </section>
 
   </main>
-</div>
-
-<div class="modal-backdrop" id="scanModalBackdrop">
-  <div class="modal" style="width: 520px;">
-    <h3>Run a new scan</h3>
-    <p>This launches <code class="inline">stof scan</code> and sends real requests to the configured target &mdash; including attack payloads from every enabled module.</p>
-    <div class="target-line" id="modalTarget">&mdash;</div>
-
-    <div class="field" style="margin: 12px 0;">
-      <label>Scan name <small>optional &mdash; helps tell scans apart later</small></label>
-      <input type="text" id="modalScanName" placeholder="e.g. Pre-release regression, Client X round 2" autocomplete="off" />
-    </div>
-
-    <div class="field" style="margin: 0 0 12px;">
-      <label style="display: flex; align-items: center; justify-content: space-between;">
-        <span>Modules to run <small id="modalModuleCount"></small></span>
-        <span>
-          <button type="button" class="btn-link-remove" id="modalModulesAll" style="color: var(--accent-text);">All</button>
-          <button type="button" class="btn-link-remove" id="modalModulesNone" style="color: var(--text-faint); margin-left: 8px;">None</button>
-        </span>
-      </label>
-      <div class="modal-module-list" id="modalModuleList"></div>
-    </div>
-
-    <div class="field" style="margin: 0 0 12px;" id="modalWorkflowField" hidden>
-      <label>
-        <span>Recorded workflows to replay <small>optional &mdash; login flow, checkout, a signup wizard...</small></span>
-      </label>
-      <div class="modal-module-list" id="modalWorkflowList" style="grid-template-columns: 1fr;"></div>
-    </div>
-
-    <div class="health-check-row">
-      <button type="button" class="btn" id="healthCheckBtn">Check tool health</button>
-      <span id="healthCheckStatus" class="meta">not checked this session</span>
-    </div>
-
-    <label class="confirm">
-      <input type="checkbox" id="modalConfirm" />
-      <span>I confirm I am authorized to run a security scan against this target.</span>
-    </label>
-    <div class="modal-actions">
-      <button class="btn" id="modalCancel">Cancel</button>
-      <button class="btn btn-primary" id="modalStart" disabled>▶ Start scan</button>
-    </div>
-  </div>
 </div>
 
 <div class="modal-backdrop" id="scanSummaryBackdrop">
@@ -1408,8 +1755,12 @@
   });
   var _lastPanel = null;
   function showPanel(name) {
+    // "New Scan" is reached via a button, not its own sidebar entry --
+    // it keeps the "Scans" nav item highlighted, the same way opening a
+    // scan/finding detail keeps its parent panel highlighted below.
+    var navHighlight = name === "scan-new" ? "scans" : name;
     navItems.forEach(function (b) {
-      var active = b.dataset.panel === name;
+      var active = b.dataset.panel === navHighlight;
       b.classList.toggle("active", active);
       if (active) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current");
     });
@@ -1435,9 +1786,9 @@
   // action sets it, and the `hashchange` listener is the only place that
   // actually mutates panel/modal visibility -- this avoids the click-
   // handler-vs-listener double-mutation bugs a naive router gets wrong.
-  var VALID_PANELS = ["dashboard", "scans", "findings", "reports", "modules", "workflows", "settings"];
+  var VALID_PANELS = ["dashboard", "scans", "scan-new", "findings", "reports", "modules", "workflows", "settings"];
   var PANEL_TITLES = {
-    dashboard: "Dashboard", scans: "Scans", findings: "Findings", reports: "Reports",
+    dashboard: "Dashboard", scans: "Scans", "scan-new": "New Scan", findings: "Findings", reports: "Reports",
     modules: "Modules", workflows: "Workflows", settings: "Settings",
   };
   function setRoute(hash) {
@@ -1460,6 +1811,8 @@
       summaryBackdrop.classList.remove("open");
     }
 
+    if (route.panel === "scan-new") openNewScanPage();
+
     if (route.panel === "findings" && route.parts[1] && route.parts[2]) {
       var scanId = route.parts[1], findingId = route.parts[2];
       if (state.findingsScanId !== scanId) await loadFindingsFor(scanId);
@@ -1474,7 +1827,9 @@
   }
   function updateBreadcrumb(route) {
     var el = document.getElementById("breadcrumb");
-    var crumbs = [{ label: PANEL_TITLES[route.panel], hash: "#/" + route.panel }];
+    var crumbs = route.panel === "scan-new"
+      ? [{ label: "Scans", hash: "#/scans" }, { label: "New Scan" }]
+      : [{ label: PANEL_TITLES[route.panel], hash: "#/" + route.panel }];
     if (route.panel === "scans" && route.parts[1]) {
       crumbs.push({ label: route.parts[1] });
     }
@@ -1516,11 +1871,32 @@
     if (e.key === "Escape" && document.body.classList.contains("nav-open")) closeNavDrawer();
   });
 
+  // ---------------------------------------------------------------- icon-rail expand/collapse (desktop)
+  // Separate from the mobile drawer above (body.nav-open) -- this is
+  // the VS Code-style icon-only rail toggling to a full labeled
+  // sidebar via a click on the rail's own toggle button, not an
+  // overlay. Remembered across reloads so the operator's choice sticks.
+  var navRailToggle = document.getElementById("navRailToggle");
+  function setNavExpanded(expanded) {
+    document.body.classList.toggle("nav-expanded", expanded);
+    navRailToggle.setAttribute("title", expanded ? "Collapse sidebar" : "Expand sidebar");
+    navRailToggle.setAttribute("aria-label", expanded ? "Collapse sidebar" : "Expand sidebar");
+    try { localStorage.setItem("stof-nav-expanded", expanded ? "1" : "0"); } catch (e) { /* private browsing etc -- non-fatal */ }
+  }
+  navRailToggle.addEventListener("click", function () {
+    setNavExpanded(!document.body.classList.contains("nav-expanded"));
+  });
+  (function () {
+    var saved = "0"; // default to the icon-only rail -- click navRailToggle (or any nav item) to expand; the choice is then remembered.
+    try { saved = localStorage.getItem("stof-nav-expanded") || saved; } catch (e) { /* ignore */ }
+    setNavExpanded(saved === "1");
+  })();
+
   // ---------------------------------------------------------------- health + config
   // Note: #healthState's live text is owned by the global WebSocket
   // (setLiveIndicator, below) once it connects -- this is only the
   // one-time check before that connection exists.
-  async function loadHealth() {
+async function loadHealth() {
     try {
       await api("/api/health");
     } catch (e) {
@@ -1539,15 +1915,83 @@
       tf.username_selector.value = (cfg.target && cfg.target.username_selector) || "";
       tf.password_selector.value = (cfg.target && cfg.target.password_selector) || "";
       tf.submit_selector.value = (cfg.target && cfg.target.submit_selector) || "";
+      tf.requires_assisted_login.checked = !!(cfg.target && cfg.target.requires_assisted_login);
       document.getElementById("headlessToggle").checked = !!(cfg.browser && cfg.browser.headless);
       document.getElementById("settingsReportsDir").textContent = (cfg.output && cfg.output.reports_dir) || "—";
-      document.getElementById("settingsBurp").textContent = cfg.burp && cfg.burp.enabled ? "enabled" : "not enabled";
       document.getElementById("oobForm").collaborator_url.value = (cfg.burp && cfg.burp.collaborator_url) || "";
-      document.getElementById("modalTarget").textContent = "Target: " + ((cfg.target && cfg.target.base_url) || "not configured");
+      document.getElementById("scanNewTarget").textContent = "Target: " + ((cfg.target && cfg.target.base_url) || "not configured");
     } catch (e) {
       toast("Could not load config.json: " + e.message, true);
     }
+    await loadBurpConfig();
   }
+
+  async function loadBurpConfig() {
+    try {
+      var burp = await api("/api/config/burp");
+      var bf = document.getElementById("burpForm");
+      bf.enabled.checked = !!burp.enabled;
+      bf.run_active_scan.checked = !!burp.run_active_scan;
+      bf.api_url.value = burp.api_url || "";
+      bf.proxy_url.value = burp.proxy_url || "";
+      bf.scan_timeout_s.value = burp.scan_timeout_s || 1800;
+      bf.poll_interval_s.value = burp.poll_interval_s || 5;
+      document.getElementById("burpApiKeyHint").textContent = burp.api_key_set ? "set — leave blank to keep unchanged" : "not set";
+      setSettingsStatus("burpStatus", !!burp.enabled, "Enabled", "Not set");
+    } catch (err) {
+      // Non-fatal -- the form still works for entering fresh config.
+    }
+  }
+
+  document.getElementById("burpForm").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var f = e.target;
+    try {
+      await api("/api/config/burp", {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: f.enabled.checked,
+          run_active_scan: f.run_active_scan.checked,
+          api_url: f.api_url.value.trim() || "http://127.0.0.1:1337",
+          proxy_url: f.proxy_url.value.trim() || "http://127.0.0.1:8080",
+          api_key: f.api_key.value ? f.api_key.value.trim() : null,
+          scan_timeout_s: parseInt(f.scan_timeout_s.value, 10) || 1800,
+          poll_interval_s: parseInt(f.poll_interval_s.value, 10) || 5,
+        }),
+      });
+      f.api_key.value = "";
+      toast("Burp settings saved");
+      loadBurpConfig();
+    } catch (err) {
+      toast("Could not save Burp settings: " + err.message, true);
+    }
+  });
+
+  document.getElementById("burpTestBtn").addEventListener("click", async function () {
+    var f = document.getElementById("burpForm");
+    var statusEl = document.getElementById("burpTestStatus");
+    var btn = this;
+    btn.disabled = true;
+    statusEl.textContent = "checking…";
+    statusEl.className = "meta is-live";
+    try {
+      var result = await api("/api/burp/test-connection", {
+        method: "POST",
+        body: JSON.stringify({
+          api_url: f.api_url.value.trim() || null,
+          api_key: f.api_key.value ? f.api_key.value.trim() : null,
+        }),
+      });
+      if (result.reachable && result.authorized) { statusEl.textContent = "✓ Connected — Burp accepted the request"; statusEl.className = "meta verify-ok"; }
+      else if (result.reachable) { statusEl.textContent = "⚠ Reached Burp, but the API key looked wrong"; statusEl.className = "meta verify-fail"; }
+      else { statusEl.textContent = "✗ Could not reach Burp: " + (result.error || "unknown error"); statusEl.className = "meta verify-fail"; }
+    } catch (err) {
+      statusEl.textContent = "✗ " + err.message;
+      statusEl.className = "meta verify-fail";
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   document.getElementById("targetForm").addEventListener("submit", async function (e) {
     e.preventDefault();
@@ -1561,6 +2005,7 @@
           username_selector: f.username_selector.value.trim() || null,
           password_selector: f.password_selector.value.trim() || null,
           submit_selector: f.submit_selector.value.trim() || null,
+          requires_assisted_login: f.requires_assisted_login.checked,
         }),
       });
       toast("Target saved");
@@ -1579,8 +2024,10 @@
         body: JSON.stringify({
           admin_username: f.admin_username.value.trim() || null,
           admin_password: f.admin_password.value || null,
+          admin_auth_type: f.admin_auth_type.value,
           normal_username: f.normal_username.value.trim() || null,
           normal_password: f.normal_password.value || null,
+          normal_auth_type: f.normal_auth_type.value,
         }),
       });
       f.admin_password.value = "";
@@ -1588,6 +2035,7 @@
       toast("Credentials saved");
       loadVerifyLoginRoles();
       loadCredentialsFields();
+      loadManualSessionRoles();
     } catch (err) {
       toast("Could not save credentials: " + err.message, true);
     }
@@ -1607,12 +2055,32 @@
       var f = document.getElementById("credentialsForm");
       f.admin_username.value = (byRole.admin && byRole.admin.username) || "";
       f.normal_username.value = (byRole.normal && byRole.normal.username) || "";
+      f.admin_auth_type.value = (byRole.admin && byRole.admin.auth_type) || "form_login";
+      f.normal_auth_type.value = (byRole.normal && byRole.normal.auth_type) || "form_login";
+      updateCredentialPasswordLabels();
       document.getElementById("removeAdminBtn").hidden = !byRole.admin;
       document.getElementById("removeNormalBtn").hidden = !byRole.normal;
     } catch (err) {
       // Non-fatal -- the form still works for entering fresh credentials.
     }
   }
+  // Relabels the password field per role as soon as the login-method
+  // dropdown changes -- "API token / JWT" means that field is no longer
+  // a real password (jwt_auth.py reads user.password as the raw bearer
+  // token), so the input's own label/placeholder should say so.
+  function updateCredentialPasswordLabels() {
+    var f = document.getElementById("credentialsForm");
+    var adminIsJwt = f.admin_auth_type.value === "jwt";
+    var normalIsJwt = f.normal_auth_type.value === "jwt";
+    document.getElementById("adminPasswordLabel").innerHTML = adminIsJwt
+      ? "Admin API token <small>write-only, never shown back</small>" : "Admin password <small>write-only, never shown back</small>";
+    document.getElementById("normalPasswordLabel").innerHTML = normalIsJwt
+      ? "Normal-user API token <small>write-only, never shown back</small>" : "Normal-user password <small>write-only, never shown back</small>";
+    f.admin_password.placeholder = adminIsJwt ? "paste the bearer token -- leave blank to keep unchanged" : "leave blank to keep unchanged";
+    f.normal_password.placeholder = normalIsJwt ? "paste the bearer token -- leave blank to keep unchanged" : "leave blank to keep unchanged";
+  }
+  document.getElementById("adminAuthType").addEventListener("change", updateCredentialPasswordLabels);
+  document.getElementById("normalAuthType").addEventListener("change", updateCredentialPasswordLabels);
   async function removeCredentialRole(role) {
     var ok = await askConfirm(
       "Remove '" + role + "' account?",
@@ -1633,6 +2101,66 @@
   document.getElementById("removeAdminBtn").addEventListener("click", function () { removeCredentialRole("admin"); });
   document.getElementById("removeNormalBtn").addEventListener("click", function () { removeCredentialRole("normal"); });
   loadCredentialsFields();
+
+  // ---------------------------------------------------------------- Manual Session Cookies
+  var manualSessionRoleLabels = { admin: "Admin", normal: "Normal user" };
+
+  async function loadManualSessionRoles() {
+    var sel = document.getElementById("manualSessionRole");
+    try {
+      var roles = await api("/api/auth/roles");
+      if (!roles.length) {
+        sel.innerHTML = '<option value="">No accounts configured</option>';
+        return;
+      }
+      sel.innerHTML = roles.map(function (r) {
+        var label = (manualSessionRoleLabels[r.role] || r.role) + " (" + r.username + ")";
+        return '<option value="' + r.role.replace(/"/g, "&quot;") + '">' + label + "</option>";
+      }).join("");
+    } catch (err) {
+      sel.innerHTML = '<option value="">Could not load accounts</option>';
+    }
+  }
+  loadManualSessionRoles();
+
+  function setSettingsStatus(elId, isOk, okLabel, offLabel) {
+    var el = document.getElementById(elId);
+    if (!el) return;
+    el.textContent = isOk ? okLabel : offLabel;
+    el.classList.toggle("ok", isOk);
+    el.classList.toggle("warn", !isOk);
+  }
+
+  document.getElementById("manualSessionForm").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var f = e.target;
+    var role = f.role.value;
+    var cookies = f.cookies.value.trim();
+    if (!role || !cookies) return;
+    try {
+      var result = await api("/api/auth/manual-session", {
+        method: "POST",
+        body: JSON.stringify({ role: role, cookies: cookies, expires_hours: parseInt(f.expires_hours.value, 10) || 6 }),
+      });
+      setSettingsStatus("manualSessionStatus", true, result.cookie_count + " cookie(s) saved", "Not set");
+      toast("Session saved for " + role + " -- next scan for this role skips login");
+    } catch (err) {
+      toast("Could not save session: " + err.message, true);
+    }
+  });
+
+  document.getElementById("manualSessionClearBtn").addEventListener("click", async function () {
+    var role = document.getElementById("manualSessionRole").value;
+    if (!role) return;
+    try {
+      await api("/api/auth/manual-session/" + encodeURIComponent(role), { method: "DELETE" });
+      document.getElementById("manualSessionForm").cookies.value = "";
+      setSettingsStatus("manualSessionStatus", false, "Not set", "Not set");
+      toast("Manual session cleared for " + role);
+    } catch (err) {
+      toast("Could not clear session: " + err.message, true);
+    }
+  });
 
   document.getElementById("oobForm").addEventListener("submit", async function (e) {
     e.preventDefault();
@@ -1836,11 +2364,11 @@
   }
 
   async function loadModuleTestcases(modId, container) {
-    container.innerHTML = '<div style="padding:10px 0; font-size:11.5px; color:var(--text-faint);">Loading…</div>';
+    container.innerHTML = '<div style="padding:10px 0; font-size:12.5px; color:var(--text-faint);">Loading…</div>';
     try {
       var testcases = await api("/api/modules/" + modId + "/testcases");
       if (!testcases.length) {
-        container.innerHTML = '<div style="padding:10px 0; font-size:11.5px; color:var(--text-faint);">No registered test cases found for this module.</div>';
+        container.innerHTML = '<div style="padding:10px 0; font-size:12.5px; color:var(--text-faint);">No registered test cases found for this module.</div>';
         return;
       }
       container.innerHTML = "";
@@ -1861,7 +2389,7 @@
         container.appendChild(row);
       });
     } catch (e) {
-      container.innerHTML = '<div style="padding:10px 0; font-size:11.5px; color:var(--critical);">Could not load test cases: ' + e.message + '</div>';
+      container.innerHTML = '<div style="padding:10px 0; font-size:12.5px; color:var(--critical);">Could not load test cases: ' + e.message + '</div>';
     }
   }
 
@@ -1917,56 +2445,180 @@
     return new Promise(function (resolve) { genericResolve = function (v) { resolve(!!v); }; });
   }
 
-  // ---------------------------------------------------------------- scan modal
-  var backdrop = document.getElementById("scanModalBackdrop");
-  var modalConfirm = document.getElementById("modalConfirm");
-  var modalStart = document.getElementById("modalStart");
-  function renderModalModuleList() {
-    var list = document.getElementById("modalModuleList");
+  // ---------------------------------------------------------------- New Scan page
+  // A real, routed page (#/scan-new) instead of a popup -- a decision
+  // this consequential (real attack payloads against a real target)
+  // deserves room to actually see what's about to run, the same
+  // reasoning enterprise DAST consoles (Burp Suite Enterprise's own
+  // "new scan" flow) use a dedicated page for, not a cramped modal.
+  var scanNewConfirm = document.getElementById("scanNewConfirm");
+  var scanNewStart = document.getElementById("scanNewStart");
+  // module id -> technique_count, populated by renderScanNewModuleList()
+  // -- updateScanNewSummary() reads this instead of re-parsing state.modules
+  // on every checkbox change, so the live "Scan scope" panel stays cheap.
+  var scanNewTechniqueCounts = {};
+  // Grouping modules into their real technique families -- the single
+  // biggest thing separating "a settings form with checkboxes" from an
+  // actual scan-configuration surface. Order here is also render order;
+  // families a target has no modules for simply don't appear.
+  var SCAN_NEW_MODULE_FAMILIES = [
+    { label: "Authentication & Session", ids: ["auth_tests", "jwt_tests", "csrf_tests"] },
+    { label: "Access Control", ids: ["idor_tests"] },
+    { label: "Injection", ids: ["sqli_tests", "xss_tests", "injection_variants_tests", "ssrf_tests", "deserialization_tests", "graphql_tests"] },
+    { label: "Business Logic", ids: ["business_logic_tests", "file_upload_tests"] },
+    { label: "Configuration & Disclosure", ids: ["configuration_tests", "disclosure_tests", "cache_tests"] },
+  ];
+  function scanNewModuleCardHtml(m) {
+    // Search matches against both the display name AND the raw module
+    // id -- "xss" typed naturally matches "xss_tests" even though the
+    // display label "Cross-Site Scripting" has no literal "xss" in it.
+    var haystack = (m.name + " " + m.id).toLowerCase().replace(/"/g, "&quot;");
+    return '<label data-mod-name="' + haystack + '"><input type="checkbox" value="' + m.id + '"' + (m.enabled ? " checked" : "") + ' />' +
+      '<span><span class="mod-name">' + m.name + '</span>' +
+      '<span class="mod-tc-count">' + (m.technique_count || 0) + " technique" + (m.technique_count === 1 ? "" : "s") + "</span></span></label>";
+  }
+  // Renders the FULL grouped list exactly once per page visit -- every
+  // module's checkbox stays in the DOM permanently after this. Search
+  // filtering (applyScanNewModuleFilter, below) only ever toggles
+  // [hidden] on top of these same nodes; it never re-renders, so a
+  // checked-then-filtered-out module can never silently lose its
+  // checked state the way rebuilding innerHTML from a filtered list
+  // would.
+  function renderScanNewModuleList() {
+    var list = document.getElementById("scanNewModuleList");
     var runnable = state.modules.filter(function (m) { return !m.locked; }); // crawler always runs, not a choice
-    list.innerHTML = runnable.map(function (m) {
-      return '<label><input type="checkbox" value="' + m.id + '"' + (m.enabled ? " checked" : "") + ' /><span>' + m.name + "</span></label>";
-    }).join("");
-    updateModalModuleCount();
-    list.querySelectorAll("input").forEach(function (cb) { cb.addEventListener("change", updateModalModuleCount); });
+    scanNewTechniqueCounts = {};
+    runnable.forEach(function (m) { scanNewTechniqueCounts[m.id] = m.technique_count || 0; });
+    if (!runnable.length) {
+      list.innerHTML = '<div class="card-empty">No modules configured for this target yet — check Modules in the sidebar.</div>';
+      updateScanNewSummary();
+      return;
+    }
+    var byId = {};
+    runnable.forEach(function (m) { byId[m.id] = m; });
+    var placed = {};
+    var html = "";
+    SCAN_NEW_MODULE_FAMILIES.forEach(function (family) {
+      var members = family.ids.map(function (id) { return byId[id]; }).filter(Boolean);
+      if (!members.length) return;
+      members.forEach(function (m) { placed[m.id] = true; });
+      html += '<div class="scan-new-module-family" data-family="' + family.label + '"><div class="scan-new-module-family-label">' + family.label +
+        ' <span class="n">(' + members.length + ')</span></div><div class="scan-new-module-grid">' +
+        members.map(scanNewModuleCardHtml).join("") + "</div></div>";
+    });
+    // Any module not covered by SCAN_NEW_MODULE_FAMILIES above (a new
+    // module added later without updating this list) still shows up,
+    // under a generic catch-all, rather than silently vanishing from
+    // the page -- the same "never silently drop real coverage" rule
+    // this project applies to its own vuln-detection logic.
+    var leftover = runnable.filter(function (m) { return !placed[m.id]; });
+    if (leftover.length) {
+      html += '<div class="scan-new-module-family" data-family="Other"><div class="scan-new-module-family-label">Other <span class="n">(' + leftover.length + ')</span></div>' +
+        '<div class="scan-new-module-grid">' + leftover.map(scanNewModuleCardHtml).join("") + "</div></div>";
+    }
+    list.innerHTML = html;
+    updateScanNewSummary();
+    list.querySelectorAll("input").forEach(function (cb) { cb.addEventListener("change", updateScanNewSummary); });
+    applyScanNewModuleFilter();
   }
-  function updateModalModuleCount() {
-    var boxes = document.querySelectorAll("#modalModuleList input");
-    var checked = document.querySelectorAll("#modalModuleList input:checked");
-    document.getElementById("modalModuleCount").textContent = checked.length + " / " + boxes.length + " selected";
+  // Toggles [hidden] on individual module cards and whole family
+  // sections (a family with nothing matching hides its own header too,
+  // rather than showing an empty "Injection (3)" label above nothing).
+  function applyScanNewModuleFilter() {
+    var query = (document.getElementById("scanNewModuleSearch").value || "").trim().toLowerCase();
+    var list = document.getElementById("scanNewModuleList");
+    var anyVisible = false;
+    list.querySelectorAll(".scan-new-module-family").forEach(function (family) {
+      var visibleInFamily = 0;
+      family.querySelectorAll("label[data-mod-name]").forEach(function (label) {
+        var matches = !query || label.dataset.modName.indexOf(query) !== -1;
+        label.hidden = !matches;
+        if (matches) visibleInFamily++;
+      });
+      family.hidden = visibleInFamily === 0;
+      if (visibleInFamily > 0) anyVisible = true;
+    });
+    var noMatch = document.getElementById("scanNewModuleNoMatch");
+    if (!anyVisible && query) {
+      if (!noMatch) {
+        noMatch = document.createElement("div");
+        noMatch.className = "scan-new-module-no-match";
+        noMatch.id = "scanNewModuleNoMatch";
+        list.appendChild(noMatch);
+      }
+      noMatch.textContent = 'No modules match "' + query + '".';
+    } else if (noMatch) {
+      noMatch.remove();
+    }
   }
-  async function renderModalWorkflowList() {
-    var field = document.getElementById("modalWorkflowField");
-    var list = document.getElementById("modalWorkflowList");
+  // Drives both the compact "N / M selected" count next to the Modules
+  // card head AND the live "Scan scope" sidebar panel -- one source of
+  // truth (the checked boxes in the DOM right now) for both, so they can
+  // never drift out of sync with each other or with what Start will
+  // actually submit.
+  function updateScanNewSummary() {
+    var boxes = document.querySelectorAll("#scanNewModuleList input");
+    var checkedBoxes = Array.from(document.querySelectorAll("#scanNewModuleList input:checked"));
+    document.getElementById("scanNewModuleCount").textContent = checkedBoxes.length + " / " + boxes.length + " selected";
+
+    var techniqueTotal = checkedBoxes.reduce(function (sum, cb) { return sum + (scanNewTechniqueCounts[cb.value] || 0); }, 0);
+    document.getElementById("scanNewSummaryModules").textContent = checkedBoxes.length;
+    document.getElementById("scanNewSummaryModulesPlural").textContent = checkedBoxes.length === 1 ? "" : "s";
+    document.getElementById("scanNewSummaryTechniques").textContent = techniqueTotal;
+    document.getElementById("scanNewSummaryTechniquesPlural").textContent = techniqueTotal === 1 ? "" : "s";
+    document.querySelectorAll(".scan-new-summary-row").forEach(function (row, i) {
+      if (i > 1) return; // the workflows row toggles its own visibility separately
+      row.classList.toggle("is-empty", i === 0 ? checkedBoxes.length === 0 : techniqueTotal === 0);
+    });
+
+    var workflowChecked = document.querySelectorAll("#scanNewWorkflowList input:checked").length;
+    var workflowRow = document.getElementById("scanNewSummaryWorkflowsRow");
+    workflowRow.hidden = document.querySelectorAll("#scanNewWorkflowList input").length === 0;
+    document.getElementById("scanNewSummaryWorkflows").textContent = workflowChecked;
+    document.getElementById("scanNewSummaryWorkflowsPlural").textContent = workflowChecked === 1 ? "" : "s";
+    workflowRow.classList.toggle("is-empty", workflowChecked === 0);
+  }
+  async function renderScanNewWorkflowList() {
+    var field = document.getElementById("scanNewWorkflowField");
+    var list = document.getElementById("scanNewWorkflowList");
     try {
       var workflows = await api("/api/workflows");
-      if (!workflows.length) { field.hidden = true; list.innerHTML = ""; return; }
+      if (!workflows.length) { field.hidden = true; list.innerHTML = ""; updateScanNewSummary(); return; }
       field.hidden = false;
       list.innerHTML = workflows.map(function (w) {
         return '<label><input type="checkbox" value="' + w.workflow_id + '" />' +
           '<span>' + w.name + ' <small style="color:var(--text-faint);">(' + w.action_count + ' action(s) &middot; ' + w.target_url + ')</small></span></label>';
       }).join("");
+      list.querySelectorAll("input").forEach(function (cb) { cb.addEventListener("change", updateScanNewSummary); });
+      updateScanNewSummary();
     } catch (err) {
       field.hidden = true;
     }
   }
-  function openModal() {
-    renderModalModuleList();
-    renderModalWorkflowList();
-    document.getElementById("modalScanName").value = "";
-    backdrop.classList.add("open");
+  async function openNewScanPage() {
+    document.getElementById("scanNewName").value = "";
+    document.getElementById("scanNewModuleSearch").value = "";
+    scanNewConfirm.checked = false;
+    scanNewStart.disabled = true;
+    if (!state.modules || !state.modules.length) await loadModules();
+    renderScanNewModuleList();
+    renderScanNewWorkflowList();
   }
-  function closeModal() { backdrop.classList.remove("open"); modalConfirm.checked = false; modalStart.disabled = true; }
-  document.getElementById("newScanBtn").addEventListener("click", openModal);
-  document.querySelectorAll("[data-runscan]").forEach(function (b) { b.addEventListener("click", openModal); });
-  document.getElementById("modalModulesAll").addEventListener("click", function () {
-    document.querySelectorAll("#modalModuleList input").forEach(function (cb) { cb.checked = true; });
-    updateModalModuleCount();
+  document.getElementById("scanNewModuleSearch").addEventListener("input", applyScanNewModuleFilter);
+  function goToScans() { setRoute("#/scans"); }
+  document.getElementById("newScanBtn").addEventListener("click", function () { setRoute("#/scan-new"); });
+  document.querySelectorAll("[data-runscan]").forEach(function (b) { b.addEventListener("click", function () { setRoute("#/scan-new"); }); });
+  document.getElementById("scanNewCancel").addEventListener("click", goToScans);
+  document.getElementById("scanNewCancel2").addEventListener("click", goToScans);
+  document.getElementById("scanNewModulesAll").addEventListener("click", function () {
+    document.querySelectorAll("#scanNewModuleList input").forEach(function (cb) { cb.checked = true; });
+    updateScanNewSummary();
   });
-  document.getElementById("modalModulesNone").addEventListener("click", function () {
-    document.querySelectorAll("#modalModuleList input").forEach(function (cb) { cb.checked = false; });
-    updateModalModuleCount();
+  document.getElementById("scanNewModulesNone").addEventListener("click", function () {
+    document.querySelectorAll("#scanNewModuleList input").forEach(function (cb) { cb.checked = false; });
+    updateScanNewSummary();
   });
+  scanNewConfirm.addEventListener("change", function () { scanNewStart.disabled = !scanNewConfirm.checked; });
 
   // ---------------------------------------------------------------- tool health check
   // "Is STOF itself working correctly" is a question worth answering
@@ -2035,10 +2687,16 @@
     stopScanBtn.dataset.scanId = running ? running.scan_id : "";
     // The backend now rejects a second concurrent scan outright (409) --
     // disabling "Run Scan" while one is live surfaces that limit up
-    // front instead of letting the operator fill out the whole modal
-    // and only find out on submit.
+    // front instead of letting the operator fill out the whole New Scan
+    // page and only find out on submit. Also covers scanNewStart itself
+    // (the Launch button ON that page) for the case where a scan starts
+    // from elsewhere while the operator already has the page open.
     document.getElementById("newScanBtn").disabled = !!running;
     document.getElementById("newScanBtn").title = running ? "A scan is already running -- stop it first" : "";
+    if (scanNewStart) {
+      scanNewStart.disabled = !!running || !scanNewConfirm.checked;
+      scanNewStart.title = running ? "A scan is already running -- stop it first" : "";
+    }
     document.querySelectorAll("[data-runscan]").forEach(function (b) {
       b.disabled = !!running;
       b.title = running ? "A scan is already running -- stop it first" : "";
@@ -2064,26 +2722,20 @@
       loadScans();
     }
   });
-  document.getElementById("modalCancel").addEventListener("click", closeModal);
-  backdrop.addEventListener("click", function (e) { if (e.target === backdrop) closeModal(); });
-  modalConfirm.addEventListener("change", function () { modalStart.disabled = !modalConfirm.checked; });
-
-  // Escape closes whichever modal is open -- neither modal handled this
-  // before (confirmed live: Tab worked, Esc did nothing on either the
-  // scan-confirm or generic prompt/confirm modal).
+  // Escape closes whichever modal is open -- the New Scan page itself
+  // isn't a modal (it's a real route), Esc has no special meaning there.
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    if (backdrop.classList.contains("open")) closeModal();
-    else if (genericBackdrop.classList.contains("open")) closeGenericModal(null);
+    if (genericBackdrop.classList.contains("open")) closeGenericModal(null);
     else if (document.getElementById("scanSummaryBackdrop").classList.contains("open")) closeScanSummary();
   });
 
-  modalStart.addEventListener("click", async function () {
-    modalStart.disabled = true;
+  scanNewStart.addEventListener("click", async function () {
+    scanNewStart.disabled = true;
     try {
-      var selectedModules = Array.from(document.querySelectorAll("#modalModuleList input:checked")).map(function (cb) { return cb.value; });
-      var selectedWorkflows = Array.from(document.querySelectorAll("#modalWorkflowList input:checked")).map(function (cb) { return cb.value; });
-      var scanName = document.getElementById("modalScanName").value.trim();
+      var selectedModules = Array.from(document.querySelectorAll("#scanNewModuleList input:checked")).map(function (cb) { return cb.value; });
+      var selectedWorkflows = Array.from(document.querySelectorAll("#scanNewWorkflowList input:checked")).map(function (cb) { return cb.value; });
+      var scanName = document.getElementById("scanNewName").value.trim();
       var result = await api("/api/scans", {
         method: "POST",
         body: JSON.stringify({
@@ -2092,14 +2744,13 @@
           confirm_authorized: true,
         }),
       });
-      closeModal();
       toast("Scan " + result.scan_id + " started");
       setRoute("#/dashboard");
       attachToScan(result.scan_id);
       await loadScans();
     } catch (err) {
       toast("Could not start scan: " + err.message, true);
-      modalStart.disabled = false;
+      scanNewStart.disabled = false;
     }
   });
 
@@ -2720,7 +3371,7 @@
         });
         if ((f.findings || []).length > 8) {
           var more = document.createElement("div");
-          more.style.cssText = "font-size:11.5px;color:var(--text-faint);padding-top:6px;";
+          more.style.cssText = "font-size:12.5px;color:var(--text-faint);padding-top:6px;";
           more.textContent = "+ " + ((f.findings || []).length - 8) + " more — view all findings below";
           findingsEl.appendChild(more);
         }

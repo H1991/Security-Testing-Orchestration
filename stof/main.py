@@ -37,7 +37,7 @@ import click
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
-from stof.auth import FormLoginProvider, JWTAuthProvider
+from stof.auth import AssistedLoginProvider, FormLoginProvider, JWTAuthProvider
 from stof.config import ConfigError, load_config, load_dotenv, load_users
 from stof.core.console import DEFAULT_LOG_DIR, ScanConsole, attach_file_logging, detach_file_logging
 from stof.core.logger import get_logger
@@ -47,6 +47,7 @@ from stof.crawler.crawler import crawl as run_crawler
 from stof.crawler.endpoint_store import load as load_endpoints
 from stof.crawler.endpoint_store import merge as merge_endpoints
 from stof.crawler.endpoint_store import write_endpoints
+from stof.engine.burp_capture import capture_findings_via_burp
 from stof.engine.burp_controller import BurpApiError, BurpController
 from stof.engine.multi_session import SessionPool
 from stof.engine.playwright_engine import PlaywrightEngine
@@ -60,16 +61,18 @@ from stof.modules.configuration_tests import ConfigurationTestConfig, Configurat
 from stof.modules.csrf_tests import CsrfTestConfig, CsrfTestsModule
 from stof.modules.deserialization_tests import DeserializationTestConfig, DeserializationTestsModule
 from stof.modules.disclosure_tests import DisclosureTestConfig, DisclosureTestsModule
+from stof.modules.file_upload_tests import FileUploadTestConfig, FileUploadTestsModule
 from stof.modules.graphql_tests import GraphQLTestConfig, GraphQLTestsModule
 from stof.modules.idor_tests import IdorTestConfig, IdorTestsModule
 from stof.modules.injection_variants_tests import InjectionVariantsTestConfig, InjectionVariantsTestsModule
 from stof.modules.jwt_tests import JwtTestConfig, JwtTestsModule
-from stof.modules.results import extract_findings, summarize
+from stof.modules.results import ERROR, TestCaseResult, extract_findings, summarize
 from stof.modules.sqli_tests import SqliTestConfig, SqliTestsModule
 from stof.modules.ssrf_tests import SsrfTestConfig, SsrfTestsModule
 from stof.modules.xss_tests import XssTestConfig, XssTestsModule
 from stof.passive.engine import PassiveEngine
-from stof.recon import run_recon, write_recon_report
+from stof.recon import build_target_profile, run_recon, write_recon_report
+from stof.recorder import cdp
 from stof.reporting import generate_reports
 from stof.reporting.walkthrough_runner import build_walkthroughs
 from stof.session import SessionManager, SessionStore
@@ -85,7 +88,7 @@ _log = get_logger("core.main")
 _GENERIC_IDOR_CANDIDATE_IDS = [str(i) for i in range(1, 21)]
 
 
-_KNOWN_MODULES = ("idor_tests", "jwt_tests", "auth_tests", "configuration_tests", "disclosure_tests", "graphql_tests", "deserialization_tests", "sqli_tests", "ssrf_tests", "xss_tests", "csrf_tests", "injection_variants_tests", "cache_tests", "business_logic_tests")
+_KNOWN_MODULES = ("idor_tests", "jwt_tests", "auth_tests", "configuration_tests", "disclosure_tests", "graphql_tests", "deserialization_tests", "sqli_tests", "ssrf_tests", "xss_tests", "csrf_tests", "injection_variants_tests", "cache_tests", "business_logic_tests", "file_upload_tests")
 
 
 def _jwt_roles(users_by_role: dict) -> list[str]:
@@ -149,7 +152,7 @@ def _apply_application_profile(
     return filtered, skips
 
 
-def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict) -> dict:
+def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict, target_profile=None) -> dict:
     idor_ids = config.target.idor_candidate_ids or _GENERIC_IDOR_CANDIDATE_IDS
     jwt_config_kwargs = {}
     if config.target.jwt_role_claim is not None:
@@ -194,7 +197,7 @@ def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict) ->
         "jwt_tests": lambda: JwtTestsModule(roles=jwt_roles, config=JwtTestConfig(**jwt_config_kwargs)),
         "auth_tests": lambda: AuthTestsModule(config=auth_config),
         "csrf_tests": lambda: CsrfTestsModule(config=csrf_config),
-        "configuration_tests": lambda: ConfigurationTestsModule(config=ConfigurationTestConfig(base_url=config.target.base_url)),
+        "configuration_tests": lambda: ConfigurationTestsModule(config=ConfigurationTestConfig(base_url=config.target.base_url, target_profile=target_profile)),
         "disclosure_tests": lambda: DisclosureTestsModule(config=DisclosureTestConfig(high_priv_role=high_priv_role or "admin")),
         "graphql_tests": lambda: GraphQLTestsModule(config=GraphQLTestConfig(
             high_priv_role=high_priv_role or "admin", low_priv_role=low_priv_role or "normal",
@@ -224,6 +227,9 @@ def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict) ->
         "business_logic_tests": lambda: BusinessLogicTestsModule(config=BusinessLogicTestConfig(
             allow_state_changing_probes=allow_state_changing_probes,
         )),
+        "file_upload_tests": lambda: FileUploadTestsModule(config=FileUploadTestConfig(
+            allow_state_changing_probes=allow_state_changing_probes,
+        )),
     }
 
 
@@ -234,6 +240,83 @@ def _build_form_login_provider(config) -> FormLoginProvider:
         if value is not None:
             kwargs[field] = value
     return FormLoginProvider(login_url=config.target.login_url, **kwargs)
+
+
+def _build_login_provider(config) -> "FormLoginProvider | AssistedLoginProvider":
+    """`TargetConfig.requires_assisted_login` swaps the WHOLE target's
+    "form_login" provider slot from the normal automated
+    `FormLoginProvider` to `AssistedLoginProvider` -- every form-login
+    role on a target behind a bot-challenge needs the assisted path,
+    not just one specific user, so this is a target-level switch rather
+    than a second, separate auth_type users.json would need to declare
+    per role. See `stof/auth/assisted_login.py`'s own module docstring
+    for why a captured cookie alone can't just be handed to the normal
+    provider instead."""
+    if config.target.requires_assisted_login:
+        kwargs = {}
+        if config.target.success_selector is not None:
+            kwargs["success_selector"] = config.target.success_selector
+        return AssistedLoginProvider(login_url=config.target.login_url, **kwargs)
+    return _build_form_login_provider(config)
+
+
+async def _attach_assisted_login_contexts(
+    pw, config, session_pool, session_manager, login_provider, users_by_role: dict, echo
+) -> None:
+    """When `config.target.requires_assisted_login` is set, connects
+    over CDP to the server-side assisted-login browser (`stof/ui/
+    server.py`'s `AssistedLoginBrowserSession`, started from the
+    Settings UI -- NOT the operator's own local Chrome; that design
+    was replaced once it became clear a remote end user's own laptop
+    has no reachable path back to a cloud-hosted STOF server. The
+    server-side browser is live-streamed to whoever completes the
+    login via CDP screencast + input relay, but the browser itself
+    always lives on this same machine, at a fixed localhost-only
+    endpoint -- see `stof/recorder/cdp.py`'s `assisted_login_cdp_
+    endpoint()`) and hands each form-login role's traffic off to that
+    REAL, human-cleared browser context for the rest of this process's
+    run, instead of ever attempting the normal automated login flow
+    that would just hit the same bot-challenge wall again.
+
+    Called identically from both `_run_crawl()` and `_run_test()` --
+    they're genuinely separate browser launches/processes (see
+    `_run_scan()`'s own docstring), so each independently reconnects
+    over CDP; CDP supports multiple concurrent client connections to
+    one browser, so this is safe.
+
+    A no-op (returns immediately) for every target that doesn't set
+    the flag -- zero behavior change for a normal target."""
+    if not config.target.requires_assisted_login:
+        return
+    form_login_roles = sorted(role for role, u in users_by_role.items() if u.auth_type == "form_login")
+    if not form_login_roles:
+        return
+
+    endpoint = cdp.assisted_login_cdp_endpoint()
+    try:
+        external_browser = await pw.chromium.connect_over_cdp(endpoint)
+    except Exception as exc:
+        raise click.ClickException(
+            f"Assisted login is enabled for this target, but no assisted-login browser session was found at "
+            f"{endpoint}. Go to Settings -> Assisted Login, start a session, and complete login for role(s) "
+            f"{', '.join(form_login_roles)}, then re-run. Original error: {exc}"
+        ) from exc
+
+    contexts = external_browser.contexts
+    if len(contexts) < len(form_login_roles):
+        raise click.ClickException(
+            f"Assisted login needs one confirmed browser context per form-login role -- found "
+            f"{len(contexts)}, but {len(form_login_roles)} role(s) need one ({', '.join(form_login_roles)}). "
+            "Complete assisted login for each role in Settings, then re-run."
+        )
+
+    for role, context in zip(form_login_roles, contexts, strict=False):
+        page = context.pages[0] if context.pages else await context.new_page()
+        user = users_by_role[role]
+        session = await login_provider.authenticate(user, page)
+        session_manager.seed_session(session)
+        await session_pool.attach_external_context(role, context)
+        echo(f"[AUTH]  ✓ Assisted login confirmed for role '{role}' via operator browser at {endpoint}")
 
 
 def _existing_json(path: Path) -> dict:
@@ -357,7 +440,7 @@ def configure(config_path: str, users_path: str, env_path: str) -> None:
         # never demands BURP_API_KEY be set for a target that isn't
         # using Burp integration -- set it (and burp.enabled) by hand
         # in config.json if/when you turn that on.
-        "burp": existing_config.get("burp") or {"enabled": False, "api_url": "http://127.0.0.1:1337", "api_key": "", "scan_timeout_s": 1800, "poll_interval_s": 5},
+        "burp": existing_config.get("burp") or {"enabled": False, "run_active_scan": False, "api_url": "http://127.0.0.1:1337", "proxy_url": "http://127.0.0.1:8080", "api_key": "", "scan_timeout_s": 1800, "poll_interval_s": 5},
     }
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_path.write_text(json.dumps(config_doc, indent=2) + "\n", encoding="utf-8")
@@ -758,12 +841,12 @@ async def _run_crawl(
 
     crawl_roles = _resolve_crawl_roles(role_override, users_by_role, users_path)
 
-    form_provider = _build_form_login_provider(config)
+    login_provider = _build_login_provider(config)
     jwt_provider = JWTAuthProvider(token_url=config.target.jwt_token_url)
     session_store = SessionStore(db_path=Path("data") / "stof.db")
     session_manager = SessionManager(
         users=users_by_role,
-        providers={"form_login": form_provider, "jwt": jwt_provider},
+        providers={"form_login": login_provider, "jwt": jwt_provider},
         store=session_store,
     )
 
@@ -773,6 +856,7 @@ async def _run_crawl(
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=headless, slow_mo=config.browser.slowmo_ms or None)
         session_pool = SessionPool(browser, ignore_https_errors=True)
+        await _attach_assisted_login_contexts(pw, config, session_pool, session_manager, login_provider, users_by_role, echo)
         try:
             # One shared PassiveEngine across every role's crawl in this
             # run -- it only accumulates observations from traffic the
@@ -928,14 +1012,13 @@ async def _run_test(
             )
 
         jwt_roles = _jwt_roles(users_by_role)
-        module_builders = _build_module_builders(config, jwt_roles, users_by_role)
 
-        form_provider = _build_form_login_provider(config)
+        login_provider = _build_login_provider(config)
         jwt_provider = JWTAuthProvider(token_url=config.target.jwt_token_url)
         session_store = SessionStore(db_path=Path("data") / "stof.db")
         session_manager = SessionManager(
             users=users_by_role,
-            providers={"form_login": form_provider, "jwt": jwt_provider},
+            providers={"form_login": login_provider, "jwt": jwt_provider},
             store=session_store,
         )
 
@@ -948,6 +1031,7 @@ async def _run_test(
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=headless, slow_mo=config.browser.slowmo_ms or None)
             session_pool = SessionPool(browser, ignore_https_errors=True)
+            await _attach_assisted_login_contexts(pw, config, session_pool, session_manager, login_provider, users_by_role, console.echo)
             evidence = EvidenceCollector(scan_id=scan_id, base_dir=Path(config.output.evidence_dir))
 
             try:
@@ -976,6 +1060,19 @@ async def _run_test(
                     except KeyError as exc:
                         console.info(f"Recon skipped: {exc}")
 
+                # Context-aware testing, Phase 1 (see stof/recon/target_profile.py's
+                # own docstring for the full reasoning): classify the target's
+                # stack family from whatever recon just found, THEN build the
+                # module instances -- module_builders has to come after recon
+                # completes so configuration_tests.py's candidate-path narrowing
+                # sees the real profile, not the "unknown" default. Nothing
+                # between the old build-then-recon ordering and this one
+                # actually depended on module_builders existing earlier.
+                target_profile = build_target_profile(recon_report)
+                if target_profile.stack_family != "unknown":
+                    console.info(f"Target stack profile: '{target_profile.stack_family}' (confidence: {target_profile.confidence})")
+                module_builders = _build_module_builders(config, jwt_roles, users_by_role, target_profile)
+
                 if workflow_ids:
                     await _replay_workflows(workflow_ids, users_by_role, users, session_manager, session_pool, console)
 
@@ -995,9 +1092,35 @@ async def _run_test(
                         vuln_module = module_builders[name]()
                         if hasattr(vuln_module, "target_url"):
                             vuln_module.target_url = config.target.base_url
-                        results = await _with_retry(
-                            lambda vm=vuln_module: vm.run_techniques(endpoint_list, session_manager, session_pool, evidence=evidence)
-                        )
+                        try:
+                            # A real, reproducible bug found live (confirmed
+                            # via /proc CPU-tick sampling across the whole
+                            # Python/Node-driver/Chrome process tree showing
+                            # near-zero activity for 13+ minutes straight,
+                            # not just "slow"): one module hanging used to
+                            # take the entire scan down with it, forcing a
+                            # manual kill every time. `base.py`'s per-
+                            # TECHNIQUE isolation (`_safe_result`) already
+                            # existed for exactly this failure class one
+                            # level down -- this closes the same gap one
+                            # level up, per module. 8 minutes is generous
+                            # even for the slowest known legitimate case
+                            # (ssrf_tests' TC-137.2 connect-timeout oracle,
+                            # which deliberately waits out real TCP
+                            # timeouts twice per candidate parameter).
+                            results = await asyncio.wait_for(
+                                _with_retry(
+                                    lambda vm=vuln_module: vm.run_techniques(endpoint_list, session_manager, session_pool, evidence=evidence)
+                                ),
+                                timeout=480,
+                            )
+                        except TimeoutError:
+                            click.echo(f"[STOF]  ⚠ {name} did not finish within 8 minutes -- skipping it and moving on, rest of the scan is unaffected")
+                            results = [TestCaseResult(
+                                test_id=name, technique_id=f"{name}.timeout", technique="module timed out",
+                                vuln_type="N/A", module_id=name, severity="Info", status=ERROR,
+                                detail="This module did not complete within the 8-minute per-module ceiling and was skipped so the rest of the scan could continue. Investigate separately (re-run with just --module " + name + ").",
+                            )]
                         console.progress_bar(i + 1, total_modules, f"{name} complete")
                         console.module_header(name, len(results))
                         for result in results:
@@ -1014,8 +1137,13 @@ async def _run_test(
                 # can run for a long time -- run both concurrently (CLAUDE.md
                 # rule 5: "Use asyncio.gather() for parallelism in the
                 # orchestrator") rather than blocking the fast IDOR/JWT tests
-                # behind it.
-                if config.burp.enabled:
+                # behind it. Gated on run_active_scan specifically, NOT just
+                # `enabled` -- see BurpConfig's docstring for the real bug
+                # this split fixes: a single shared flag used to silently
+                # turn every scan (even a one-module sanity check) into a
+                # wait on Burp's own 30-minute crawl+audit, which was never
+                # what "capture evidence via Burp" was supposed to mean.
+                if config.burp.enabled and config.burp.run_active_scan:
                     (vuln_findings, _vuln_results), burp_findings = await asyncio.gather(
                         _run_all_vuln_modules(), _run_burp_scan(pw, config, endpoint_list, evidence)
                     )
@@ -1025,6 +1153,19 @@ async def _run_test(
 
                 all_findings.extend(vuln_findings)
                 all_findings.extend(burp_findings)
+
+                # Distinct from the Active Scan above (gated on
+                # run_active_scan): this only sends each already-confirmed
+                # finding's representative request through Burp's PROXY to
+                # capture a real request/response into the finding itself --
+                # exactly what was actually asked for, independent of
+                # whether Burp's own scanner runs at all. Never raises out
+                # of this block if Burp isn't reachable.
+                if config.burp.enabled and all_findings:
+                    console.phase("CAPTURING EVIDENCE VIA BURP")
+                    console.info(f"Sending {len(all_findings)} confirmed finding(s) through Burp's proxy at {config.burp.proxy_url}...")
+                    enriched = await capture_findings_via_burp(pw, config.burp.proxy_url, all_findings, click_echo=click.echo)
+                    console.info(f"Burp capture enriched {enriched}/{len(all_findings)} finding(s) with real request/response evidence")
 
                 if config.output.generate_walkthrough and all_findings:
                     console.phase("BUILDING WALKTHROUGH REPORT")
@@ -1062,7 +1203,7 @@ async def _run_test(
 
         module_notes = [_module_note(name, all_findings, jwt_roles=jwt_roles) for name in module_names]
         modules_run = list(module_names)
-        if config.burp.enabled:
+        if config.burp.enabled and config.burp.run_active_scan:
             modules_run.append("burp_active_scan")
             module_notes.append(_module_note("burp_active_scan", all_findings))
 

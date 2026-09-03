@@ -49,6 +49,11 @@ class SessionPool:
         # cert (common on intentionally-vulnerable practice targets).
         self._ignore_https_errors = ignore_https_errors
         self._contexts: dict[str, "BrowserContext"] = {}
+        # Roles whose context came from `attach_external_context()` --
+        # a real, human-operated browser this pool does not own and
+        # must never close (see that method's own docstring). Tracked
+        # separately so `close()`/`close_all()` can skip them.
+        self._external_roles: set[str] = set()
         self._lock = asyncio.Lock()
 
     @classmethod
@@ -75,6 +80,28 @@ class SessionPool:
                 _log.info(f"created browser context for role '{role}'")
             return context
 
+    async def attach_external_context(self, role: str, context: "BrowserContext") -> None:
+        """Assisted login (`stof/auth/assisted_login.py`): registers a
+        REAL, human-operated browser context -- obtained by connecting
+        over CDP to an operator-run Chrome that has already cleared a
+        bot-challenge this pool's own headless browser never could --
+        as `role`'s context for the rest of the scan. Every existing
+        caller (`get_context`, `apply_session`, the crawler, every vuln
+        module) is unaffected: they already only ask for "the context
+        for this role," never how it was obtained.
+
+        Deliberately does not touch `self._browser` at all -- this
+        pool's own headless browser keeps handling every other role
+        exactly as before; only `role`'s traffic routes through the
+        operator's real browser. Tracked in `self._external_roles` so
+        `close()`/`close_all()` never close a context this pool doesn't
+        own -- doing so would kill the operator's actual browser
+        window/tab out from under them."""
+        async with self._lock:
+            self._contexts[role] = context
+            self._external_roles.add(role)
+            _log.info(f"attached external (human-operated) browser context for role '{role}'")
+
     async def apply_session(self, session: SessionLike, target_url: str) -> "BrowserContext":
         """Get (or create) this role's context and sync the session's
         cookies/headers onto it."""
@@ -98,15 +125,18 @@ class SessionPool:
 
     async def close(self, role: str) -> None:
         async with self._lock:
+            is_external = role in self._external_roles
             context = self._contexts.pop(role, None)
-        if context is not None:
+            self._external_roles.discard(role)
+        if context is not None and not is_external:
             await context.close()
 
     async def close_all(self) -> None:
         async with self._lock:
-            contexts = list(self._contexts.values())
+            owned_contexts = [ctx for role, ctx in self._contexts.items() if role not in self._external_roles]
             self._contexts.clear()
-        for context in contexts:
+            self._external_roles.clear()
+        for context in owned_contexts:
             await context.close()
 
     async def shutdown(self) -> None:

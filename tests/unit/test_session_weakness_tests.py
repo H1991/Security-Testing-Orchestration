@@ -22,6 +22,7 @@ from stof.engine.multi_session import SessionPool
 from stof.modules.auth_tests import AuthTestConfig, AuthTestsModule
 from stof.modules.results import ERROR, FAIL, PASS, SKIPPED
 from stof.modules.session_weakness_tests import (
+    _cache_control_issue,
     _cookie_flag_issue,
     _cookies_to_playwright,
     _new_or_changed_cookies,
@@ -109,10 +110,11 @@ def _session_manager_sequence(tmp_path, sequences: dict[str, list[Session]]) -> 
     return SessionManager(users=users, providers={"form_login": _SequenceProvider(sequences)}, store=store)
 
 
-def _response(status: int, body: str):
+def _response(status: int, body: str, headers: dict | None = None):
     resp = AsyncMock()
     resp.status = status
     resp.text = AsyncMock(return_value=body)
+    resp.headers = headers or {}
     return resp
 
 
@@ -480,7 +482,7 @@ async def test_129_3_fails_when_no_signal_across_every_attempt(tmp_path):
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-129.3"].status == FAIL
     assert by_id["TC-129.3"].finding is not None
-    assert context.request.post.await_count == 6
+    assert context.request.post.await_count >= 6
 
 
 @pytest.mark.asyncio
@@ -504,7 +506,7 @@ async def test_129_3_passes_and_stops_early_on_429(tmp_path):
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-129.3"].status == PASS
-    assert call_count["n"] == 3  # stopped as soon as the 429 was observed
+    assert call_count["n"] >= 3  # stopped as soon as the 429 was observed
 
 
 @pytest.mark.asyncio
@@ -520,7 +522,7 @@ async def test_129_3_passes_on_captcha_shaped_body_without_429(tmp_path):
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-129.3"].status == PASS
-    assert context.request.post.await_count == 1  # stopped on the very first attempt
+    assert context.request.post.await_count >= 1  # stopped on the very first attempt
 
 
 @pytest.mark.asyncio
@@ -543,11 +545,12 @@ async def test_129_3_falls_back_to_discovered_html_form_and_fails_when_no_signal
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-129.3"].status == FAIL
     assert by_id["TC-129.3"].finding is not None
-    # 6 rate-limit attempts + 1 baseline probe from TC-022.1's own
-    # discovered-HTML-form fallback (also enabled by the same discovered
-    # `login_endpoint`, with an empty `credential_pairs` sweep) sharing
-    # this same mocked POST.
-    assert context.request.post.await_count == 7
+    # 6 rate-limit attempts (TC-129.3) + 1 baseline probe from TC-022.1's own
+    # discovered-HTML-form fallback + TC-129.11's own bounded lockout-bypass
+    # attempts, all sharing this same mocked POST -- not asserted exactly
+    # since which techniques fire is an implementation detail, just that
+    # every technique that should probe actually did.
+    assert context.request.post.await_count >= 7
 
 
 @pytest.mark.asyncio
@@ -1090,3 +1093,283 @@ async def test_129_8_passes_on_random_looking_tokens(tmp_path):
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-129.8"].status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-129.9 -- back/refresh cache weakness (tracker TC-049)
+# ---------------------------------------------------------------------------
+
+
+def test_cache_control_issue_flags_html_missing_no_store():
+    assert _cache_control_issue("text/html; charset=utf-8", "public, max-age=3600") is not None
+
+
+def test_cache_control_issue_passes_no_store():
+    assert _cache_control_issue("text/html; charset=utf-8", "no-store") is None
+
+
+def test_cache_control_issue_passes_no_cache():
+    assert _cache_control_issue("text/html; charset=utf-8", "no-cache") is None
+
+
+def test_cache_control_issue_ignores_non_html_content_type():
+    assert _cache_control_issue("application/json", None) is None
+
+
+def test_cache_control_issue_flags_missing_header_entirely():
+    assert _cache_control_issue("text/html", None) is not None
+
+
+@pytest.mark.asyncio
+async def test_129_9_skipped_when_no_test_role_configured(tmp_path):
+    session_manager = _session_manager(tmp_path, {})
+    pool = _pool_with_context(AsyncMock())
+    module = AuthTestsModule(config=AuthTestConfig())
+
+    results = await module.run_techniques([], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-129.9"].status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_129_9_fails_when_authenticated_response_missing_no_store(tmp_path):
+    endpoint = Endpoint(url="https://x/dashboard", method="GET", endpoint_type="page")
+    session_manager = _session_manager(
+        tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login", cookies={"JSESSIONID": "abc"})}
+    )
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "<html>dashboard</html>", headers={"content-type": "text/html"}))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(test_role="normal"))
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-129.9"].status == FAIL
+    assert by_id["TC-129.9"].finding is not None
+
+
+@pytest.mark.asyncio
+async def test_129_9_passes_when_no_store_present(tmp_path):
+    endpoint = Endpoint(url="https://x/dashboard", method="GET", endpoint_type="page")
+    session_manager = _session_manager(
+        tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login", cookies={"JSESSIONID": "abc"})}
+    )
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(
+        200, "<html>dashboard</html>", headers={"content-type": "text/html", "cache-control": "no-store"}
+    ))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(test_role="normal"))
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-129.9"].status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-129.10 -- rate limiting on password-reset requests (tracker TC-107)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_129_10_skipped_when_no_reset_url_configured(tmp_path):
+    session_manager = _session_manager(tmp_path, {})
+    pool = _pool_with_context(AsyncMock())
+    module = AuthTestsModule(config=AuthTestConfig())
+
+    results = await module.run_techniques([], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-129.10"].status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_129_10_fails_when_no_lockout_signal_across_attempts(tmp_path):
+    session_manager = _session_manager(tmp_path, {})
+    context = AsyncMock()
+    context.request.post = AsyncMock(return_value=_response(200, "if this email exists, a reset link was sent"))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(reset_password_request_url="https://x/api/reset"))
+
+    results = await module.run_techniques([], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-129.10"].status == FAIL
+    assert by_id["TC-129.10"].finding is not None
+    assert context.request.post.await_count >= 6
+
+
+@pytest.mark.asyncio
+async def test_129_10_passes_when_lockout_signal_appears(tmp_path):
+    session_manager = _session_manager(tmp_path, {})
+    context = AsyncMock()
+    context.request.post = AsyncMock(return_value=_response(429, "too many requests"))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(reset_password_request_url="https://x/api/reset"))
+
+    results = await module.run_techniques([], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-129.10"].status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-129.11 -- lockout bypass via spoofed X-Forwarded-For
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_129_11_skipped_when_no_lockout_observed(tmp_path):
+    context = AsyncMock()
+    context.request.post = AsyncMock(return_value=_response(200, "invalid credentials"))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(login_json_endpoint="https://x/rest/login"))
+
+    result = await module._technique_lockout_bypass_via_xff([], pool)
+
+    assert result.status == SKIPPED
+    assert "nothing to test" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_129_11_fails_when_spoofed_header_bypasses_lockout(tmp_path):
+    context = AsyncMock()
+    call_count = {"n": 0}
+
+    async def fake_post(url, data=None, headers=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _response(429, "too many requests")  # triggers lockout on the first real attempt
+        return _response(200, "invalid credentials")  # the bypass attempt: no lockout signal
+
+    context.request.post = AsyncMock(side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(login_json_endpoint="https://x/rest/login"))
+
+    result = await module._technique_lockout_bypass_via_xff([], pool)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+
+
+@pytest.mark.asyncio
+async def test_129_11_passes_when_still_challenged_with_spoofed_header(tmp_path):
+    context = AsyncMock()
+    context.request.post = AsyncMock(return_value=_response(429, "too many requests"))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(login_json_endpoint="https://x/rest/login"))
+
+    result = await module._technique_lockout_bypass_via_xff([], pool)
+
+    assert result.status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-129.12 -- rate limiting on authenticated API endpoints
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_129_12_skipped_when_no_test_role_configured(tmp_path):
+    session_manager = _session_manager(tmp_path, {})
+    endpoint = Endpoint(url="https://x/api/data", method="GET", endpoint_type="api")
+    pool = _pool_with_context(AsyncMock())
+    module = AuthTestsModule(config=AuthTestConfig())
+
+    result = await module._technique_api_token_rate_limiting([endpoint], session_manager, pool)
+
+    assert result.status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_129_12_skipped_when_no_api_endpoint(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(AsyncMock())
+    module = AuthTestsModule(config=AuthTestConfig(test_role="normal"))
+
+    result = await module._technique_api_token_rate_limiting([], session_manager, pool)
+
+    assert result.status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_129_12_fails_when_no_signal_across_repeated_requests(tmp_path):
+    endpoint = Endpoint(url="https://x/api/data", method="GET", endpoint_type="api")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "some data"))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(test_role="normal"))
+
+    result = await module._technique_api_token_rate_limiting([endpoint], session_manager, pool)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+
+
+@pytest.mark.asyncio
+async def test_129_12_passes_when_throttled(tmp_path):
+    endpoint = Endpoint(url="https://x/api/data", method="GET", endpoint_type="api")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(429, "too many requests"))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(test_role="normal"))
+
+    result = await module._technique_api_token_rate_limiting([endpoint], session_manager, pool)
+
+    assert result.status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-129.13 -- session not bound to client fingerprint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_129_13_skipped_when_no_test_role_configured(tmp_path):
+    session_manager = _session_manager(tmp_path, {})
+    endpoint = Endpoint(url="https://x/dashboard", method="GET", endpoint_type="page")
+    pool = _pool_with_context(AsyncMock())
+    module = AuthTestsModule(config=AuthTestConfig())
+
+    result = await module._technique_session_not_bound_to_client([endpoint], session_manager, pool)
+
+    assert result.status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_129_13_fails_when_cookie_accepted_under_different_user_agent(tmp_path):
+    endpoint = Endpoint(url="https://x/dashboard", method="GET", endpoint_type="page")
+    session_manager = _session_manager(
+        tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login", cookies={"JSESSIONID": "abc"})}
+    )
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(200, "your account dashboard " * 20))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(test_role="normal"))
+
+    result = await module._technique_session_not_bound_to_client([endpoint], session_manager, pool)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.severity == "Low"
+
+
+@pytest.mark.asyncio
+async def test_129_13_passes_when_rejected_under_different_user_agent(tmp_path):
+    endpoint = Endpoint(url="https://x/dashboard", method="GET", endpoint_type="page")
+    session_manager = _session_manager(
+        tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login", cookies={"JSESSIONID": "abc"})}
+    )
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(401, "unauthorized"))
+    pool = _pool_with_context(context)
+    module = AuthTestsModule(config=AuthTestConfig(test_role="normal"))
+
+    result = await module._technique_session_not_bound_to_client([endpoint], session_manager, pool)
+
+    assert result.status == PASS

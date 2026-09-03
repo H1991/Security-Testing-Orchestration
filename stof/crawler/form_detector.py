@@ -27,6 +27,20 @@ _EXTRACT_FORMS_SCRIPT = """
 """
 
 
+def _input_locations(inputs: list[dict], default_location: str) -> dict[str, str]:
+    """`param_locations` already carries a free string per name (see
+    `Endpoint.param_locations`'s own docstring: "query"/"body"/
+    "header"/"cookie", additive-only) -- "file" extends that same
+    vocabulary rather than adding a new Endpoint field, so
+    `file_upload_tests.py` can find an upload-capable form with nothing
+    more than `param_locations.get(name) == "file"`, and every existing
+    `e.parameters`/`param_locations` call site (IDOR, CSRF, ...) stays
+    completely unaffected. Pulled out of `detect_forms()` purely to
+    keep that function's own complexity in line with this project's
+    quality gate."""
+    return {i["name"]: ("file" if i.get("type") == "file" else default_location) for i in inputs if i.get("name")}
+
+
 async def detect_forms(page: "Page") -> list[Endpoint]:
     """Extract every `<form>` on the current page as a `form`-type
     Endpoint, with input names as its parameters, each tagged with
@@ -63,7 +77,7 @@ async def detect_forms(page: "Page") -> list[Endpoint]:
                 method=method,
                 endpoint_type="form",
                 parameters=parameters,
-                param_locations=dict.fromkeys(parameters, location),
+                param_locations=_input_locations(inputs, location),
                 parameter_values=parameter_values,
             )
         )

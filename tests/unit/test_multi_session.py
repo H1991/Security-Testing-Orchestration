@@ -6,7 +6,6 @@ import pytest
 
 from stof.engine.multi_session import SessionPool, _to_playwright_cookies
 
-
 # ---------------------------------------------------------------------------
 # Pure helper
 # ---------------------------------------------------------------------------
@@ -117,3 +116,70 @@ async def test_apply_session_skips_cookie_and_header_calls_when_empty():
 
     context.add_cookies.assert_not_awaited()
     context.set_extra_http_headers.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# attach_external_context -- assisted login
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_attach_external_context_is_returned_by_get_context():
+    browser = AsyncMock()
+    pool = SessionPool(browser)
+    external_context = AsyncMock()
+
+    await pool.attach_external_context("admin", external_context)
+    result = await pool.get_context("admin")
+
+    assert result is external_context
+    browser.new_context.assert_not_awaited()  # never launches its own context for this role
+
+
+@pytest.mark.asyncio
+async def test_close_never_closes_an_externally_attached_context():
+    browser = AsyncMock()
+    pool = SessionPool(browser)
+    external_context = AsyncMock()
+    await pool.attach_external_context("admin", external_context)
+
+    await pool.close("admin")
+
+    external_context.close.assert_not_awaited()
+    # role is still removed from the pool's own bookkeeping
+    assert await pool.get_context("admin") is not external_context
+
+
+@pytest.mark.asyncio
+async def test_close_all_never_closes_externally_attached_contexts_but_closes_owned_ones():
+    browser = AsyncMock()
+    owned_context = AsyncMock()
+    browser.new_context = AsyncMock(return_value=owned_context)
+    pool = SessionPool(browser)
+    external_context = AsyncMock()
+    await pool.attach_external_context("admin", external_context)
+    await pool.get_context("normal")  # a normal, pool-owned context
+
+    await pool.close_all()
+
+    external_context.close.assert_not_awaited()
+    owned_context.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_apply_session_reuses_externally_attached_context_for_that_role():
+    """The normal auth flow (get_session -> apply_session) must work
+    unchanged against an externally-attached role -- re-adding cookies
+    that are already present in the operator's real browser is a
+    harmless no-op, not something that needs special-casing."""
+    browser = AsyncMock()
+    pool = SessionPool(browser)
+    external_context = AsyncMock()
+    await pool.attach_external_context("admin", external_context)
+    session = SimpleNamespace(role="admin", cookies={"JSESSIONID": "abc"}, headers={})
+
+    context = await pool.apply_session(session, "https://x.example.com")
+
+    assert context is external_context
+    external_context.add_cookies.assert_awaited_once()
+    browser.new_context.assert_not_awaited()

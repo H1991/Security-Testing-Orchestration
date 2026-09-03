@@ -21,7 +21,7 @@ def _user(auth_type: str = "form_login") -> UserConfig:
     )
 
 
-def _page(url: str, cookies: list[dict] | None = None) -> AsyncMock:
+def _page(url: str, cookies: list[dict] | None = None, storage_token: str | None = None) -> AsyncMock:
     page = AsyncMock()
     page.url = url
     page.context.cookies = AsyncMock(return_value=cookies or [])
@@ -36,6 +36,11 @@ def _page(url: str, cookies: list[dict] | None = None) -> AsyncMock:
     # structure, so it degrades to "no form found," matching this
     # module's pre-scoping behavior exactly (page-wide candidates only).
     page.eval_on_selector = AsyncMock(return_value=None)
+    # `extract_storage_token()` calls `page.evaluate(...)` -- default to
+    # "nothing in storage" (a bare AsyncMock would otherwise return a
+    # truthy Mock object here, silently faking a bearer token on every
+    # existing cookie-based test in this file).
+    page.evaluate = AsyncMock(return_value=storage_token)
     return page
 
 
@@ -133,7 +138,7 @@ async def test_authenticate_raises_when_success_selector_never_appears():
     page = _page(LOGIN_URL)
     page.wait_for_selector = AsyncMock(side_effect=TimeoutError("timed out"))
 
-    with pytest.raises(AuthFailedError, match="login failed"):
+    with pytest.raises(AuthFailedError, match="login could not be confirmed"):
         await provider.authenticate(_user(), page)
 
 
@@ -406,3 +411,75 @@ async def test_is_authenticated_false_when_session_already_marked_invalid():
 
     assert await provider.is_authenticated(session, page) is False
     page.context.cookies.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# Modern SPA (localStorage/sessionStorage bearer token) support
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_authenticate_captures_storage_token_as_authorization_header():
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn"
+    )
+    # A pure-token SPA sets no cookie at all -- the whole point of this
+    # feature is that cookies=={} here must not mean "session unusable".
+    page = _page("https://app.example.com/dashboard", cookies=[], storage_token="eyJhbGciOi.fake.jwt")
+
+    session = await provider.authenticate(_user(), page)
+
+    assert session.cookies == {}
+    assert session.headers == {"Authorization": "Bearer eyJhbGciOi.fake.jwt"}
+
+
+@pytest.mark.asyncio
+async def test_authenticate_leaves_headers_empty_when_no_storage_token_present():
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn"
+    )
+    page = _page("https://demo.testfire.net/bank/main.jsp", cookies=[{"name": "JSESSIONID", "value": "abc"}])
+
+    session = await provider.authenticate(_user(), page)
+
+    assert session.headers == {}
+
+
+@pytest.mark.asyncio
+async def test_extract_storage_token_returns_none_when_evaluate_raises():
+    from stof.auth.form_login import extract_storage_token
+
+    page = AsyncMock()
+    page.evaluate = AsyncMock(side_effect=RuntimeError("storage access blocked"))
+
+    assert await extract_storage_token(page) is None
+
+
+@pytest.mark.asyncio
+async def test_is_authenticated_checks_authorization_header_when_no_cookies():
+    from stof.session.models import Session
+
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn"
+    )
+    session = Session(
+        user_id="admin-01", role="admin", auth_type="form_login", cookies={},
+        headers={"Authorization": "Bearer eyJhbGciOi.fake.jwt"},
+    )
+    page = _page("https://app.example.com/dashboard")
+
+    assert await provider.is_authenticated(session, page) is True
+    page.context.cookies.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_is_authenticated_false_for_token_only_session_with_no_stored_header():
+    from stof.session.models import Session
+
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn"
+    )
+    session = Session(user_id="admin-01", role="admin", auth_type="form_login", cookies={}, headers={})
+    page = _page("https://app.example.com/dashboard")
+
+    assert await provider.is_authenticated(session, page) is False

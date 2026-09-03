@@ -49,6 +49,7 @@ gated behind `allow_state_changing_probes`.
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import secrets
 from dataclasses import dataclass, field
@@ -95,6 +96,26 @@ _SIGNUP_REJECTION_SIGNATURES: tuple[str, ...] = (
 _STEP_PARAM_NAMES: tuple[str, ...] = ("step", "stage", "phase")
 _STEP_PATH_SEGMENT_RE = re.compile(r"^(?:step|stage|wizard)[-_]?(\d+)$", re.IGNORECASE)
 _STEP_QUERY_VALUE_RE = re.compile(r"^\d+$")
+
+
+# TC-135.4 -- URL-shaped hints for a "should only succeed once per
+# request" endpoint (redeem a code, cast a vote, claim a reward). No
+# generic way to know a target's actual once-only semantics, so this
+# stays a hint-keyword candidate list, same "detect a plausible
+# candidate, never assume" convention as every other endpoint-hint
+# list in this codebase (`_REGISTRATION_PATH_HINTS`, `_URL_PARAM_HINTS`
+# in `ssrf_tests.py`, ...).
+_LIMITED_USE_PATH_HINTS: tuple[str, ...] = (
+    "redeem", "claim", "vote", "apply-coupon", "apply_coupon", "coupon",
+    "activate", "use-code", "use_code", "checkout", "submit-once",
+)
+
+
+def _find_limited_use_endpoint(endpoints: list[Endpoint]) -> Endpoint | None:
+    return next(
+        (e for e in endpoints if e.method.upper() in ("POST", "PUT") and any(hint in e.url.lower() for hint in _LIMITED_USE_PATH_HINTS)),
+        None,
+    )
 
 
 def _find_registration_endpoint(endpoints: list[Endpoint]) -> Endpoint | None:
@@ -370,6 +391,131 @@ class BusinessLogicTestsModule(VulnModule):
             return self._result(tid, technique, FAIL, finding.description, endpoint=latest, finding=finding)
         return self._result(tid, technique, PASS, f"'{latest.url}' was not reachable directly ahead of '{earliest.url}' (HTTP {resp.status})")
 
+    async def _technique_race_condition(self, endpoints, session_pool, evidence) -> TestCaseResult:
+        """TC-135.4 (tracker TC-096) -- fires two structurally identical
+        requests at a discovered limited-use-shaped endpoint
+        CONCURRENTLY (`asyncio.gather`, not sequential) and checks
+        whether both come back looking like independent successes. This
+        can never itself prove the underlying state was double-applied
+        (STOF has no way to inspect the target's database/ledger), so a
+        hit is reported honestly as "both concurrent requests succeeded
+        independently -- worth manual review for a real race window",
+        never as a confirmed double-spend/double-redemption. Bounded at
+        exactly two concurrent requests -- enough to observe the
+        signal, never a real load/stress test against the target."""
+        tid, technique = "TC-135.4", "Concurrent duplicate submission to a limited-use endpoint (race condition)"
+        vuln_type = "Business Logic -- Race Condition on Limited-Use Action"
+        target = _find_limited_use_endpoint(endpoints)
+        if target is None:
+            return self._result(tid, technique, SKIPPED, "no redeem/claim/vote/coupon-shaped endpoint discovered by the crawler")
+        if not self.config.allow_state_changing_probes:
+            return self._gated_skip(tid, technique, "sends two real concurrent write requests to a limited-use endpoint and is disabled by default")
+
+        context = await session_pool.new_anonymous_context()
+        try:
+            method_fn = _method_request_fn(context, target.method.upper())
+            payload = {p: "stof-race-probe" for p in target.parameters}
+            try:
+                resp_a, resp_b = await asyncio.gather(
+                    method_fn(target.url, form=payload, max_redirects=0),
+                    method_fn(target.url, form=payload, max_redirects=0),
+                )
+                body_a, body_b = await resp_a.text(), await resp_b.text()
+            except Exception as exc:
+                return self._result(tid, technique, "ERROR", f"probe failed: {exc}")
+        finally:
+            await context.close()
+
+        conflict_signals = ("already", "duplicate", "used", "conflict", "one at a time", "try again")
+        both_look_successful = (
+            resp_a.status < 400 and resp_b.status < 400
+            and not any(sig in body_a.lower() for sig in conflict_signals)
+            and not any(sig in body_b.lower() for sig in conflict_signals)
+        )
+        if both_look_successful:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.9,
+                endpoint=target, user_role="unauthenticated",
+                request_raw=f"2x concurrent {target.method} {target.url}",
+                response_raw=f"HTTP {resp_a.status} and HTTP {resp_b.status}, neither response contains a conflict/duplicate/already-used signal",
+                description=(
+                    f"Two structurally identical requests fired concurrently at '{target.url}' both came back looking like "
+                    "independent successes, with no conflict/duplicate-shaped rejection on either -- consistent with (but not "
+                    "proof of) a race window that could let a limited-use action be applied more than once. STOF cannot inspect "
+                    "the target's own state/ledger to confirm the underlying effect was actually double-applied; this needs manual review."
+                ),
+                recommendation="Serialize limited-use actions server-side (a DB-level unique constraint, row lock, or atomic compare-and-set) rather than relying on request-level validation alone, which two concurrent requests can both pass before either has committed its effect.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="buslogic-race-condition") if evidence else []
+            return self._result(tid, technique, FAIL, finding.description, endpoint=target, finding=finding)
+        return self._result(tid, technique, PASS,
+                             f"'{target.url}': two concurrent requests returned HTTP {resp_a.status}/{resp_b.status} with no both-succeeded signal")
+
+    @staticmethod
+    async def _sequential_usage_probes(method_fn, target: Endpoint, count: int) -> list[tuple[int, bool]]:
+        """The actual `count`-call sequential loop for TC-135.5, pulled
+        out of the technique method itself purely to keep that method's
+        own cyclomatic complexity in line with its sibling techniques in
+        this file -- no behavior difference from an inline loop."""
+        conflict_signals = ("already", "duplicate", "used", "conflict", "one at a time", "try again", "limit", "not eligible")
+        payload = {p: "stof-usage-limit-probe" for p in target.parameters}
+        responses: list[tuple[int, bool]] = []
+        for _ in range(count):
+            resp = await method_fn(target.url, form=payload, max_redirects=0)
+            body = await resp.text()
+            looks_rejected = resp.status >= 400 or any(sig in body.lower() for sig in conflict_signals)
+            responses.append((resp.status, looks_rejected))
+        return responses
+
+    async def _technique_function_usage_limit(self, endpoints, session_pool, evidence) -> TestCaseResult:
+        """TC-135.5 (tracker TC-098, WSTG-BUSL-05 "Test Function Usage
+        Limits"): fires the SAME structurally identical request at a
+        discovered limited-use-shaped endpoint several times in a row,
+        sequentially (unlike TC-135.4's concurrent probe) -- checking
+        whether an app-defined usage cap (one redemption per coupon, one
+        vote per poll, one claim per reward) is enforced at all once the
+        first call has actually completed, not just whether two
+        simultaneous calls can both slip through. Bounded at exactly 3
+        sequential calls: enough to observe "the 2nd/3rd call still
+        looks like a fresh success" without hammering the target."""
+        tid, technique = "TC-135.5", "Sequential over-limit calls to a limited-use endpoint are not rejected (WSTG-BUSL-05)"
+        vuln_type = "Business Logic -- Missing Function Usage Limit"
+        target = _find_limited_use_endpoint(endpoints)
+        if target is None:
+            return self._result(tid, technique, SKIPPED, "no redeem/claim/vote/coupon-shaped endpoint discovered by the crawler")
+        if not self.config.allow_state_changing_probes:
+            return self._gated_skip(tid, technique, "sends 3 real sequential write requests to a limited-use endpoint and is disabled by default")
+
+        context = await session_pool.new_anonymous_context()
+        try:
+            method_fn = _method_request_fn(context, target.method.upper())
+            try:
+                responses = await self._sequential_usage_probes(method_fn, target, count=3)
+            except Exception as exc:
+                return self._result(tid, technique, "ERROR", f"probe failed: {exc}")
+        finally:
+            await context.close()
+
+        all_succeeded = all(not rejected for _, rejected in responses)
+        if all_succeeded:
+            statuses = ", ".join(str(s) for s, _ in responses)
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
+                endpoint=target, user_role="unauthenticated",
+                request_raw=f"3x sequential {target.method} {target.url} (same payload each time)",
+                response_raw=f"HTTP {statuses}, none contained a limit/duplicate/rejection signal",
+                description=(
+                    f"The same request sent 3 times in a row to '{target.url}' looked like an independent success every "
+                    "time, with no limit/duplicate-shaped rejection appearing even on the 2nd or 3rd call -- consistent "
+                    "with a missing usage cap on what looks like a one-time action (redeem/claim/vote/coupon)."
+                ),
+                recommendation="Enforce the intended usage limit server-side (a redeemed/claimed flag checked and set atomically before applying the action's effect), not just at first-call time.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="buslogic-function-usage-limit") if evidence else []
+            return self._result(tid, technique, FAIL, finding.description, endpoint=target, finding=finding)
+        rejected_at = next(i + 1 for i, (_, rejected) in enumerate(responses) if rejected)
+        return self._result(tid, technique, PASS, f"'{target.url}': call #{rejected_at} of 3 was rejected -- a usage limit appears enforced")
+
     async def run_techniques(
         self,
         endpoints: list["Endpoint"],
@@ -382,6 +528,8 @@ class BusinessLogicTestsModule(VulnModule):
             ("TC-135.1", "Reserved/privileged username accepted at self-service registration (WSTG-IDNT-02)", self._technique_reserved_username(endpoints, session_pool, evidence)),
             ("TC-135.2", "Self-assigned elevated privilege honored at registration (WSTG-IDNT-01)", self._technique_self_assigned_privilege(endpoints, session_pool, evidence)),
             ("TC-135.3", "Business-logic authorization bypass via workflow step skipping (WSTG-BUSL)", self._technique_workflow_step_skipping(endpoints, session_pool, evidence)),
+            ("TC-135.4", "Concurrent duplicate submission to a limited-use endpoint (race condition)", self._technique_race_condition(endpoints, session_pool, evidence)),
+            ("TC-135.5", "Sequential over-limit calls to a limited-use endpoint are not rejected (WSTG-BUSL-05)", self._technique_function_usage_limit(endpoints, session_pool, evidence)),
         ):
             results.append(await self._safe_result(coro, "TC-135", tid, technique, "Business Logic / Identity Testing", role="unauthenticated"))
         return results

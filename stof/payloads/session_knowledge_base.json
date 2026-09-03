@@ -5,7 +5,10 @@
       "HackerOne #135797, #6504, #1486341 (Enter/ReddAPI/Acronis) -- session ID not regenerated on login",
       "HackerOne #2582 (Slack) -- session fixation via session ID embedded in URL, persisting indefinitely",
       "HackerOne #1162443 (Shopify), #193556 (Gratipay), #737058 (Clario) -- session/token remains valid after logout",
-      "HackerOne 'Breaking the Competition' writeup -- session tokens remain valid even after the user changes/resets their password; logout of one session cannot be forced by the victim on an attacker's stolen session"
+      "HackerOne 'Breaking the Competition' writeup -- session tokens remain valid even after the user changes/resets their password; logout of one session cannot be forced by the victim on an attacker's stolen session",
+      "HackerOne #727487 (Snapchat), #1011767 (Yelp), #225897 (Dashlane), #723974 (Moneybird), #855013/#1076047 (Stripo), #1067533/#1206777 (Courier) -- rate limit/lockout bypass via a spoofed X-Forwarded-For header accepted at face value",
+      "HackerOne's own 2020 incident report (TechTarget/SC Media coverage) -- a session cookie not bound to any device/location was usable from a different machine entirely; HackerOne's own remediation was to bind sessions to the sign-in IP. HackerOne #19640, #1201396 (UPchieve) -- session hijacking via an unbound session token",
+      "Bugcrowd disclosure a655d2f1 (exposed API endpoints leading to user info disclosure) -- an authenticated API surface with no rate limiting at all, distinct from and beyond login-only throttling"
     ],
     "generated_for": "STOF stof/modules/session_weakness_tests.py",
     "key_finding": "STOF already covers the two most commonly disclosed patterns directly: TC-129.1 (session ID not regenerated on login) and TC-129.2 (session valid after logout -- already LIVE-CONFIRMED FAILING on this project's own real target this session). Password-change session invalidation (TC-129.4) and session/auth cookie security-flag analysis (TC-129.5, LIVE-CONFIRMED FAILING against demo.testfire.net's missing-HttpOnly 'AltoroAccounts' cookie) close the two most recently identified gaps.",
@@ -26,11 +29,21 @@
   "patterns": [
     {
       "id": "session_fixation_login",
-      "stof_coverage": {"status": "covered", "techniques": ["TC-129.1"]}
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-129.1"
+        ]
+      }
     },
     {
       "id": "session_valid_after_logout",
-      "stof_coverage": {"status": "covered, live-confirmed vulnerable on real target", "techniques": ["TC-129.2"]}
+      "stof_coverage": {
+        "status": "covered, live-confirmed vulnerable on real target",
+        "techniques": [
+          "TC-129.2"
+        ]
+      }
     },
     {
       "id": "session_valid_after_password_change",
@@ -38,7 +51,13 @@
       "abstracted_endpoint_pattern": "POST to the discovered change-password endpoint, followed by a GET to a known authenticated-only page using the pre-change cookie.",
       "real_example": "'Breaking the Competition' (HackerOne): even after the user changes or resets their password, ALL previously-issued sessions remain valid -- the victim has no way to force-invalidate a stolen session short of that exact session's own logout.",
       "evidence_signal": "The pre-change cookie still authenticates successfully (still-200/authenticated response) on a protected page after the password change completes.",
-      "stof_coverage": {"status": "covered", "techniques": ["TC-129.4"], "note": "Implemented in stof/modules/session_weakness_tests.py, same plant/verify shape as TC-129.2 (capture cookie -> trigger event -> replay old cookie), triggered by a real password-change request instead of a logout. Gated behind AuthTestConfig.allow_state_changing_probes (off by default); reverts the password back to its original value afterward. Live-validated against demo.testfire.net this session: correctly SKIPPED (no change_password_url configured for that target), same gating behavior as the sibling password-change techniques TC-025.1-5/TC-027.4."}
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-129.4"
+        ],
+        "note": "Implemented in stof/modules/session_weakness_tests.py, same plant/verify shape as TC-129.2 (capture cookie -> trigger event -> replay old cookie), triggered by a real password-change request instead of a logout. Gated behind AuthTestConfig.allow_state_changing_probes (off by default); reverts the password back to its original value afterward. Live-validated against demo.testfire.net this session: correctly SKIPPED (no change_password_url configured for that target), same gating behavior as the sibling password-change techniques TC-025.1-5/TC-027.4."
+      }
     },
     {
       "id": "cookie_security_flags",
@@ -48,7 +67,9 @@
       "real_example": "HackerOne #5204 (Coinbase), #239380 (Stellar.org), #7033 (IRCCloud): session cookie missing HttpOnly, allowing theft via any XSS on the page. HackerOne #343928: session cookie missing Secure, allowing interception over a downgraded/mixed-content connection.",
       "stof_coverage": {
         "status": "covered",
-        "techniques": ["TC-129.5"],
+        "techniques": [
+          "TC-129.5"
+        ],
         "note": "Implemented in stof/modules/session_weakness_tests.py as _technique_cookie_security_flags, reusing _force_fresh_login exactly like TC-129.1. Two pure, directly-unit-tested helpers: _new_or_changed_cookies(anon_cookies, authenticated_cookies) -> dict[str, dict] (the new-or-changed diff, kept as full Playwright cookie objects) and _cookie_flag_issue(cookie, is_https_target) -> str | None (HttpOnly checked first, then Secure gated on an https:// target, then SameSite=None-without-Secure; SameSite simply absent is never checked at all, so it can never be flagged). FAILs on the first real issue found across the identified session/auth cookies, PASSes when all of them carry correct flags, SKIPs when no cookie was new-or-changed across the login boundary (e.g. a non-cookie-based auth target). Live-validated against demo.testfire.net (2026-08-27, scan_45f2c657): result FAIL, live-confirmed -- role 'normal's 'AltoroAccounts' cookie was newly issued at login (present in the post-login jar, absent from the anonymous pre-login jar) and is missing the HttpOnly flag, exactly the highest-confidence, first-priority check per the research. allow_state_changing_probes remained false/untouched for this run (this technique never gates on it)."
       }
     },
@@ -56,7 +77,11 @@
       "id": "session_id_in_url",
       "generalized_transformation": "Session identifier embedded in the URL itself (not a cookie) persists indefinitely and leaks via Referer headers, browser history, and server logs.",
       "real_example": "Slack (HackerOne #2582): a valid session-bearing URL remained active indefinitely.",
-      "stof_coverage": {"status": "not covered", "techniques": [], "gap": "STOF's session model assumes cookie-based sessions throughout (Session.cookies). A URL-embedded session identifier is a distinct, less common pattern in modern apps (mostly legacy/JSP-era, ironically including this project's own demo.testfire.net target which does use JSESSIONID in some contexts) -- noted as a real but lower-priority gap, not built this wave."}
+      "stof_coverage": {
+        "status": "not covered",
+        "techniques": [],
+        "gap": "STOF's session model assumes cookie-based sessions throughout (Session.cookies). A URL-embedded session identifier is a distinct, less common pattern in modern apps (mostly legacy/JSP-era, ironically including this project's own demo.testfire.net target which does use JSESSIONID in some contexts) -- noted as a real but lower-priority gap, not built this wave."
+      }
     },
     {
       "id": "session_timeout_not_enforced",
@@ -66,7 +91,9 @@
       "real_example": "OWASP Session Management Cheat Sheet's own 'Session Expiration' section: idle timeout 2-30 minutes depending on application risk, absolute timeout typically 4-8 hours for a full working-day usage pattern -- sessions with no enforced expiration at all are a recurring real-world session-management weakness this cheat sheet exists specifically to warn against.",
       "stof_coverage": {
         "status": "covered (structural/observational check, honestly scoped -- see technique docstring)",
-        "techniques": ["TC-129.6"],
+        "techniques": [
+          "TC-129.6"
+        ],
         "note": "Implemented in stof/modules/session_weakness_tests.py as _technique_session_timeout, reusing _force_fresh_login exactly like TC-129.1/TC-129.5. Pure helper _session_timeout_issue(created_at, expires_at) -> str | None does the 24h-threshold comparison and is directly unit-tested. Deliberately legitimately SKIPs (not a fabricated PASS/FAIL) whenever the target's Session carries no expires_at at all -- e.g. cookie-only auth with no JWT exp/Max-Age STOF observes -- since there is no honest non-destructive way to test real timeout behavior live in a bounded scan for that case. Live-validated against demo.testfire.net (2026-08-27, scan_fe590f76): result SKIPPED, live-confirmed -- role 'normal's form_login Session carried no expires_at (demo.testfire.net's own JSESSIONID/AltoroAccounts cookies expose no JWT exp claim or comparable expiry STOF could read), the honest by-design outcome, not a fabricated timing test."
       }
     },
@@ -78,7 +105,9 @@
       "real_example": "Bugcrowd 'Old session does not expire after setup 2FA' and 'Failure to Invalid Session after Password Change'; HackerOne #514577 (Omise), #1118402/#678050 (Liberapay) -- all disclosed reports in the same 'a subsequent authentication-shaped event for the account should revoke prior sessions, and frequently doesn't' family. OWASP's Session Management Cheat Sheet explicitly recommends actively terminating a prior session when a new one is established, for applications that intend to disallow concurrent logins.",
       "stof_coverage": {
         "status": "covered, live-confirmed vulnerable on real target",
-        "techniques": ["TC-129.7"],
+        "techniques": [
+          "TC-129.7"
+        ],
         "note": "Implemented in stof/modules/session_weakness_tests.py as _technique_concurrent_session_not_revoked. No new payload or gating: two calls to the existing _force_fresh_login, then the same cookie-replay-and-classify pattern TC-129.2/.4 already use. Never gated behind allow_state_changing_probes -- a second real login is the same non-destructive class of action as every other technique in this module (unlike TC-129.4's real password change). A transient probe failure on the replay surfaces as ERROR, never a silent PASS, matching this module's existing transient-error convention. Live-validated against demo.testfire.net (2026-08-27, scan_fe590f76): result FAIL, live-confirmed -- role 'normal's first-login session cookie still authenticated (HTTP 200) against the target after a second, independent login for the same role completed, meaning demo.testfire.net does not revoke prior sessions on a subsequent login."
       }
     },
@@ -90,8 +119,52 @@
       "real_example": "Cobalt.io Pentest Vulnerability Wiki 'Session Token Predictable' entry describes exactly this sequencer-style technique: comparing tokens issued across independent sessions for shared structure, sequential values, or embedded predictable components, the same class of finding OWASP's Session Management Cheat Sheet's 64-bit-entropy/CSPRNG requirement exists to prevent.",
       "stof_coverage": {
         "status": "covered, live-confirmed on real target (no low-entropy pattern found)",
-        "techniques": ["TC-129.8"],
+        "techniques": [
+          "TC-129.8"
+        ],
         "note": "Implemented in stof/modules/session_weakness_tests.py as _technique_session_token_entropy. Pure, directly-unit-tested helper _token_entropy_issue(value_a, value_b) -> str | None does the length/prefix/sequential-numeric/charset checks and is exercised against both positive cases and an explicit false-positive guard case (a long, high-variety, non-matching-prefix token pair must return None). Never attempts to guess or brute-force another user's session -- both values it compares are captured from the module's OWN two fresh logins for the configured test role. Live-validated against demo.testfire.net (2026-08-27, scan_fe590f76): result PASS, live-confirmed -- the shared session cookie(s) captured across two independent logins for role 'normal' showed no shared-prefix/sequential-numeric/short-length/low-charset pattern."
+      }
+    },
+    {
+      "id": "lockout_bypass_via_header",
+      "generalized_transformation": "After a real login-rate-limit/lockout signal has already been observed (reusing TC-129.3's own bounded attempt loop and lockout-signal classifier), send ONE more identical wrong-credential attempt with a spoofed X-Forwarded-For and X-Real-IP header claiming a different, non-routable (RFC 5737 TEST-NET-3) source IP. If that follow-up attempt is accepted without the same challenge, the lockout is keyed off an attacker-controlled header rather than (or in addition to) the real connecting IP or account identifier. Never sends more than the original bounded attempt count plus one extra probe -- this is a bypass check for a lockout that already fired, not a second brute-force run.",
+      "abstracted_endpoint_pattern": "Any login endpoint (JSON API or discovered HTML form) that TC-129.3 already established DOES enforce some rate-limiting/lockout signal (HTTP 429, or a CAPTCHA/lockout-shaped response body).",
+      "evidence_signal": "The spoofed-header follow-up attempt returns neither HTTP 429 nor a CAPTCHA/lockout-shaped body, immediately after the same request shape (without the spoofed header) had triggered exactly that signal.",
+      "real_example": "Six independently disclosed HackerOne reports (Snapchat #727487, Yelp #1011767, Dashlane #225897, Moneybird #723974, Stripo #855013/#1076047, Courier #1067533/#1206777) all describe the identical bypass: a rate-limited/throttled endpoint stopped enforcing its limit the moment the attacker varied the X-Forwarded-For header per request, because the server trusted the client-supplied header as the real source IP.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-129.11"
+        ],
+        "note": "Implemented in stof/modules/session_weakness_tests.py as _technique_lockout_bypass_via_xff. SKIPs honestly (rather than false-PASS/FAIL) when TC-129.3's own loop never observes a lockout signal in the first place -- there is nothing to test bypassing. Reuses classify_response()'s existing CHALLENGED mapping and _LOCKOUT_SIGNAL_MARKERS, same as TC-129.3."
+      }
+    },
+    {
+      "id": "api_rate_limiting_beyond_login",
+      "generalized_transformation": "Reuses TC-129.3's exact bounded-attempt-count / lockout-signal-classification shape, but retargets it at a discovered, authenticated GET API endpoint (using the configured test role's real session) instead of the unauthenticated login endpoint -- checking whether rate limiting exists ANYWHERE beyond the login form, which is the far more commonly protected surface.",
+      "abstracted_endpoint_pattern": "Any discovered endpoint_type=='api', method=='GET' endpoint, called repeatedly with a real authenticated session.",
+      "evidence_signal": "No HTTP 429 or throttling-shaped response across the same bounded attempt count TC-129.3 uses, while authenticated.",
+      "real_example": "Bugcrowd disclosure a655d2f1: an authenticated API endpoint disclosing user information had no rate limiting at all, permitting unbounded enumeration -- the exact 'protected the login form, forgot everything behind it' pattern this technique targets.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-129.12"
+        ],
+        "note": "Implemented in stof/modules/session_weakness_tests.py as _technique_api_token_rate_limiting."
+      }
+    },
+    {
+      "id": "session_not_bound_to_client",
+      "generalized_transformation": "Force a real fresh login, capture the resulting session cookie(s), then replay those exact cookies in a brand-new anonymous browser context whose User-Agent header is deliberately set to a completely different device/browser/OS (a Chrome-on-Android UA replacing whatever logged in). If the replayed session is still accepted, nothing about the session ties it to the client that created it -- a stolen cookie alone (no other client secret) is sufficient to fully hijack the session from an unrelated device.",
+      "abstracted_endpoint_pattern": "Any authenticated GET endpoint, probed first with the real session/role, then replayed with the same cookies under a spoofed User-Agent via a fresh anonymous context.",
+      "evidence_signal": "The replayed request under a different User-Agent still returns an authenticated (ALLOWED) response.",
+      "real_example": "HackerOne's own disclosed 2020 incident: a support session cookie was not bound to any device or location, and was accepted from an entirely different machine than the one that created it -- rated Critical, paid a $20,000 bounty, and HackerOne's own remediation was binding sessions to the sign-in IP. HackerOne #1201396 (UPchieve) independently describes the same unbound-session-hijacking root cause.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-129.13"
+        ],
+        "note": "Implemented in stof/modules/session_weakness_tests.py as _technique_session_not_bound_to_client. Framed as Low severity / defense-in-depth in the Finding description -- per-request client-fingerprint binding has real usability tradeoffs and is unusual outside high-security contexts, so this is reported honestly as a hardening gap alongside session lifetime/rotation controls, never as a standalone required fix."
       }
     }
   ]

@@ -14,22 +14,28 @@ wordlist sweep, no state change.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 import secrets
+import socket
+import ssl
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 from stof.core.logger import get_logger
 from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
 
 from .base import VulnModule, _is_transient_error
-from .results import FAIL, PASS, TestCaseResult, extract_findings
+from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
     from stof.engine.multi_session import SessionPool
     from stof.evidence.collector import EvidenceCollector
+    from stof.recon.target_profile import TargetProfile
     from stof.session.session_manager import SessionManager
 
 _log = get_logger("modules.configuration_tests")
@@ -38,6 +44,22 @@ _ADMIN_PANEL_PATHS: tuple[str, ...] = (
     "/admin", "/administrator", "/admin/login", "/manage", "/management",
     "/console", "/manager/html", "/wp-admin", "/phpmyadmin", "/adminer.php",
 )
+# Context-aware narrowing (Phase 1): which stack family each path is
+# ONLY relevant to, per stof.recon.target_profile.TargetProfile.
+# stack_family -- None means "generic, relevant regardless of stack"
+# and is never narrowed away. Framework-specific paths (Tomcat's own
+# /manager/html, WordPress's /wp-admin, PHP's own admin tools) are
+# guaranteed-dead requests against a target confirmed to run a
+# different stack -- verified live: demo.testfire.net fingerprints as
+# Apache-Coyote/1.1 (Java/Tomcat) via stof/recon/target_profile.py,
+# so /wp-admin, /phpmyadmin, /adminer.php are wasted probes there
+# every single scan today.
+_ADMIN_PANEL_PATH_STACK: dict[str, str | None] = {
+    "/admin": None, "/administrator": None, "/admin/login": None,
+    "/manage": None, "/management": None, "/console": None,
+    "/manager/html": "java",
+    "/wp-admin": "php", "/phpmyadmin": "php", "/adminer.php": "php",
+}
 
 _LISTABLE_DIR_PATHS: tuple[str, ...] = (
     "/", "/images/", "/assets/", "/uploads/", "/backup/", "/files/", "/static/", "/logs/",
@@ -54,6 +76,28 @@ _SAMPLE_FILE_PATHS: tuple[str, ...] = (
     "/install.php", "/test.php", "/phpinfo.php", "/info.php", "/.git/config",
     "/.env", "/web.config", "/server-status", "/.DS_Store", "/backup.sql", "/dump.sql",
 )
+# Same context-aware narrowing convention as _ADMIN_PANEL_PATH_STACK.
+_SAMPLE_FILE_PATH_STACK: dict[str, str | None] = {
+    "/install.php": "php", "/test.php": "php", "/phpinfo.php": "php", "/info.php": "php",
+    "/.git/config": None, "/.env": None,
+    "/web.config": "dotnet",
+    "/server-status": None, "/.DS_Store": None, "/backup.sql": None, "/dump.sql": None,
+}
+
+
+def _narrow_paths_for_stack(paths: tuple[str, ...], path_stack: dict[str, "str | None"], stack_family: str) -> list[str]:
+    """Pure, directly-unit-testable narrowing helper. `stack_family ==
+    'unknown'` (recon skipped, or the evidence was genuinely ambiguous
+    -- see target_profile.py's own tie-breaking docstring) returns
+    every path unchanged: narrowing on absent/ambiguous evidence would
+    silently drop real coverage, which this project's own precedent
+    (`main.py`'s `_apply_application_profile`) explicitly treats as a
+    worse failure than a few wasted probes. A path with no stack entry
+    at all (shouldn't happen, but paths always win, never dropped) is
+    also kept, same fail-open bias."""
+    if stack_family == "unknown":
+        return list(paths)
+    return [p for p in paths if path_stack.get(p) in (None, stack_family)]
 
 _VERSION_DISCLOSURE_HEADERS: tuple[str, ...] = ("server", "x-powered-by", "x-aspnet-version", "x-aspnetmvc-version", "x-generator")
 # A bare product name with no version number is normal; a version number
@@ -153,6 +197,66 @@ def _missing_security_headers(content_type: str, headers: dict[str, str]) -> lis
     return missing
 
 
+# Gap closed after cross-referencing a real Burp Suite Active Scan run
+# against this target: Burp flagged "Cross-domain Referer leakage",
+# "Mixed content", and "Password field with autocomplete enabled" --
+# none of which had a STOF equivalent. Same "text/html only, narrow
+# false-positive guard" discipline as every other passive header check
+# in this file.
+
+# Only flag the ONE Referrer-Policy value that unconditionally leaks the
+# full URL (including query string) to every cross-origin destination a
+# link/resource on the page points to. Every other value -- including no
+# header at all, which falls back to the browser's own default of
+# `strict-origin-when-cross-origin` in every current browser -- already
+# behaves reasonably, so flagging "missing" outright would just be noise
+# on the overwhelming majority of sites that rely on that safe default.
+def _referrer_policy_gap(content_type: str, headers: dict[str, str]) -> str | None:
+    if "text/html" not in (content_type or "").lower():
+        return None
+    value = headers.get("referrer-policy", "").strip().lower()
+    if value == "unsafe-url":
+        return "Referrer-Policy is explicitly set to 'unsafe-url', which leaks the full URL (including any query string) to every cross-origin link and sub-resource this page loads"
+    return None
+
+
+_HTTP_RESOURCE_RE = re.compile(
+    r'<(?:script|img|link|iframe)\b[^>]*\b(?:src|href)\s*=\s*["\']http://([^"\'/]+)[^"\']*["\']', re.IGNORECASE,
+)
+
+
+def _mixed_content_hosts(page_url: str, content_type: str, body: str) -> list[str]:
+    """Only meaningful when the page itself is HTTPS -- an HTTP page
+    referencing HTTP sub-resources isn't mixed content, it's just... a
+    plain HTTP page (already covered by TC-017.9). Matches `src=`/`href=`
+    on script/img/link/iframe tags specifically, not any bare "http://"
+    text on the page (a visible link's label, a code sample, a citation)
+    -- the same "only what a browser would actually treat as a resource
+    load" narrowing Burp's own check makes."""
+    if not page_url.lower().startswith("https://") or "text/html" not in (content_type or "").lower():
+        return []
+    hosts = {m.group(1) for m in _HTTP_RESOURCE_RE.finditer(body or "")}
+    return sorted(hosts)
+
+
+_PASSWORD_INPUT_RE = re.compile(r'<input\b[^>]*\btype\s*=\s*["\']password["\'][^>]*>', re.IGNORECASE)
+_AUTOCOMPLETE_OFF_RE = re.compile(r'\bautocomplete\s*=\s*["\'](?:off|new-password)["\']', re.IGNORECASE)
+
+
+def _password_autocomplete_gap(content_type: str, body: str) -> int:
+    """Returns the count of <input type="password"> fields that don't
+    disable autofill (no autocomplete="off"/"new-password"). Informational
+    by design (matches Burp's own severity for this exact check) -- a
+    password manager filling a login field is normal, wanted behavior for
+    most sites; this is a compliance/defense-in-depth note for contexts
+    (shared/kiosk machines) where that's a real concern, never framed as
+    a confirmed vulnerability on its own."""
+    if "text/html" not in (content_type or "").lower():
+        return 0
+    fields = _PASSWORD_INPUT_RE.findall(body or "")
+    return sum(1 for field in fields if not _AUTOCOMPLETE_OFF_RE.search(field))
+
+
 # Endpoint-path keywords that mark a page as handling credentials/session
 # tokens/payment data -- the narrow set that makes plaintext HTTP transport
 # an actual, evidence-backed finding rather than a stylistic complaint.
@@ -204,6 +308,57 @@ def _is_bucket_listing(body: str) -> bool:
     return any(sig in (body or "") for sig in _BUCKET_LISTING_SIGNATURES)
 
 
+# Path-Relative StyleSheet Import (PRSSI): a <link rel="stylesheet">
+# whose href is relative to the CURRENT page's path (not the site root)
+# lets an attacker who can make the browser render this page at an
+# unexpected/crafted path (e.g. an app that reflects part of the path
+# into a 404 page, or a path-based router) redirect that stylesheet
+# request somewhere they control -- attacker CSS injected into a
+# trusted origin can exfiltrate page content via CSS selectors/
+# attribute readers. Matches Burp's own check: only a *relative* href
+# is interesting (no leading "/", scheme, "//", or "data:") -- an
+# absolute or root-relative stylesheet path can't be redirected this
+# way regardless of what path the page itself is served at.
+_STYLESHEET_LINK_RE = re.compile(
+    r'<link\b[^>]*\brel\s*=\s*["\']stylesheet["\'][^>]*\bhref\s*=\s*["\']([^"\']+)["\']', re.IGNORECASE,
+)
+
+
+def _path_relative_stylesheet_hrefs(content_type: str, body: str) -> list[str]:
+    if "text/html" not in (content_type or "").lower():
+        return []
+    hrefs = []
+    for href in _STYLESHEET_LINK_RE.findall(body or ""):
+        if href.startswith(("/", "http://", "https://", "//", "data:")):
+            continue
+        hrefs.append(href)
+    return hrefs
+
+
+# Days-until-expiry threshold for flagging a certificate as "expiring
+# soon" rather than only catching one that's already dead -- 14 days
+# gives an operator real lead time to renew, without flagging every
+# perfectly healthy 90-day Let's Encrypt cert on day 1.
+_CERT_EXPIRY_WARNING_DAYS = 14
+
+
+def _fetch_tls_certificate(hostname: str, port: int = 443, timeout: float = 8.0) -> dict:
+    """Blocking (real TLS handshake via `ssl`/`socket`, no Playwright
+    equivalent exists for reading certificate metadata) -- callers run
+    this via `run_in_executor`, same pattern `stof/ui/server.py`'s Burp
+    connection check already uses for its own blocking I/O. Uses a
+    real, verifying `ssl.create_default_context()` (not
+    `CERT_NONE`) specifically so a chain/hostname validation failure
+    surfaces as the exception this function raises, not silently
+    ignored -- that failure IS the finding for TC-017.14."""
+    ctx = ssl.create_default_context()
+    with socket.create_connection((hostname, port), timeout=timeout) as sock, ctx.wrap_socket(sock, server_hostname=hostname) as tls_sock:
+        cert = tls_sock.getpeercert()
+    not_after = datetime.strptime(cert["notAfter"], "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+    days_remaining = (not_after - datetime.now(timezone.utc)).days
+    return {"not_after": not_after, "days_remaining": days_remaining}
+
+
 def _synthetic_endpoint(url: str) -> Endpoint:
     return Endpoint(url=url, method="GET", endpoint_type="api", auth_required=False)
 
@@ -216,6 +371,14 @@ class ConfigurationTestConfig:
     sample_file_paths: tuple[str, ...] = field(default_factory=lambda: _SAMPLE_FILE_PATHS)
     min_content_length: int = 100
     cors_synthetic_origin: str = _SYNTHETIC_CORS_ORIGIN
+    # Phase 1 of context-aware testing (see stof/recon/target_profile.py):
+    # set by main.py from the same scan's own recon phase. None (the
+    # default) behaves exactly like before this existed -- every path
+    # probed, nothing narrowed. Only TC-017.1/.4's candidate path lists
+    # currently consume this; every other technique in this module is
+    # unconditional response/header inspection with nothing stack-
+    # specific to narrow.
+    target_profile: "TargetProfile | None" = None
 
 
 class ConfigurationTestsModule(VulnModule):
@@ -299,9 +462,11 @@ class ConfigurationTestsModule(VulnModule):
     async def _technique_admin_panel(self, endpoints, session_pool, evidence) -> TestCaseResult:
         tid, technique = "TC-017.1", "Default admin panel / management console exposed"
         vuln_type = "Default Configuration -- Admin Panel Exposed"
+        stack_family = self.config.target_profile.stack_family if self.config.target_profile else "unknown"
+        candidate_paths = _narrow_paths_for_stack(self.config.admin_panel_paths, _ADMIN_PANEL_PATH_STACK, stack_family)
         context = await session_pool.new_anonymous_context()
         try:
-            hits = await self._probe_paths(context, self._target_url(endpoints), self.config.admin_panel_paths)
+            hits = await self._probe_paths(context, self._target_url(endpoints), tuple(candidate_paths))
         finally:
             await context.close()
         for url, status, body in hits:
@@ -315,7 +480,11 @@ class ConfigurationTestsModule(VulnModule):
                 )
                 finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"config-admin-{url.rsplit('/', 1)[-1]}") if evidence else []
                 return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(url), finding=finding)
-        return self._result(tid, technique, PASS, f"none of {len(self.config.admin_panel_paths)} common admin-panel paths were reachable")
+        narrowed_note = (
+            f" (narrowed from {len(self.config.admin_panel_paths)} for detected stack '{stack_family}')"
+            if len(candidate_paths) < len(self.config.admin_panel_paths) else ""
+        )
+        return self._result(tid, technique, PASS, f"none of {len(candidate_paths)} common admin-panel paths were reachable{narrowed_note}")
 
     async def _technique_directory_listing(self, endpoints, session_pool, evidence) -> TestCaseResult:
         tid, technique = "TC-017.2", "Directory listing enabled on web root or asset paths"
@@ -369,9 +538,11 @@ class ConfigurationTestsModule(VulnModule):
     async def _technique_sample_files(self, endpoints, session_pool, evidence) -> TestCaseResult:
         tid, technique = "TC-017.4", "Default sample, install, or test files present"
         vuln_type = "Default Configuration -- Sample/Install File Exposed"
+        stack_family = self.config.target_profile.stack_family if self.config.target_profile else "unknown"
+        candidate_paths = _narrow_paths_for_stack(self.config.sample_file_paths, _SAMPLE_FILE_PATH_STACK, stack_family)
         context = await session_pool.new_anonymous_context()
         try:
-            hits = await self._probe_paths(context, self._target_url(endpoints), self.config.sample_file_paths)
+            hits = await self._probe_paths(context, self._target_url(endpoints), tuple(candidate_paths))
         finally:
             await context.close()
         for url, status, body in hits:
@@ -385,7 +556,11 @@ class ConfigurationTestsModule(VulnModule):
                 )
                 finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"config-samplefile-{url.rsplit('/', 1)[-1]}") if evidence else []
                 return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(url), finding=finding)
-        return self._result(tid, technique, PASS, f"none of {len(self.config.sample_file_paths)} common sample/install file paths were reachable")
+        narrowed_note = (
+            f" (narrowed from {len(self.config.sample_file_paths)} for detected stack '{stack_family}')"
+            if len(candidate_paths) < len(self.config.sample_file_paths) else ""
+        )
+        return self._result(tid, technique, PASS, f"none of {len(candidate_paths)} common sample/install file paths were reachable{narrowed_note}")
 
     async def _technique_version_disclosure(self, endpoints, session_pool, evidence) -> TestCaseResult:
         tid, technique = "TC-017.5", "Default server banner / version disclosure"
@@ -538,6 +713,107 @@ class ConfigurationTestsModule(VulnModule):
             return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(url), finding=finding)
         return self._result(tid, technique, PASS, f"'{url}' (Content-Type: {content_type or 'unknown'}) carries X-Content-Type-Options and an X-Frame-Options/frame-ancestors clickjacking control")
 
+    async def _technique_referrer_policy(self, endpoints, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-017.11", "Referrer-Policy leaks full URL to cross-origin destinations"
+        vuln_type = "Default Configuration -- Cross-Domain Referer Leakage"
+        url = self._target_url(endpoints)
+        context = await session_pool.new_anonymous_context()
+        try:
+            try:
+                resp = await context.request.get(url, max_redirects=0)
+            except Exception as exc:
+                return self._result(tid, technique, "ERROR", f"probe failed: {exc}")
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+        finally:
+            await context.close()
+
+        content_type = headers.get("content-type", "")
+        gap = _referrer_policy_gap(content_type, headers)
+        if gap:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Low", cvss_score=3.1,
+                endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
+                request_raw=f"GET {url}", response_raw=f"Referrer-Policy: {headers.get('referrer-policy', '')}",
+                description=f"'{url}': {gap}. Any link a user follows off this page, or any cross-origin resource it loads, receives the referring URL verbatim.",
+                recommendation="Set Referrer-Policy to 'strict-origin-when-cross-origin' (or stricter) so cross-origin destinations only ever see the origin, not the full URL/query string.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="config-referrer-policy") if evidence else []
+            return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(url), finding=finding)
+        return self._result(tid, technique, PASS, f"'{url}' does not set Referrer-Policy to 'unsafe-url'")
+
+    async def _technique_mixed_content(self, endpoints, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-017.12", "HTTPS page loads sub-resources over plaintext HTTP (mixed content)"
+        vuln_type = "Default Configuration -- Mixed Content"
+        url = self._target_url(endpoints)
+        context = await session_pool.new_anonymous_context()
+        try:
+            try:
+                resp = await context.request.get(url, max_redirects=0)
+                body = await resp.text()
+            except Exception as exc:
+                return self._result(tid, technique, "ERROR", f"probe failed: {exc}")
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+        finally:
+            await context.close()
+
+        content_type = headers.get("content-type", "")
+        hosts = _mixed_content_hosts(url, content_type, body)
+        if hosts:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=4.8,
+                endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
+                request_raw=f"GET {url}", response_raw=f"http:// sub-resource host(s) referenced: {', '.join(hosts)}",
+                description=(
+                    f"'{url}' is served over HTTPS but loads script/img/link/iframe sub-resource(s) over plaintext "
+                    f"HTTP from: {', '.join(hosts)}. A network attacker can tamper with those plaintext requests "
+                    "even though the page itself is on HTTPS."
+                ),
+                recommendation="Serve every sub-resource over HTTPS (or a protocol-relative/relative URL); browsers already block or warn on active mixed content by default.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="config-mixed-content") if evidence else []
+            return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(url), finding=finding)
+        return self._result(tid, technique, PASS, f"'{url}' loads no script/img/link/iframe sub-resource over plaintext HTTP")
+
+    async def _technique_password_autocomplete(self, endpoints, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-017.13", "Password field does not disable browser autocomplete"
+        vuln_type = "Default Configuration -- Password Autocomplete Enabled"
+        # This module's own config only carries base_url (see
+        # ConfigurationTestConfig) -- same target every other technique
+        # in this file probes. A password field specifically on the
+        # login page would be a stronger check, but that URL isn't
+        # available here without adding a new config field this file
+        # doesn't otherwise need; base_url is what's honestly available.
+        login_url = self._target_url(endpoints)
+        context = await session_pool.new_anonymous_context()
+        try:
+            try:
+                resp = await context.request.get(login_url, max_redirects=0)
+                body = await resp.text()
+            except Exception as exc:
+                return self._result(tid, technique, "ERROR", f"probe failed: {exc}")
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+        finally:
+            await context.close()
+
+        content_type = headers.get("content-type", "")
+        count = _password_autocomplete_gap(content_type, body)
+        if count:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Info", cvss_score=1.0,
+                endpoint=_synthetic_endpoint(login_url), user_role="unauthenticated",
+                request_raw=f"GET {login_url}", response_raw=f"{count} <input type=password> field(s) without autocomplete=off/new-password",
+                description=(
+                    f"'{login_url}' has {count} password field(s) that don't disable browser/password-manager "
+                    "autofill. This is informational, not a confirmed vulnerability: autofill is normal, wanted "
+                    "behavior on most sites -- relevant mainly on shared/kiosk machines where a filled-in "
+                    "password could be read by the next user of that browser profile."
+                ),
+                recommendation="Consider autocomplete=\"new-password\" only if this target is used on shared/kiosk machines; otherwise this is a defense-in-depth note, not an action item.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="config-password-autocomplete") if evidence else []
+            return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(login_url), finding=finding)
+        return self._result(tid, technique, PASS, f"'{login_url}' has no password field with autocomplete enabled" if _PASSWORD_INPUT_RE.search(body or "") else f"'{login_url}' has no password field to check")
+
     def _sensitive_http_endpoints(self, endpoints: list["Endpoint"]) -> list[str]:
         return [e.url for e in endpoints if e.url.lower().startswith("http://") and _is_sensitive_path(e.url)]
 
@@ -622,6 +898,82 @@ class ConfigurationTestsModule(VulnModule):
         finally:
             await context.close()
 
+    async def _technique_path_relative_stylesheet(self, endpoints, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-017.14", "Path-Relative StyleSheet Import (PRSSI)"
+        vuln_type = "Default Configuration -- Path-Relative StyleSheet Import"
+        url = self._target_url(endpoints)
+        context = await session_pool.new_anonymous_context()
+        try:
+            try:
+                resp = await context.request.get(url, max_redirects=0)
+                body = await resp.text()
+            except Exception as exc:
+                return self._result(tid, technique, "ERROR", f"probe failed: {exc}")
+            headers = {k.lower(): v for k, v in resp.headers.items()}
+        finally:
+            await context.close()
+
+        content_type = headers.get("content-type", "")
+        hrefs = _path_relative_stylesheet_hrefs(content_type, body)
+        if hrefs:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Low", cvss_score=3.7,
+                endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
+                request_raw=f"GET {url}", response_raw=f"<link rel=stylesheet> with path-relative href(s): {', '.join(hrefs)}",
+                description=(
+                    f"'{url}' imports {len(hrefs)} stylesheet(s) using an href relative to the current page's own "
+                    f"path rather than the site root: {', '.join(hrefs)}. If this page can ever be rendered at an "
+                    "unexpected/attacker-influenced path (a path-based router, a reflected-path error page), the "
+                    "browser resolves that relative href against the wrong base and can be made to load an "
+                    "attacker-controlled stylesheet from a trusted origin -- a known technique for exfiltrating "
+                    "page content via CSS selectors/attribute readers."
+                ),
+                recommendation="Reference stylesheets with a root-relative ('/css/app.css') or absolute (https://...) href, never one relative to the current page's own path.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="config-prssi") if evidence else []
+            return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(url), finding=finding)
+        return self._result(tid, technique, PASS, f"'{url}' has no path-relative <link rel=stylesheet> href")
+
+    async def _technique_tls_certificate(self, endpoints, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-017.15", "TLS certificate is expired, expiring soon, or fails chain/hostname validation"
+        vuln_type = "Default Configuration -- Weak TLS Certificate"
+        url = self._target_url(endpoints)
+        parts = urlsplit(url)
+        if parts.scheme != "https" or not parts.hostname:
+            return self._result(tid, technique, SKIPPED, f"'{url}' is not HTTPS -- nothing to check a certificate for")
+
+        loop = asyncio.get_event_loop()
+        try:
+            cert = await loop.run_in_executor(None, _fetch_tls_certificate, parts.hostname, parts.port or 443)
+        except Exception as exc:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.5,
+                endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
+                request_raw=f"TLS handshake to {parts.hostname}:{parts.port or 443}", response_raw=f"handshake/validation failed: {exc}",
+                description=f"A TLS handshake to '{parts.hostname}:{parts.port or 443}' failed chain or hostname validation: {exc}. Visitors' browsers will show a certificate warning, training users to click through security errors.",
+                recommendation="Ensure the certificate is issued by a trusted CA, covers this exact hostname (including any 'www.' variant actually used), and the full chain (including intermediates) is served.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="config-tls-cert-invalid") if evidence else []
+            return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(url), finding=finding)
+
+        days = cert["days_remaining"]
+        if days < 0:
+            severity, cvss, state = "Critical", 7.4, f"expired {-days} day(s) ago"
+        elif days <= _CERT_EXPIRY_WARNING_DAYS:
+            severity, cvss, state = "Medium", 5.3, f"expires in {days} day(s)"
+        else:
+            return self._result(tid, technique, PASS, f"'{parts.hostname}' certificate is valid and expires in {days} day(s)")
+
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity=severity, cvss_score=cvss,
+            endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
+            request_raw=f"TLS handshake to {parts.hostname}:{parts.port or 443}", response_raw=f"certificate notAfter: {cert['not_after'].isoformat()}",
+            description=f"The TLS certificate for '{parts.hostname}' {state} (notAfter: {cert['not_after'].isoformat()}).",
+            recommendation="Renew the certificate before expiry, and set up automated renewal (e.g. certbot/ACME) so this can't recur.",
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="config-tls-cert-expiry") if evidence else []
+        return self._result(tid, technique, FAIL, finding.description, endpoint=_synthetic_endpoint(url), finding=finding)
+
     async def run_techniques(
         self,
         endpoints: list["Endpoint"],
@@ -641,6 +993,11 @@ class ConfigurationTestsModule(VulnModule):
             ("TC-017.8", "Missing clickjacking / MIME-sniffing security headers", self._technique_missing_security_headers(endpoints, session_pool, evidence)),
             ("TC-017.9", "TLS/transport -- sensitive endpoint over plaintext HTTP or HTTPS without HSTS", self._technique_tls_configuration(endpoints, session_pool, evidence)),
             ("TC-017.10", "Publicly-listable cloud storage bucket/container referenced by the target", self._technique_cloud_storage_exposure(endpoints, session_pool, evidence)),
+            ("TC-017.11", "Referrer-Policy leaks full URL to cross-origin destinations", self._technique_referrer_policy(endpoints, session_pool, evidence)),
+            ("TC-017.12", "HTTPS page loads sub-resources over plaintext HTTP (mixed content)", self._technique_mixed_content(endpoints, session_pool, evidence)),
+            ("TC-017.13", "Password field does not disable browser autocomplete", self._technique_password_autocomplete(endpoints, session_pool, evidence)),
+            ("TC-017.14", "Path-Relative StyleSheet Import (PRSSI)", self._technique_path_relative_stylesheet(endpoints, session_pool, evidence)),
+            ("TC-017.15", "TLS certificate is expired, expiring soon, or fails chain/hostname validation", self._technique_tls_certificate(endpoints, session_pool, evidence)),
         ):
             # `_safe_result` (not a bare try/except that only logs) so a
             # technique that couldn't complete -- e.g. `_probe_paths`

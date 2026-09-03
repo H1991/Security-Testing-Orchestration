@@ -27,7 +27,14 @@ def test_get_provider_form_login_forwards_kwargs():
 
 
 def test_auth_providers_registry_has_both_phase1_types():
-    assert set(AUTH_PROVIDERS) == {"form_login", "jwt"}
+    assert {"form_login", "jwt"} <= set(AUTH_PROVIDERS)
+
+
+def test_auth_providers_registry_has_assisted_manual_type():
+    """Added for assisted (human-in-the-loop) login against a target
+    behind a bot-challenge -- see stof/auth/assisted_login.py."""
+    from stof.auth import AssistedLoginProvider
+    assert AUTH_PROVIDERS["assisted_manual"] is AssistedLoginProvider
 
 
 # ---------------------------------------------------------------------------

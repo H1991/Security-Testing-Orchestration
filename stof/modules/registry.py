@@ -36,6 +36,7 @@ from .cache_tests import CacheTestsModule
 from .configuration_tests import ConfigurationTestsModule
 from .deserialization_tests import DeserializationTestsModule
 from .disclosure_tests import DisclosureTestsModule
+from .file_upload_tests import FileUploadTestsModule
 from .graphql_tests import GraphQLTestsModule
 from .idor_tests import IdorTestsModule
 from .injection_variants_tests import InjectionVariantsTestsModule
@@ -55,6 +56,7 @@ MODULE_FACTORIES: dict[str, Callable[[], VulnModule]] = {
     "cache_tests": CacheTestsModule,
     "configuration_tests": ConfigurationTestsModule,
     "disclosure_tests": DisclosureTestsModule,
+    "file_upload_tests": FileUploadTestsModule,
     "graphql_tests": GraphQLTestsModule,
     "deserialization_tests": DeserializationTestsModule,
     "sqli_tests": SqliTestsModule,

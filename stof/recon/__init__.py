@@ -10,6 +10,7 @@ from .parameter_discovery import ParameterInfo, discover_parameters, guess_param
 from .port_scanner import COMMON_PORTS, OpenPort, scan_ports
 from .recon_engine import DEFAULT_RECON_PATH, ReconReport, run_recon, write_recon_report
 from .secrets_scanner import SecretFinding, find_secrets, scan_page_for_secrets
+from .target_profile import TargetProfile, build_target_profile
 from .tech_detector import TechProfile, analyze_url, detect_tech, extract_title
 
 __all__ = [
@@ -21,8 +22,10 @@ __all__ = [
     "ParameterInfo",
     "ReconReport",
     "SecretFinding",
+    "TargetProfile",
     "TechProfile",
     "analyze_url",
+    "build_target_profile",
     "check_missing_security_headers",
     "detect_tech",
     "discover_parameters",

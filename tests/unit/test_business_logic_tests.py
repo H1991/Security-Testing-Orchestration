@@ -8,6 +8,7 @@ from stof.engine.multi_session import SessionPool
 from stof.modules.business_logic_tests import (
     BusinessLogicTestConfig,
     BusinessLogicTestsModule,
+    _find_limited_use_endpoint,
     _find_multistep_flow,
     _find_registration_endpoint,
     _looks_like_signup_success,
@@ -135,7 +136,7 @@ async def test_run_techniques_skipped_when_no_registration_or_flow_discovered():
     results = await module.run_techniques([], None, pool)
 
     by_id = _by_id(results)
-    assert len(by_id) == 3
+    assert len(by_id) == 5
     assert all(r.status == SKIPPED for r in by_id.values())
 
 
@@ -277,3 +278,166 @@ async def test_workflow_step_skipping_passes_when_rejected():
     result = await module._technique_workflow_step_skipping(endpoints, pool, evidence=None)
 
     assert result.status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-135.4 — race condition on a limited-use endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_find_limited_use_endpoint_matches_redeem_path():
+    endpoints = [
+        Endpoint(url="https://x/login", method="POST", endpoint_type="form", parameters=[]),
+        Endpoint(url="https://x/api/redeem-coupon", method="POST", endpoint_type="api", parameters=["code"]),
+    ]
+    found = _find_limited_use_endpoint(endpoints)
+    assert found is not None
+    assert found.url == "https://x/api/redeem-coupon"
+
+
+def test_find_limited_use_endpoint_none_when_no_candidate():
+    endpoints = [Endpoint(url="https://x/login", method="POST", endpoint_type="form", parameters=[])]
+    assert _find_limited_use_endpoint(endpoints) is None
+
+
+@pytest.mark.asyncio
+async def test_race_condition_skipped_when_no_candidate():
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+    pool = _pool_with_context(_fake_context())
+
+    result = await module._technique_race_condition([], pool, evidence=None)
+
+    assert result.status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_race_condition_gated_skip_when_probes_disabled():
+    endpoints = [Endpoint(url="https://x/redeem", method="POST", endpoint_type="api", parameters=["code"])]
+    module = BusinessLogicTestsModule()
+    pool = _pool_with_context(_fake_context())
+
+    result = await module._technique_race_condition(endpoints, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "allow_state_changing_probes" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_race_condition_fails_when_both_concurrent_requests_succeed():
+    endpoints = [Endpoint(url="https://x/redeem", method="POST", endpoint_type="api", parameters=["code"])]
+
+    def fake_post(url, form=None, max_redirects=0):
+        return _response(200, "Coupon applied successfully")
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    result = await module._technique_race_condition(endpoints, pool, evidence=None)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.severity == "Medium"
+
+
+@pytest.mark.asyncio
+async def test_race_condition_passes_when_a_conflict_signal_appears():
+    endpoints = [Endpoint(url="https://x/redeem", method="POST", endpoint_type="api", parameters=["code"])]
+    call_count = {"n": 0}
+
+    def fake_post(url, form=None, max_redirects=0):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return _response(200, "Coupon applied successfully")
+        return _response(409, "This coupon has already been used")
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    result = await module._technique_race_condition(endpoints, pool, evidence=None)
+
+    assert result.status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-135.5 — sequential over-limit calls to a limited-use endpoint
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_function_usage_limit_skipped_when_no_candidate():
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+    pool = _pool_with_context(_fake_context())
+
+    result = await module._technique_function_usage_limit([], pool, evidence=None)
+
+    assert result.status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_function_usage_limit_gated_skip_when_probes_disabled():
+    endpoints = [Endpoint(url="https://x/redeem", method="POST", endpoint_type="api", parameters=["code"])]
+    module = BusinessLogicTestsModule()
+    pool = _pool_with_context(_fake_context())
+
+    result = await module._technique_function_usage_limit(endpoints, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "allow_state_changing_probes" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_function_usage_limit_fails_when_all_three_calls_succeed():
+    endpoints = [Endpoint(url="https://x/redeem", method="POST", endpoint_type="api", parameters=["code"])]
+
+    def fake_post(url, form=None, max_redirects=0):
+        return _response(200, "Coupon applied successfully")
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    result = await module._technique_function_usage_limit(endpoints, pool, evidence=None)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.severity == "Medium"
+
+
+@pytest.mark.asyncio
+async def test_function_usage_limit_passes_when_a_later_call_is_rejected():
+    endpoints = [Endpoint(url="https://x/redeem", method="POST", endpoint_type="api", parameters=["code"])]
+    call_count = {"n": 0}
+
+    def fake_post(url, form=None, max_redirects=0):
+        call_count["n"] += 1
+        if call_count["n"] < 2:
+            return _response(200, "Coupon applied successfully")
+        return _response(409, "This coupon has already been used")
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    result = await module._technique_function_usage_limit(endpoints, pool, evidence=None)
+
+    assert result.status == PASS
+
+
+@pytest.mark.asyncio
+async def test_function_usage_limit_sends_exactly_three_sequential_requests():
+    endpoints = [Endpoint(url="https://x/redeem", method="POST", endpoint_type="api", parameters=["code"])]
+    calls = []
+
+    def fake_post(url, form=None, max_redirects=0):
+        calls.append(url)
+        return _response(200, "Coupon applied successfully")
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    await module._technique_function_usage_limit(endpoints, pool, evidence=None)
+
+    assert len(calls) == 3

@@ -11,16 +11,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import os
-import platform
 import re
 import shutil
-import socket
 import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -28,12 +25,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from stof.core.logger import get_logger
+from stof.recorder import cdp
 
 _log = get_logger("ui.server")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = REPO_ROOT / "config" / "config.json"
 USERS_PATH = REPO_ROOT / "config" / "users.json"
+SESSIONS_DB_PATH = REPO_ROOT / "data" / "stof.db"  # same path stof/main.py's SessionStore uses
 ENV_PATH = REPO_ROOT / ".env"
 TESTCASES_PATH = REPO_ROOT / "config" / "testcases.json"
 LOGS_DIR = REPO_ROOT / "data" / "logs"
@@ -64,7 +63,7 @@ _KNOWN_MODULES = (
     "crawler", "jwt_tests", "auth_tests", "idor_tests", "configuration_tests",
     "disclosure_tests", "graphql_tests", "deserialization_tests", "sqli_tests",
     "ssrf_tests", "xss_tests", "csrf_tests", "injection_variants_tests", "cache_tests",
-    "business_logic_tests",
+    "business_logic_tests", "file_upload_tests",
 )
 
 _MODULE_LABELS: dict[str, str] = {
@@ -83,6 +82,7 @@ _MODULE_LABELS: dict[str, str] = {
     "injection_variants_tests": "Injection Variants",
     "cache_tests": "Web Cache Poisoning / Deception",
     "business_logic_tests": "Business Logic / Identity",
+    "file_upload_tests": "File Upload",
 }
 
 
@@ -458,70 +458,15 @@ async def _run_scan_process(record: ScanRecord, module_names: list[str] | None, 
 # operator started it, never wherever the server happens to be running.
 # ---------------------------------------------------------------------------
 
-RECORDING_CDP_PORT = 9222  # Chrome/Edge's own conventional --remote-debugging-port default
-
-
-def _recording_cdp_host() -> str:
-    """The address this server process should use to reach the operator's
-    Chrome debug port. `127.0.0.1` is wrong whenever the server isn't in
-    the exact same network namespace as the browser -- e.g. the server
-    running inside a container/VM while the browser is on the host, or
-    the console being reached over the LAN via a specific interface IP
-    (`http://192.168.1.73:8787/`) rather than localhost. In both cases
-    the server's own loopback never reaches the browser; the machine's
-    real LAN IP does. `STOF_RECORDING_CDP_HOST` overrides this outright
-    for setups this heuristic can't guess (the browser on a genuinely
-    different machine, multiple NICs, etc). The heuristic: open a UDP
-    "connection" (no packets actually sent) to a public address purely
-    to ask the OS which local interface it would route through -- the
-    standard no-DNS trick for finding a box's own LAN IP."""
-    override = os.environ.get("STOF_RECORDING_CDP_HOST")
-    if override:
-        return override
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
-            probe.connect(("8.8.8.8", 80))
-            return probe.getsockname()[0]
-    except OSError:
-        return "127.0.0.1"
-
-
-def _recording_cdp_endpoint() -> str:
-    return f"http://{_recording_cdp_host()}:{RECORDING_CDP_PORT}"
-
-
-def _recording_launch_command() -> dict:
-    """OS-specific command to start a CDP-debuggable browser, shown in
-    the Workflows tab before the operator clicks Record. Two details
-    matter here, not one:
-    - A separate `--user-data-dir` (a throwaway scratch profile, not
-      their normal one): Chrome silently REFUSES to enable remote
-      debugging on an already-running instance using the default
-      profile -- confirmed behavior, not a guess -- so a command that
-      omits it "works" the first time someone has no Chrome open at
-      all and mysteriously stops working the next time they already
-      have a normal browsing session going.
-    - `--remote-debugging-address=0.0.0.0`: Chrome's debug port binds
-      to loopback ONLY by default, which is unreachable from outside
-      the browser's own machine/namespace. This server may be reached
-      over the LAN (`_recording_cdp_host()` above) precisely because
-      it isn't sharing loopback with the browser, so the browser's
-      debug port has to be opened to the network too, not just started."""
-    system = platform.system()
-    if system == "Darwin":
-        return {
-            "os": "macOS",
-            "command": f'open -a "Google Chrome" --args --remote-debugging-port={RECORDING_CDP_PORT} --remote-debugging-address=0.0.0.0 --user-data-dir=/tmp/stof-chrome-debug',
-        }
-    if system == "Windows":
-        return {
-            "os": "Windows",
-            "command": f'start chrome --remote-debugging-port={RECORDING_CDP_PORT} --remote-debugging-address=0.0.0.0 --user-data-dir=%TEMP%\\stof-chrome-debug',
-        }
-    return {
-        "os": "Linux",
-        "command": f"google-chrome --remote-debugging-port={RECORDING_CDP_PORT} --remote-debugging-address=0.0.0.0 --user-data-dir=/tmp/stof-chrome-debug &",
-    }
+# Moved to stof/recorder/cdp.py so stof/main.py's assisted-login path
+# (see AssistedLoginProvider) can share the exact same CDP-attach
+# conventions instead of forking a second implementation -- one debug
+# port, one set of operator instructions, two features. These names are
+# kept as thin aliases so every existing call site below is unaffected.
+RECORDING_CDP_PORT = cdp.CDP_PORT
+_recording_cdp_host = cdp.cdp_host
+_recording_cdp_endpoint = cdp.cdp_endpoint
+_recording_launch_command = cdp.launch_command
 
 
 class RecordingSession:
@@ -670,6 +615,12 @@ class TargetUpdateRequest(BaseModel):
     username_selector: str | None = None
     password_selector: str | None = None
     submit_selector: str | None = None
+    # Opt-in per target (stof.config.schema.TargetConfig.requires_assisted_login,
+    # stof.auth.assisted_login.AssistedLoginProvider) -- for a target behind
+    # a bot-challenge STOF's own automated browser can never pass alone.
+    # `None` (omitted) leaves whatever's already configured untouched, same
+    # partial-update convention as the selector fields above.
+    requires_assisted_login: bool | None = None
 
 
 class BrowserUpdateRequest(BaseModel):
@@ -680,11 +631,47 @@ class OobUpdateRequest(BaseModel):
     collaborator_url: str = ""
 
 
+class BurpUpdateRequest(BaseModel):
+    enabled: bool = False
+    # Separate from `enabled` on purpose -- see stof/config/schema.py's
+    # BurpConfig docstring for the real bug this split fixes (a single
+    # flag used to silently turn on Burp's own much slower Active Scan
+    # alongside evidence capture, with no way to have one without the
+    # other).
+    run_active_scan: bool = False
+    api_url: str = "http://127.0.0.1:1337"
+    api_key: str | None = None  # None = leave the stored key unchanged; "" clears it
+    scan_timeout_s: int = 1800
+    poll_interval_s: int = 5
+    # Burp's intercepting PROXY listener -- a different port than the
+    # REST API (api_url), which only controls/queries scans. Traffic
+    # sent here is what actually shows up in Burp's own Proxy history;
+    # Burp's own default listener is 127.0.0.1:8080.
+    proxy_url: str = "http://127.0.0.1:8080"
+
+
+class BurpTestRequest(BaseModel):
+    # Both optional so "Test connection" can verify the already-saved
+    # config (api_key included, even though it's write-only and never
+    # sent back to the browser) without the operator re-typing it --
+    # only used when the form field was left blank.
+    api_url: str | None = None
+    api_key: str | None = None
+
+
 class CredentialsUpdateRequest(BaseModel):
     admin_username: str | None = None
     admin_password: str | None = None
     normal_username: str | None = None
     normal_password: str | None = None
+    # "form_login" (default, browser login form, auto-detected) or "jwt"
+    # (no login step -- `admin_password`/`normal_password` is read as a
+    # pre-issued bearer token instead, see stof/auth/jwt_auth.py's own
+    # docstring on why `password` doubles as the token field). `None`
+    # leaves whatever's already configured untouched, same partial-update
+    # convention the rest of this endpoint already uses.
+    admin_auth_type: Literal["form_login", "jwt"] | None = None
+    normal_auth_type: Literal["form_login", "jwt"] | None = None
 
 
 class StartRecordingRequest(BaseModel):
@@ -793,6 +780,8 @@ def set_target(body: TargetUpdateRequest) -> dict:
             target.pop(field_name, None)
         else:
             target[field_name] = value
+    if body.requires_assisted_login is not None:
+        target["requires_assisted_login"] = body.requires_assisted_login
     CONFIG_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     return target
 
@@ -820,11 +809,107 @@ async def set_oob(body: OobUpdateRequest) -> dict:
     doc = _read_json(CONFIG_PATH)
     if doc is None:
         raise HTTPException(404, f"{CONFIG_PATH} not found")
-    burp = doc.setdefault("burp", {"enabled": False, "api_url": "http://127.0.0.1:1337", "api_key": "", "scan_timeout_s": 1800, "poll_interval_s": 5})
+    burp = doc.setdefault("burp", {"enabled": False, "run_active_scan": False, "api_url": "http://127.0.0.1:1337", "api_key": "", "scan_timeout_s": 1800, "poll_interval_s": 5})
     burp["collaborator_url"] = body.collaborator_url.strip()
     CONFIG_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     await _broadcast_global({"event": "oob_changed", "collaborator_url": burp["collaborator_url"]})
     return {"collaborator_url": burp["collaborator_url"]}
+
+
+@app.get("/api/config/burp")
+def get_burp_config() -> dict:
+    """Never echoes `api_key` back (write-only, same convention as
+    `/api/credentials` for account passwords) -- only whether one is
+    currently set, so the Settings form can show "configured" without
+    ever displaying or re-transmitting the key itself."""
+    doc = _read_json(CONFIG_PATH) or {}
+    burp = doc.get("burp", {})
+    return {
+        "enabled": bool(burp.get("enabled", False)),
+        "run_active_scan": bool(burp.get("run_active_scan", False)),
+        "api_url": burp.get("api_url", "http://127.0.0.1:1337"),
+        "proxy_url": burp.get("proxy_url", "http://127.0.0.1:8080"),
+        "api_key_set": bool(burp.get("api_key")),
+        "scan_timeout_s": burp.get("scan_timeout_s", 1800),
+        "poll_interval_s": burp.get("poll_interval_s", 5),
+    }
+
+
+@app.put("/api/config/burp")
+async def set_burp_config(body: BurpUpdateRequest) -> dict:
+    doc = _read_json(CONFIG_PATH)
+    if doc is None:
+        raise HTTPException(404, f"{CONFIG_PATH} not found")
+    burp = doc.setdefault("burp", {"enabled": False, "run_active_scan": False, "api_url": "http://127.0.0.1:1337", "api_key": "", "scan_timeout_s": 1800, "poll_interval_s": 5, "proxy_url": "http://127.0.0.1:8080"})
+    burp["enabled"] = body.enabled
+    burp["run_active_scan"] = body.run_active_scan
+    burp["api_url"] = body.api_url.strip().rstrip("/")
+    burp["proxy_url"] = body.proxy_url.strip().rstrip("/")
+    burp["scan_timeout_s"] = body.scan_timeout_s
+    burp["poll_interval_s"] = body.poll_interval_s
+    if body.api_key is not None:
+        burp["api_key"] = body.api_key.strip()
+    CONFIG_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+    await _broadcast_global({"event": "burp_config_changed", "enabled": burp["enabled"]})
+    return get_burp_config()
+
+
+@app.post("/api/burp/test-connection")
+async def test_burp_connection(body: BurpTestRequest) -> dict:
+    """Lightweight reachability/auth check -- does NOT start a scan.
+    Probes `GET {base}/{key}/v0.1/scan/<a task id that can't exist>`:
+    Burp answers this itself (400/404-shaped -- exact code not
+    live-verified for a *wrong* key, see burp_controller.py's own
+    "not live-verified" precedent) if the API key is accepted, refuses
+    the connection outright if nothing is listening on that URL, and a
+    key Burp doesn't recognize should surface as a distinct error
+    rather than "task not found" -- reported here as a best-effort
+    `authorized` guess, not a guarantee, exactly like every other
+    "not live-verified against every Burp version" caveat already
+    documented in this codebase's Burp integration."""
+    doc = _read_json(CONFIG_PATH) or {}
+    stored = doc.get("burp", {})
+    api_url = (body.api_url or stored.get("api_url") or "http://127.0.0.1:1337").strip().rstrip("/")
+    api_key = body.api_key if body.api_key is not None else stored.get("api_key", "")
+    if not api_key:
+        return {"reachable": False, "authorized": False, "error": "no API key configured"}
+
+    if not api_url.startswith(("http://", "https://")):
+        return {"reachable": False, "authorized": False, "error": "api_url must be http:// or https://"}
+
+    def _check() -> dict:
+        import urllib.error
+        import urllib.request
+        url = f"{api_url}/{api_key}/v0.1/scan/999999999999"
+        try:
+            request = urllib.request.Request(url, method="GET")  # noqa: S310 -- scheme validated above
+            with urllib.request.urlopen(request, timeout=5) as resp:  # noqa: S310
+                return {"reachable": True, "authorized": True, "status": resp.status}
+        except urllib.error.HTTPError as exc:
+            # Burp responded at all -> reachable. 401/403 = key rejected;
+            # anything else (400/404 for the bogus task id) means the
+            # key was accepted and Burp just doesn't have that task.
+            return {"reachable": True, "authorized": exc.code not in (401, 403), "status": exc.code}
+        except Exception as exc:
+            return {"reachable": False, "authorized": False, "error": str(exc)}
+
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _check)
+
+
+def _apply_credentials_update(
+    by_role: dict, role: str, default_id: str, username: str | None, env_var: str, auth_type: str | None
+) -> None:
+    """One role's slice of `set_credentials()`'s partial update -- pulled
+    out so the endpoint itself reads as one straight-line sequence
+    instead of a repeated if/if/if block per role, and stays under this
+    project's complexity gate (CLAUDE.md's own quality standard)."""
+    if username is not None:
+        entry = by_role.setdefault(role, {"id": default_id, "role": role, "auth_type": "form_login"})
+        entry["username"] = username
+        entry["password"] = f"{{{{env:{env_var}}}}}"
+    if auth_type is not None and role in by_role:
+        by_role[role]["auth_type"] = auth_type
 
 
 @app.put("/api/credentials")
@@ -836,14 +921,8 @@ def set_credentials(body: CredentialsUpdateRequest) -> dict:
     users_doc = _read_json(USERS_PATH) or {"users": []}
     by_role = {u.get("role"): u for u in users_doc.get("users", [])}
 
-    if body.admin_username is not None:
-        admin = by_role.setdefault("admin", {"id": "admin-01", "role": "admin", "auth_type": "form_login"})
-        admin["username"] = body.admin_username
-        admin["password"] = "{{env:ADMIN_PASSWORD}}"
-    if body.normal_username is not None:
-        normal = by_role.setdefault("normal", {"id": "user-01", "role": "normal", "auth_type": "form_login"})
-        normal["username"] = body.normal_username
-        normal["password"] = "{{env:USER_PASSWORD}}"
+    _apply_credentials_update(by_role, "admin", "admin-01", body.admin_username, "ADMIN_PASSWORD", body.admin_auth_type)
+    _apply_credentials_update(by_role, "normal", "user-01", body.normal_username, "USER_PASSWORD", body.normal_auth_type)
 
     if body.admin_password:
         _write_dotenv_value(ENV_PATH, "ADMIN_PASSWORD", body.admin_password)
@@ -1090,6 +1169,118 @@ async def _run_verify_login(session: VerifyLoginSession) -> None:
         session.done_event.set()
 
 
+# Shared by the context launch and the screencast size (see the comment
+# at the Page.startScreencast call below) so the two can never drift
+# apart and silently break click coordinates again.
+ASSISTED_LOGIN_VIEWPORT = {"width": 1280, "height": 800}
+
+
+class AssistedLoginRoleSession:
+    """One role's live browser context within the shared assisted-login
+    browser -- the state a WebSocket connection and the confirm/status
+    endpoints all need to reach the same running page. `context`/`page`
+    deliberately stay open across requests (never closed by this
+    session's own code) -- `stof/main.py`'s scan subprocess later
+    reconnects over CDP and reuses this exact context for the whole
+    scan, per `AssistedLoginProvider`'s own module docstring."""
+
+    def __init__(self, role: str, login_url: str) -> None:
+        self.role = role
+        self.login_url = login_url
+        self.status = "starting"  # starting | ready | confirmed | failed
+        self.error: str | None = None
+        self.context = None
+        self.page = None
+        self.cdp_session = None
+        self.frame_session_id: str | None = None
+
+
+class AssistedLoginBrowserRegistry:
+    """Owns the ONE shared Playwright driver + Browser process behind
+    every assisted-login role -- launched lazily on first use and kept
+    alive across requests (deliberately NOT `async with async_playwright()`,
+    which would tear the browser down at the end of a single request;
+    this browser needs to survive from "operator clicks Start" through
+    the end of a real scan run, potentially many minutes later)."""
+
+    def __init__(self) -> None:
+        self.playwright = None
+        self.browser = None
+        self.sessions: dict[str, AssistedLoginRoleSession] = {}
+        self.lock = asyncio.Lock()
+
+
+ASSISTED_LOGIN = AssistedLoginBrowserRegistry()
+
+
+async def _ensure_assisted_login_browser():
+    """Starts the shared Playwright driver + Chromium browser (headless,
+    with its CDP debug port bound to 127.0.0.1 only -- see
+    `stof/recorder/cdp.py`'s `ASSISTED_LOGIN_CDP_PORT`) on first call;
+    every later call reuses the same running browser. Headless is fine
+    here even though a human "views" this browser -- the screencast
+    (`Page.startScreencast`) captures rendered frames regardless of
+    whether there's a real display, the same way Playwright's own
+    screenshot API already works headless."""
+    from playwright.async_api import async_playwright
+
+    async with ASSISTED_LOGIN.lock:
+        if ASSISTED_LOGIN.browser is not None:
+            return ASSISTED_LOGIN.browser
+        ASSISTED_LOGIN.playwright = await async_playwright().start()
+        ASSISTED_LOGIN.browser = await ASSISTED_LOGIN.playwright.chromium.launch(
+            headless=True,
+            args=[f"--remote-debugging-port={cdp.ASSISTED_LOGIN_CDP_PORT}", "--remote-debugging-address=127.0.0.1"],
+        )
+        _log.info(f"assisted-login browser started, CDP debug port {cdp.ASSISTED_LOGIN_CDP_PORT} (127.0.0.1 only)")
+        return ASSISTED_LOGIN.browser
+
+
+async def _start_assisted_login_session(role: str, login_url: str) -> AssistedLoginRoleSession:
+    session = AssistedLoginRoleSession(role, login_url)
+    ASSISTED_LOGIN.sessions[role] = session
+    try:
+        browser = await _ensure_assisted_login_browser()
+        # A fresh, isolated context per role -- never shared -- so each
+        # role's cookies/login state stay genuinely separate within the
+        # one shared browser process, the same isolation a separate
+        # Chrome profile would give, without the overhead of launching
+        # a whole extra browser process per role.
+        session.context = await browser.new_context(ignore_https_errors=True, viewport=ASSISTED_LOGIN_VIEWPORT)
+        session.page = await session.context.new_page()
+        await session.page.goto(login_url)
+        session.cdp_session = await session.context.new_cdp_session(session.page)
+
+        def _on_frame(event: dict) -> None:
+            session.frame_session_id = event.get("sessionId")
+
+        session.cdp_session.on("Page.screencastFrame", _on_frame)
+        # maxWidth/maxHeight deliberately match ASSISTED_LOGIN_VIEWPORT
+        # exactly (not some smaller preview size) -- Chrome downscales
+        # frames to fit within these bounds, and a mismatch here silently
+        # breaks click coordinates: the frontend maps a click's on-screen
+        # position to page coordinates using the *frame's own pixel size*
+        # (img.naturalWidth/Height), so a scaled-down frame makes every
+        # click land in the wrong place on the real page -- exactly the
+        # "can't click the CAPTCHA checkbox" bug this fixed.
+        await session.cdp_session.send(
+            "Page.startScreencast",
+            {
+                "format": "jpeg",
+                "quality": 70,
+                "maxWidth": ASSISTED_LOGIN_VIEWPORT["width"],
+                "maxHeight": ASSISTED_LOGIN_VIEWPORT["height"],
+                "everyNthFrame": 1,
+            },
+        )
+        session.status = "ready"
+    except Exception as exc:
+        session.status = "failed"
+        session.error = _short_error(exc)
+        _log.warning(f"assisted-login session for role '{role}' failed to start: {exc}")
+    return session
+
+
 @app.get("/api/auth/roles")
 def get_auth_roles() -> list[dict]:
     """Whatever roles are actually configured in `users.json` -- could
@@ -1126,6 +1317,210 @@ async def start_verify_login(body: VerifyLoginRequest) -> dict:
     _BACKGROUND_TASKS.add(task)
     task.add_done_callback(_BACKGROUND_TASKS.discard)
     return {"verify_id": verify_id, "status": session.status, "role": session.role}
+
+
+class ManualSessionRequest(BaseModel):
+    role: str
+    cookies: str  # raw "name=value; name2=value2" -- what a browser's devtools/Network tab shows
+    expires_hours: int = 6
+
+
+def _parse_cookie_header(raw: str) -> dict[str, str]:
+    """Parses a `name=value; name2=value2` cookie header string, the
+    exact format an operator copies straight out of their own real
+    browser's devtools (Application tab, or a request's `Cookie`
+    header) -- no reformatting asked of them. Malformed/empty segments
+    are skipped rather than raising, since a trailing `;` or stray
+    whitespace in a pasted value is common and shouldn't block the
+    whole paste over one bad segment."""
+    cookies: dict[str, str] = {}
+    for part in raw.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, _, value = part.partition("=")
+        name = name.strip()
+        if name:
+            cookies[name] = value.strip()
+    return cookies
+
+
+@app.post("/api/auth/manual-session")
+def set_manual_session(body: ManualSessionRequest) -> dict:
+    """Seeds a role's session directly from cookies the operator captured
+    in their own, real, non-automated browser -- for targets where
+    STOF's automated login (form-based or assisted) can't be used at
+    all. A scan then skips login entirely for this role: `SessionManager`
+    already treats any unexpired seeded session as ready-to-use without
+    calling a provider (see `stof/session/session_manager.py`'s
+    `seed_session`/`needs_refresh`), the exact mechanism Assisted Login
+    also relies on -- this just seeds the store a different way.
+
+    Honest limitation, not hidden: a cookie captured on a DIFFERENT
+    machine/network than wherever the scan actually runs can still be
+    rejected by targets that bind the cookie to the originating
+    IP/TLS fingerprint (e.g. Cloudflare's cf_clearance) -- this only
+    reliably works for ordinary session-cookie auth, not bot-challenge
+    cookies from a different egress point."""
+    cookies = _parse_cookie_header(body.cookies)
+    if not cookies:
+        raise HTTPException(400, "no cookies could be parsed -- expected 'name=value; name2=value2'")
+    from datetime import datetime, timedelta, timezone
+
+    from stof.session.models import Session
+    from stof.session.session_store import SessionStore
+
+    session = Session(
+        user_id=f"{body.role}-manual",
+        role=body.role,
+        auth_type="manual_cookie",
+        cookies=cookies,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=body.expires_hours),
+    )
+    SessionStore(db_path=SESSIONS_DB_PATH).save(session)
+    return {"role": body.role, "cookie_count": len(cookies), "expires_at": session.expires_at.isoformat()}
+
+
+@app.delete("/api/auth/manual-session/{role}")
+def clear_manual_session(role: str) -> dict:
+    from stof.session.session_store import SessionStore
+
+    SessionStore(db_path=SESSIONS_DB_PATH).delete(role)
+    return {"role": role, "cleared": True}
+
+
+class AssistedLoginStartRequest(BaseModel):
+    role: str
+
+
+@app.post("/api/auth/assisted-login/start")
+async def start_assisted_login(body: AssistedLoginStartRequest) -> dict:
+    """Launches (or reuses) the shared assisted-login browser and opens
+    a fresh context/page for `role`, navigated to the configured login
+    URL and screencasting. The frontend then opens the WebSocket
+    (`/ws/assisted-login/{role}`) to actually see and drive it."""
+    from stof.config import load_config, load_dotenv, load_users
+    load_dotenv()
+    config = load_config(CONFIG_PATH)
+    users = load_users(USERS_PATH)
+    user = next((u for u in users.users if u.role == body.role), None)
+    if user is None:
+        raise HTTPException(404, f"no user with role '{body.role}' in users.json")
+    if user.auth_type != "form_login":
+        raise HTTPException(400, f"role '{body.role}' uses auth_type '{user.auth_type}' -- assisted login only applies to a real login form")
+
+    session = await _start_assisted_login_session(body.role, config.target.login_url)
+    return {"role": session.role, "status": session.status, "error": session.error}
+
+
+@app.get("/api/auth/assisted-login/status")
+def get_assisted_login_status(role: str) -> dict:
+    session = ASSISTED_LOGIN.sessions.get(role)
+    if session is None:
+        return {"role": role, "status": "idle"}
+    return {"role": session.role, "status": session.status, "error": session.error}
+
+
+@app.post("/api/auth/assisted-login/confirm")
+async def confirm_assisted_login(body: AssistedLoginStartRequest) -> dict:
+    """Checked once the operator says they've completed login (cleared
+    the bot-challenge, submitted credentials) in the live view -- reuses
+    the exact same success-selector/URL-change detection `FormLoginProvider`
+    itself relies on, so this is never just "the operator said so"."""
+    from stof.auth.base import AuthFailedError
+    from stof.auth.form_login import wait_for_login_success
+    from stof.config import load_config, load_dotenv
+    load_dotenv()
+    config = load_config(CONFIG_PATH)
+
+    session = ASSISTED_LOGIN.sessions.get(body.role)
+    if session is None or session.page is None:
+        raise HTTPException(404, f"no assisted-login session in progress for role '{body.role}' -- start one first")
+    try:
+        await wait_for_login_success(
+            session.page, session.login_url, config.target.success_selector, timeout_ms=3000, context_label=f"assisted login (role={body.role})"
+        )
+    except AuthFailedError as exc:
+        session.status = "ready"  # still usable -- the operator can keep trying in the live view
+        return {"role": body.role, "confirmed": False, "detail": str(exc)}
+    session.status = "confirmed"
+    return {"role": body.role, "confirmed": True}
+
+
+@app.websocket("/ws/assisted-login/{role}")
+async def assisted_login_stream(websocket: WebSocket, role: str) -> None:
+    """Bidirectional: relays `Page.screencastFrame` events out to the
+    browser tab as `{"type":"frame","data": <base64 jpeg>}`, and relays
+    mouse/keyboard events the operator performs on the live-view canvas
+    back in as real CDP `Input.dispatch*` calls against the actual
+    server-side page -- the operator is genuinely typing into and
+    clicking the real browser that will go on to run the scan, not a
+    simulation of it."""
+    await websocket.accept()
+    session = ASSISTED_LOGIN.sessions.get(role)
+    if session is None or session.cdp_session is None:
+        await websocket.close(code=4004, reason=f"no assisted-login session for role '{role}'")
+        return
+
+    def _forward_frame(event: dict) -> None:
+        data = event.get("data")
+        if data is None:
+            return
+        task = asyncio.ensure_future(websocket.send_json({"type": "frame", "data": data}))
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
+        ack_task = asyncio.ensure_future(session.cdp_session.send("Page.screencastFrameAck", {"sessionId": event.get("sessionId")}))
+        _BACKGROUND_TASKS.add(ack_task)
+        ack_task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+    session.cdp_session.on("Page.screencastFrame", _forward_frame)
+    try:
+        while True:
+            message = await websocket.receive_json()
+            await _dispatch_assisted_login_input(session, message)
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        _log.warning(f"assisted-login stream for role '{role}' ended unexpectedly: {exc}")
+    finally:
+        session.cdp_session.remove_listener("Page.screencastFrame", _forward_frame)
+        # Deliberately does NOT close session.page/context/the browser --
+        # the operator may reconnect, and the login session (once
+        # confirmed) needs to survive until the scan subprocess has
+        # reconnected over CDP and finished using it.
+
+
+async def _dispatch_assisted_login_input(session: "AssistedLoginRoleSession", message: dict) -> None:
+    """Translates one input message from the live-view client into the
+    matching CDP `Input.dispatch*` call. Unknown/malformed messages are
+    ignored (never crash the socket over one bad client-side event)."""
+    kind = message.get("type")
+    try:
+        if kind == "mouse":
+            await session.cdp_session.send("Input.dispatchMouseEvent", {
+                "type": message["event"],  # "mousePressed" | "mouseReleased" | "mouseMoved"
+                "x": message["x"],
+                "y": message["y"],
+                "button": message.get("button", "left"),
+                "clickCount": message.get("clickCount", 1),
+            })
+        elif kind == "wheel":
+            await session.cdp_session.send("Input.dispatchMouseEvent", {
+                "type": "mouseWheel",
+                "x": message["x"],
+                "y": message["y"],
+                "deltaX": message.get("deltaX", 0),
+                "deltaY": message.get("deltaY", 0),
+            })
+        elif kind == "key":
+            await session.cdp_session.send("Input.dispatchKeyEvent", {
+                "type": message["event"],  # "keyDown" | "keyUp" | "char"
+                "text": message.get("text", ""),
+                "key": message.get("key", ""),
+                "code": message.get("code", ""),
+            })
+    except Exception as exc:
+        _log.debug(f"assisted-login input dispatch failed (role={session.role}): {exc}")
 
 
 @app.get("/api/auth/verify-login/current")

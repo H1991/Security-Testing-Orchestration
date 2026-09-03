@@ -1,5 +1,6 @@
 """Unit tests for Layer 9 — stof.modules.xss_tests (TC-128)."""
 import asyncio
+import re
 from unittest.mock import AsyncMock
 
 import pytest
@@ -114,11 +115,11 @@ def _by_id(results):
 
 @pytest.mark.asyncio
 async def test_run_techniques_skipped_when_no_injectable_endpoints(tmp_path):
-    """No query/body parameter (TC-128.1-.3), no free-text POST field
-    (TC-128.4), and no GET endpoint at all for TC-128.5 to navigate to
-    (`method="POST"` here, deliberately, so TC-128.5's own GET-endpoint
-    requirement also has nothing to work with) -- every technique
-    should SKIP."""
+    """No query/body parameter (TC-128.1-.3/.7), no free-text POST field
+    (TC-128.4), and no GET endpoint at all for TC-128.5/TC-128.6 to
+    navigate to (`method="POST"` here, deliberately, so their shared
+    GET-endpoint requirement also has nothing to work with) -- every
+    technique should SKIP."""
     endpoints = [Endpoint(url="https://x/", method="POST", endpoint_type="page")]
     session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
     pool = _pool_with_context(_fake_context())
@@ -127,7 +128,7 @@ async def test_run_techniques_skipped_when_no_injectable_endpoints(tmp_path):
     results = await module.run_techniques(endpoints, session_manager, pool)
 
     by_id = _by_id(results)
-    assert len(by_id) == 5
+    assert len(by_id) == 8
     assert all(r.status == SKIPPED for r in by_id.values())
 
 
@@ -202,6 +203,36 @@ async def test_attribute_breakout_technique_fails_independently_of_html_body_tec
     by_id = _by_id(results)
     assert by_id["TC-128.2"].status == FAIL
     assert by_id["TC-128.1"].status == PASS
+    assert by_id["TC-128.3"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_css_injection_technique_fails_when_marker_reflects_unencoded(tmp_path):
+    """TC-128.7 reuses the same byte-for-byte unencoded oracle as the
+    other context-breakout techniques -- reflecting the CSS-injection
+    payload unencoded inside a style attribute should FAIL only
+    TC-128.7, independent of TC-128.1-.3."""
+    endpoint = Endpoint(url="https://x/theme", method="GET", endpoint_type="page", parameters=["color"])
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    module = XssTestsModule()
+    css_payload = module._payload_for("TC-128.7")
+
+    def fake_get(url, params=None, max_redirects=0):
+        color = (params or {}).get("color", "")
+        if color == css_payload:
+            return _response(200, f'<html><body><div style="color:{color}"></div></body></html>')
+        return _response(200, '<html><body><div style="color:blue"></div></body></html>')
+
+    pool = _pool_with_context(_fake_context(get_side_effect=fake_get))
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = _by_id(results)
+    assert by_id["TC-128.7"].status == FAIL
+    assert by_id["TC-128.7"].finding is not None
+    assert by_id["TC-128.7"].finding.vuln_type == "CSS Injection"
+    assert by_id["TC-128.1"].status == PASS
+    assert by_id["TC-128.2"].status == PASS
     assert by_id["TC-128.3"].status == PASS
 
 
@@ -359,6 +390,7 @@ class _FakePage:
         self._dialog_handler = None
         self.visited_urls: list[str] = []
         self.closed = False
+        self.url = "about:blank"
 
     def on(self, event, handler) -> None:
         if event == "dialog":
@@ -370,11 +402,61 @@ class _FakePage:
 
     async def goto(self, url: str, timeout: "int | None" = None) -> None:
         self.visited_urls.append(url)
+        self.url = url  # normal navigation: `page.url` ends up where goto() was told to go
         if self._dialog_message is not None and self._dialog_handler is not None:
             await self._dialog_handler(_FakeDialog(self._dialog_message))
 
     async def close(self) -> None:
         self.closed = True
+
+
+_DOM_REDIRECT_MARKER_RE = re.compile(r"https://stof-dom-redirect-[0-9a-f]+\.invalid/")
+
+
+class _FakeRedirectPage(_FakePage):
+    """Simulates a client-side sink: when `simulate_vulnerable_sink` is
+    True, `goto()` extracts whatever `https://stof-dom-redirect-....
+    invalid/` marker URL the technique injected into the requested
+    URL's hash/query and sets `page.url` to it -- exactly what a real
+    `location.href = location.hash.slice(1)`-shaped DOM sink would
+    produce, without the test needing to know the technique's
+    per-endpoint random marker in advance. `False` (the default)
+    simulates a page with no such sink: `page.url` just stays at the
+    requested URL, like ordinary navigation."""
+
+    def __init__(self, simulate_vulnerable_sink: bool = False) -> None:
+        super().__init__(dialog_message=None)
+        self._simulate_vulnerable_sink = simulate_vulnerable_sink
+
+    async def goto(self, url: str, timeout: "int | None" = None) -> None:
+        self.visited_urls.append(url)
+        match = _DOM_REDIRECT_MARKER_RE.search(url) if self._simulate_vulnerable_sink else None
+        self.url = match.group(0) if match else url
+
+
+class _FakeDomSinkPage(_FakePage):
+    """Simulates TC-128.8's instrumentation: `add_init_script()` just
+    records it was called (the real script's actual JS behavior is
+    exercised by the real Playwright integration, not this unit test).
+    `evaluate()` is the technique's own post-navigation sink-check call
+    -- when `simulate_sink` is True, it extracts whatever marker string
+    the technique placed in the last-visited URL's hash/query and
+    returns one fake sink hit containing it, exactly the shape the real
+    JS-side filter would return; `False` (default) returns no hits,
+    simulating a page with no such sink."""
+
+    def __init__(self, simulate_sink: bool = False) -> None:
+        super().__init__(dialog_message=None)
+        self._simulate_sink = simulate_sink
+        self.init_scripts: list[str] = []
+
+    async def add_init_script(self, script: str) -> None:
+        self.init_scripts.append(script)
+
+    async def evaluate(self, script: str, marker: str) -> list[dict]:
+        if not self._simulate_sink:
+            return []
+        return [{"sink": "storage.setItem", "value": f"prefix-{marker}-suffix"}]
 
 
 def _context_with_page(page: "_FakePage"):
@@ -510,6 +592,180 @@ async def test_dom_xss_role_not_configured_skips(tmp_path):
     module = XssTestsModule()  # default low_priv_role="normal", not configured above
 
     result = await module._technique_dom_xss([endpoint], session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "not configured" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# TC-128.6: DOM-based Open Redirect
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dom_open_redirect_fails_when_browser_ends_up_at_marker_host(tmp_path):
+    endpoint = Endpoint(url="https://x/welcome", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    module = XssTestsModule()
+    page = _FakeRedirectPage(simulate_vulnerable_sink=True)
+    pool = _pool_with_context(_context_with_page(page))
+
+    result = await module._technique_dom_open_redirect([endpoint], session_manager, pool, evidence=None)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.vuln_type == "DOM-based Open Redirect"
+    assert result.finding.severity == "Medium"
+    # Fired on the very first probe (location.hash) -- only one
+    # navigation should have happened before the technique returned.
+    assert len(page.visited_urls) == 1
+    assert "#" in page.visited_urls[0]
+
+
+@pytest.mark.asyncio
+async def test_dom_open_redirect_passes_when_browser_stays_on_origin(tmp_path):
+    endpoint = Endpoint(url="https://x/welcome", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    module = XssTestsModule()
+    page = _FakeRedirectPage(simulate_vulnerable_sink=False)
+    pool = _pool_with_context(_context_with_page(page))
+
+    result = await module._technique_dom_open_redirect([endpoint], session_manager, pool, evidence=None)
+
+    assert result.status == PASS
+    # Both injection points (location.hash, location.search) probed
+    # for this one endpoint.
+    assert len(page.visited_urls) == 2
+
+
+@pytest.mark.asyncio
+async def test_dom_open_redirect_skipped_when_no_get_endpoint_discovered(tmp_path):
+    endpoints = [Endpoint(url="https://x/submit", method="POST", endpoint_type="form", parameters=["comment"])]
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = XssTestsModule()
+
+    result = await module._technique_dom_open_redirect(endpoints, session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_dom_open_redirect_page_is_closed_after_technique_runs(tmp_path):
+    endpoint = Endpoint(url="https://x/welcome", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    module = XssTestsModule()
+    page = _FakeRedirectPage(simulate_vulnerable_sink=False)
+    pool = _pool_with_context(_context_with_page(page))
+
+    await module._technique_dom_open_redirect([endpoint], session_manager, pool, evidence=None)
+
+    assert page.closed is True
+
+
+@pytest.mark.asyncio
+async def test_navigate_and_check_redirect_backstop_bounds_a_goto_that_never_returns():
+    """Same regression discipline as TC-128.5's own hang backstop test:
+    a goto() that never returns must not block this technique forever."""
+
+    class _HangingPage(_FakeRedirectPage):
+        async def goto(self, url: str, timeout: "int | None" = None) -> None:
+            await asyncio.sleep(3600)
+
+    module = XssTestsModule()
+    page = _HangingPage()
+
+    redirected = await asyncio.wait_for(
+        module._navigate_and_check_redirect(page, "https://x/welcome", "stof-dom-redirect-abc.invalid", timeout_ms=200),
+        timeout=10,
+    )
+
+    assert redirected is False  # goto() never completed within the backstop -> treated as no redirect observed
+
+
+@pytest.mark.asyncio
+async def test_dom_open_redirect_role_not_configured_skips(tmp_path):
+    endpoint = Endpoint(url="https://x/welcome", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = XssTestsModule()  # default low_priv_role="normal", not configured above
+
+    result = await module._technique_dom_open_redirect([endpoint], session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "not configured" in result.detail
+
+
+# ---------------------------------------------------------------------------
+# TC-128.8: DOM Data Manipulation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_dom_data_manipulation_fails_when_sink_records_marker(tmp_path):
+    endpoint = Endpoint(url="https://x/welcome", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    module = XssTestsModule()
+    page = _FakeDomSinkPage(simulate_sink=True)
+    pool = _pool_with_context(_context_with_page(page))
+
+    result = await module._technique_dom_data_manipulation([endpoint], session_manager, pool, evidence=None)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.vuln_type == "DOM Data Manipulation"
+    assert result.finding.severity == "Medium"
+    assert page.init_scripts  # instrumentation was actually installed
+    # Fired on the very first probe (location.hash) -- only one
+    # navigation should have happened before the technique returned.
+    assert len(page.visited_urls) == 1
+
+
+@pytest.mark.asyncio
+async def test_dom_data_manipulation_passes_when_no_sink_records_marker(tmp_path):
+    endpoint = Endpoint(url="https://x/welcome", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    module = XssTestsModule()
+    page = _FakeDomSinkPage(simulate_sink=False)
+    pool = _pool_with_context(_context_with_page(page))
+
+    result = await module._technique_dom_data_manipulation([endpoint], session_manager, pool, evidence=None)
+
+    assert result.status == PASS
+    assert len(page.visited_urls) == 2  # both injection points probed
+
+
+@pytest.mark.asyncio
+async def test_dom_data_manipulation_skipped_when_no_get_endpoint_discovered(tmp_path):
+    endpoints = [Endpoint(url="https://x/submit", method="POST", endpoint_type="form", parameters=["comment"])]
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = XssTestsModule()
+
+    result = await module._technique_dom_data_manipulation(endpoints, session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_dom_data_manipulation_page_is_closed_after_technique_runs(tmp_path):
+    endpoint = Endpoint(url="https://x/welcome", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    module = XssTestsModule()
+    page = _FakeDomSinkPage(simulate_sink=False)
+    pool = _pool_with_context(_context_with_page(page))
+
+    await module._technique_dom_data_manipulation([endpoint], session_manager, pool, evidence=None)
+
+    assert page.closed is True
+
+
+@pytest.mark.asyncio
+async def test_dom_data_manipulation_role_not_configured_skips(tmp_path):
+    endpoint = Endpoint(url="https://x/welcome", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = XssTestsModule()  # default low_priv_role="normal", not configured above
+
+    result = await module._technique_dom_data_manipulation([endpoint], session_manager, pool, evidence=None)
 
     assert result.status == SKIPPED
     assert "not configured" in result.detail

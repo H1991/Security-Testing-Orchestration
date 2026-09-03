@@ -63,6 +63,20 @@ class TargetConfig(BaseModel):
     # browser's CDP connection). Empty/unset means no exclusions -- no
     # target's URL scheme is hardcoded into the crawler itself.
     crawler_exclude_patterns: list[str] | None = None
+    # Opt-in only: for a target sitting behind a bot-challenge (e.g.
+    # Cloudflare's "Performing security verification" interstitial) that
+    # STOF's own automated browser can never pass on its own. When True,
+    # `main.py` skips the normal FormLoginProvider flow for the test
+    # role entirely and instead connects over CDP to a real, human-
+    # operated browser (see `stof/auth/assisted_login.py` and
+    # `stof/recorder/cdp.py`) that has already cleared the challenge --
+    # the human's real browser keeps handling that role's traffic for
+    # the whole scan, since a captured cookie alone does not survive a
+    # handoff to a different browser/IP (Cloudflare's clearance is
+    # bound to the fingerprint that earned it, confirmed via research
+    # this session). Every target defaults to False -- a normal target
+    # with no bot-challenge is completely unaffected by this feature.
+    requires_assisted_login: bool = False
 
 
 class BrowserConfig(BaseModel):
@@ -81,6 +95,7 @@ class ModulesConfig(BaseModel):
     auth_tests: bool = False
     idor_tests: bool = False
     business_logic_tests: bool = False
+    file_upload_tests: bool = False
     cache_tests: bool = False
     configuration_tests: bool = False
     disclosure_tests: bool = False
@@ -111,20 +126,41 @@ class BurpConfig(BaseModel):
 
     `api_key` should be `{{env:BURP_API_KEY}}` in config.json, resolved
     the same way `users.json` resolves passwords -- never a literal key
-    committed to the repo. `enabled` defaults to false: per CLAUDE.md's
-    own documented rule for this exact flag ("The orchestrator skips it
-    when burp.enabled is false in config") -- Burp's Active Scan sends
-    real attack payloads at the live target, not read-only probing.
-    Contrast `crawler.CrawlerConfig.submit_forms_with_test_data`, a
-    lighter-weight active-testing deviation that IS on by default (see
-    that module's own docstring for why); Burp's Active Scan is a much
-    bigger blast radius and stays opt-in here.
+    committed to the repo.
+
+    `enabled` and `run_active_scan` are deliberately SEPARATE flags, not
+    one -- a real bug found live: `enabled` used to gate both "capture
+    evidence for STOF's own findings via Burp's proxy" (explicitly
+    requested, read-only from Burp's own scanning perspective, fast)
+    AND "let Burp additionally run its own Active Scan" (a much bigger,
+    slower, real-attack-payload operation the user explicitly did NOT
+    ask for) as one switch. The result: every scan silently also
+    triggered a full Burp Active Scan and then blocked on it via
+    `asyncio.gather()`, turning even a single-module sanity scan into a
+    30-minute wait for Burp's own crawl+audit to finish or time out --
+    confirmed live by querying Burp's own REST API mid-scan and finding
+    it genuinely still crawling, not hung. `enabled` now means only
+    "Burp integration is on" (config UI, evidence capture); the much
+    bigger blast-radius Active Scan needs `run_active_scan` explicitly
+    true as well.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    # Burp's own Active Scan sends real attack payloads at the live
+    # target and can run for a long time -- opt-in separately from
+    # `enabled` (see class docstring). False by default even when Burp
+    # integration itself is on.
+    run_active_scan: bool = False
     api_url: str = "http://127.0.0.1:1337"
+    # Burp's intercepting PROXY listener -- distinct from api_url (the
+    # REST API, scan control only). Traffic sent through this is what
+    # actually lands in Burp's own Proxy history; used by
+    # `engine/burp_capture.py` to get a real request/response captured
+    # for a confirmed finding, since the REST API itself has no general
+    # proxy-history query endpoint to pull one back after the fact.
+    proxy_url: str = "http://127.0.0.1:8080"
     api_key: str = ""
     scan_timeout_s: int = 600
     poll_interval_s: int = 5

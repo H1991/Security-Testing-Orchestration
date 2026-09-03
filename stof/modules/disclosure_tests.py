@@ -44,6 +44,7 @@ from urllib.parse import urljoin, urlsplit
 from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
+from ._injection_shared import build_params, send_probe
 from .base import VulnModule
 from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
@@ -134,6 +135,29 @@ def find_pii(text: str) -> list[PiiMatch]:
     return matches
 
 
+# -- TC-105.8: path traversal ---------------------------------------------
+
+_PATH_PARAM_HINTS: tuple[str, ...] = (
+    "file", "path", "page", "template", "doc", "document", "filename",
+    "include", "load", "view", "report", "lang", "locale", "dir", "folder",
+)
+
+# `..%2f` (URL-encoded) alongside the plain `../` form -- some servers/
+# proxies normalize the literal sequence before it reaches the
+# vulnerable code but pass an encoded one through untouched. Six
+# levels of `../` is enough to reach filesystem root from any
+# reasonable webroot depth without needing to know the real depth.
+_PATH_TRAVERSAL_PAYLOADS: tuple[str, ...] = (
+    "../../../../../../etc/passwd",
+    "..%2f..%2f..%2f..%2f..%2f..%2fetc%2fpasswd",
+)
+
+# The classic /etc/passwd root-entry signature -- present in every real
+# Linux /etc/passwd regardless of how many other users the system has,
+# and not something a normal web response would contain by coincidence.
+_PASSWD_FINGERPRINT_RE = re.compile(r"root:x:0:0:[^\n]*")
+
+
 # -- TC-105.5: source map / VCS / backup exposure -----------------------
 #
 # Fixed candidate paths checked directly at the site origin root,
@@ -146,6 +170,74 @@ _BACKUP_CANDIDATE_PATHS: tuple[str, ...] = (
     "/.git/config", "/.git/HEAD", "/.env", "/.env.bak", "/config.php.bak",
 )
 _ENV_KEY_RE = re.compile(r"(?im)^[A-Za-z0-9_]*(?:_KEY|_SECRET|_PASSWORD|_TOKEN|DATABASE_URL)\s*=\s*\S+")
+
+
+# -- TC-105.9: sensitive-shaped JSON field NAMES ------------------------
+# Deliberately narrow and specific-enough names, not bare substrings
+# like "key" or "id" that would false-positive on every ordinary field.
+_SENSITIVE_FIELD_NAMES = frozenset({
+    "password", "password_hash", "passwordhash", "hashed_password", "salt",
+    "ssn", "social_security_number", "credit_card", "credit_card_number", "card_number", "cvv",
+    "api_key", "apikey", "secret_key", "secretkey", "private_key", "privatekey",
+    "access_token", "refresh_token", "session_token", "auth_token",
+    "internal_notes", "admin_notes", "is_admin", "is_superuser",
+})
+
+
+def _walk_json_keys(data) -> "list[str]":
+    """Recursively collects every dict key in a parsed JSON structure
+    (list/dict nesting), lower-cased -- pure and directly unit-testable,
+    no I/O. A bare `in` check against raw response text would also match
+    a key name that only appears inside a string VALUE, not an actual
+    field; walking the real parsed structure avoids that false positive."""
+    keys: list[str] = []
+    if isinstance(data, dict):
+        for k, v in data.items():
+            keys.append(str(k).lower())
+            keys.extend(_walk_json_keys(v))
+    elif isinstance(data, list):
+        for item in data:
+            keys.extend(_walk_json_keys(item))
+    return keys
+
+
+def _sensitive_field_names(body: str) -> "set[str]":
+    """Pure, directly-unit-testable oracle for TC-105.9. Returns the
+    set of sensitive-shaped field names actually present as JSON object
+    keys in `body`, or an empty set if `body` isn't JSON at all (a
+    non-JSON response is simply not applicable, never a finding)."""
+    try:
+        data = json.loads(body)
+    except (ValueError, TypeError):
+        return set()
+    return {k for k in _walk_json_keys(data) if k in _SENSITIVE_FIELD_NAMES}
+
+
+# -- TC-105.10: robots.txt / sitemap.xml internal-path disclosure -------
+_INTERNAL_PATH_HINTS = (
+    "admin", "internal", "staging", "backup", "debug", "test", "private",
+    "console", "manage", "config", "secret", "dev",
+)
+# Matches a robots.txt `Disallow: /path` line, or a sitemap.xml `<loc>`
+# entry -- covers both formats with one small regex rather than two
+# separate parsers for what's structurally the same "extract a path" job.
+_ROBOTS_OR_SITEMAP_PATH_RE = re.compile(r"(?:Disallow:\s*(\S+))|(?:<loc>\s*([^<\s]+)\s*</loc>)", re.IGNORECASE)
+
+
+def _internal_looking_paths(body: str) -> "list[str]":
+    """Pure, directly-unit-testable oracle for TC-105.10. Extracts every
+    Disallow/<loc> path from `body` and returns only the ones whose path
+    segment itself contains an internal-looking hint word -- a bare
+    `Disallow: /` or `Disallow: /images/` is normal and never flagged."""
+    hits: list[str] = []
+    for m in _ROBOTS_OR_SITEMAP_PATH_RE.finditer(body):
+        path = (m.group(1) or m.group(2) or "").strip()
+        if not path:
+            continue
+        lowered = path.lower()
+        if any(hint in lowered for hint in _INTERNAL_PATH_HINTS):
+            hits.append(path)
+    return hits
 
 
 def _looks_like_source_map(body: str) -> bool:
@@ -559,6 +651,187 @@ class DisclosureTestsModule(VulnModule):
         finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"pii-client-storage-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
         return finding
 
+    def _path_traversal_candidates(self, endpoints: list["Endpoint"]) -> list[tuple["Endpoint", str, str]]:
+        """File/path-shaped parameters -- a different hint set than
+        `ssrf_tests.py`'s `_URL_PARAM_HINTS` on purpose: path traversal
+        targets a parameter that names a LOCAL file/template/page the
+        server reads off its own disk (`?file=report.pdf`,
+        `?page=about`, `?template=home`), not one that holds a full URL
+        the server fetches (SSRF's own vector). The two vulnerability
+        classes are related but the parameter shapes that trigger them
+        are genuinely different, so this is its own hint list rather
+        than reusing SSRF's."""
+        candidates: list[tuple[Endpoint, str, str]] = []
+        for endpoint in endpoints:
+            for name in endpoint.parameters:
+                lowered = name.lower()
+                if any(hint in lowered for hint in _PATH_PARAM_HINTS):
+                    candidates.append((endpoint, name, endpoint.location_for(name)))
+        return candidates[: self.config.max_endpoints_scanned]
+
+    async def _technique_path_traversal(self, endpoints, session_manager, session_pool, evidence) -> TestCaseResult:
+        """CWE-22 -- added after cross-referencing a real Burp Active
+        Scan run against this target and finding no STOF equivalent
+        ("File path manipulation" in Burp's own issue list).
+
+        Sends a directory-traversal payload targeting `/etc/passwd`
+        (Linux) into every file/path-shaped candidate parameter, and
+        diffs the response against a same-shaped BASELINE request (a
+        harmless literal value, not a traversal sequence) for the same
+        parameter -- the `root:x:0:0:` fingerprint must appear in the
+        traversal response and be ABSENT from the baseline. This
+        guards against the two realistic false-positive shapes: a page
+        that reflects whatever value it's given verbatim (would show
+        the fingerprint in both, since it's just echoing the payload
+        string back, not reading a file), and a page that happens to
+        contain that text unrelated to this parameter at all (would
+        show it in the baseline too)."""
+        tid, technique = "TC-105.8", "Path traversal / local file read via file-shaped parameter"
+        vuln_type = "Path Traversal"
+        candidates = self._path_traversal_candidates(endpoints)
+        if not candidates:
+            return self._result(tid, technique, vuln_type, SKIPPED, "no file/path-shaped parameter discovered to probe")
+
+        target_url = self.config.target_url or candidates[0][0].url
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
+        except KeyError as exc:
+            return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        for endpoint, param, location in candidates:
+            baseline = await send_probe(context, endpoint, build_params(endpoint, param, "stof-baseline-value"), location)
+            if baseline is None:
+                continue
+            baseline_hit = _PASSWD_FINGERPRINT_RE.search(baseline[1]) is not None
+
+            for payload in _PATH_TRAVERSAL_PAYLOADS:
+                probe = await send_probe(context, endpoint, build_params(endpoint, param, payload), location)
+                if probe is None:
+                    continue
+                status, body, _elapsed, _headers = probe
+                if status >= 400:
+                    continue
+                if _PASSWD_FINGERPRINT_RE.search(body) and not baseline_hit:
+                    finding = Finding(
+                        module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
+                        endpoint=endpoint, user_role=self.config.high_priv_role,
+                        request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
+                        response_raw=f"HTTP {status}\n" + _PASSWD_FINGERPRINT_RE.search(body).group(0),
+                        description=(
+                            f"'{endpoint.url}' parameter '{param}' ({location}) accepted a directory-traversal "
+                            f"payload ({payload!r}) and returned the contents of /etc/passwd (fingerprint "
+                            "'root:x:0:0:' present), while an identically-shaped baseline request for the same "
+                            "parameter did not. The server reads a file directly from a path built with "
+                            "unsanitized user input."
+                        ),
+                        recommendation="Never build a filesystem path from user input directly; resolve the requested name against an explicit allowlist of permitted files, or map it through an internal id -> filename lookup that never touches the input string.",
+                    )
+                    finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"path-traversal-{param}") if evidence else []
+                    return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+
+        return self._result(
+            tid, technique, vuln_type, PASS,
+            f"{len(candidates)} file/path-shaped parameter(s) probed with {len(_PATH_TRAVERSAL_PAYLOADS)} traversal payload(s) each, no /etc/passwd fingerprint observed",
+        )
+
+    # -- TC-105.9: excessive data exposure via sensitive field NAMES --------
+    # Distinct from TC-105.1's value-pattern PII matching: this flags a
+    # sensitive-shaped KEY in the JSON structure regardless of what its
+    # value looks like (a `password_hash` field holding a bcrypt hash
+    # matches no PII value pattern, but the field itself should never
+    # reach the client) -- WSTG's "excessive data exposure" (the classic
+    # API-returns-the-whole-ORM-object shape). Never flags a bare
+    # substring in the body text, only actual JSON object keys, so a
+    # field named e.g. `password_reset_url` (a legitimate link, not a
+    # credential) doesn't collide with the `password` check by accident.
+
+    async def _technique_excessive_data_exposure(self, endpoints, session_manager, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-105.9", "API response exposes internal/sensitive fields the UI never uses"
+        vuln_type = "Excessive Data Exposure"
+        candidates = [e for e in endpoints if e.method.upper() == "GET" and e.endpoint_type == "api"][: self.config.max_endpoints_scanned]
+        if not candidates:
+            return self._result(tid, technique, vuln_type, SKIPPED, "no GET API endpoint discovered to scan")
+
+        target_url = self.config.target_url or candidates[0].url
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
+        except KeyError as exc:
+            return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        for endpoint in candidates:
+            probe = await self._probe_get(context, endpoint.url)
+            if probe is None:
+                continue
+            status, body = probe
+            if status != 200:
+                continue
+            hits = _sensitive_field_names(body)
+            if not hits:
+                continue
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.9,
+                endpoint=endpoint, user_role=self.config.high_priv_role,
+                request_raw=f"GET {endpoint.url}",
+                response_raw=f"HTTP {status}, sensitive field name(s) present in JSON: {', '.join(sorted(hits))}",
+                description=(
+                    f"'{endpoint.url}' returns JSON containing internal/sensitive-shaped field name(s) "
+                    f"({', '.join(sorted(hits))}) -- consistent with the API serializing an internal model "
+                    "directly rather than an explicit, minimized response shape."
+                ),
+                recommendation="Define an explicit response DTO/serializer per endpoint that only includes fields the client actually needs; never serialize an ORM/internal model directly.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"excessive-exposure-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        return self._result(tid, technique, vuln_type, PASS, f"no sensitive-shaped field name found across {len(candidates)} scanned API response(s)")
+
+    # -- TC-105.10: robots.txt / sitemap.xml hidden-path disclosure --------
+    # Both files are meant to be public by design, so their mere presence
+    # is never a finding -- only a `Disallow`/URL entry whose path itself
+    # looks internal (admin/staging/backup/debug/...) is flagged, since
+    # that's effectively a hand-written map to unlinked surface an
+    # attacker would otherwise have to guess or brute-force.
+
+    async def _technique_robots_sitemap_disclosure(self, endpoints, session_manager, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-105.10", "robots.txt / sitemap.xml discloses internal-looking paths"
+        vuln_type = "Information Disclosure via robots.txt/sitemap.xml"
+        origin = self._origin_from_endpoints(endpoints)
+        if origin is None:
+            return self._result(tid, technique, vuln_type, SKIPPED, "no origin discovered to derive robots.txt/sitemap.xml URLs from")
+
+        target_url = self.config.target_url or endpoints[0].url
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
+        except KeyError as exc:
+            return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        checked = 0
+        for filename in ("/robots.txt", "/sitemap.xml"):
+            checked += 1
+            probe = await self._probe_get(context, origin + filename)
+            if probe is None:
+                continue
+            status, body = probe
+            if status != 200:
+                continue
+            hits = _internal_looking_paths(body)
+            if not hits:
+                continue
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Low", cvss_score=3.1,
+                endpoint=None, user_role=self.config.high_priv_role,
+                request_raw=f"GET {origin}{filename}",
+                response_raw=f"HTTP {status}, internal-looking path(s): {', '.join(hits[:5])}",
+                description=(
+                    f"'{origin}{filename}' lists {len(hits)} internal-looking path(s) ({', '.join(hits[:5])}"
+                    f"{'...' if len(hits) > 5 else ''}) -- this doesn't confirm those paths are actually "
+                    "reachable or unprotected, but it hands an attacker a ready-made map of surface they'd "
+                    "otherwise have to guess or brute-force."
+                ),
+                recommendation="Don't list internal/admin/staging paths in a public robots.txt or sitemap.xml; rely on proper authorization on those paths instead of omission, and keep genuinely internal tooling off the public origin entirely.",
+            )
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+        return self._result(tid, technique, vuln_type, PASS, f"{checked} well-known file(s) checked, no internal-looking path disclosed")
+
     async def run_techniques(
         self,
         endpoints: list["Endpoint"],
@@ -594,4 +867,19 @@ class DisclosureTestsModule(VulnModule):
         except Exception as exc:
             _log.warning(f"disclosure_tests TC-105.7 failed unexpectedly: {exc}")
             results.append(self._result("TC-105.7", "PII/secrets left in localStorage or sessionStorage after authentication", "PII Exposure via Client-Side Storage", "ERROR", str(exc)))
+        try:
+            results.append(await self._technique_path_traversal(endpoints, session_manager, session_pool, evidence))
+        except Exception as exc:
+            _log.warning(f"disclosure_tests TC-105.8 failed unexpectedly: {exc}")
+            results.append(self._result("TC-105.8", "Path traversal / local file read via file-shaped parameter", "Path Traversal", "ERROR", str(exc)))
+        try:
+            results.append(await self._technique_excessive_data_exposure(endpoints, session_manager, session_pool, evidence))
+        except Exception as exc:
+            _log.warning(f"disclosure_tests TC-105.9 failed unexpectedly: {exc}")
+            results.append(self._result("TC-105.9", "API response exposes internal/sensitive fields the UI never uses", "Excessive Data Exposure", "ERROR", str(exc)))
+        try:
+            results.append(await self._technique_robots_sitemap_disclosure(endpoints, session_manager, session_pool, evidence))
+        except Exception as exc:
+            _log.warning(f"disclosure_tests TC-105.10 failed unexpectedly: {exc}")
+            results.append(self._result("TC-105.10", "robots.txt / sitemap.xml discloses internal-looking paths", "Information Disclosure via robots.txt/sitemap.xml", "ERROR", str(exc)))
         return results

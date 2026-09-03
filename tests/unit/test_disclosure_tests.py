@@ -10,9 +10,11 @@ from stof.engine.multi_session import SessionPool
 from stof.modules.disclosure_tests import (
     DisclosureTestConfig,
     DisclosureTestsModule,
+    _internal_looking_paths,
     _looks_like_env_file,
     _looks_like_git_config,
     _looks_like_source_map,
+    _sensitive_field_names,
     find_hidden_disclosures,
     find_pii,
 )
@@ -106,6 +108,7 @@ def _response(status: int, body: str):
     resp = AsyncMock()
     resp.status = status
     resp.text = AsyncMock(return_value=body)
+    resp.headers = {}  # needed by _injection_shared.send_probe (TC-105.8), harmless for every other caller
     return resp
 
 
@@ -593,3 +596,228 @@ async def test_pii_in_client_storage_survives_evaluate_failure_and_continues(tmp
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-105.7"].status == FAIL
+
+
+# ---------------------------------------------------------------------------
+# TC-105.8: path traversal
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_path_traversal_fails_when_passwd_fingerprint_appears_only_for_payload(tmp_path):
+    endpoint = Endpoint(url="https://x/download", method="GET", endpoint_type="page", parameters=["file"])
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, params=None, max_redirects=0):
+        value = (params or {}).get("file", "")
+        if "etc/passwd" in value or "etc%2fpasswd" in value:
+            return _response(200, "root:x:0:0:root:/root:/bin/bash\ndaemon:x:1:1::/usr/sbin:/usr/sbin/nologin\n")
+        return _response(200, "report.pdf contents here")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.8"].status == FAIL
+    assert by_id["TC-105.8"].finding is not None
+    assert by_id["TC-105.8"].finding.severity == "High"
+    assert "root:x:0:0:" in by_id["TC-105.8"].finding.response_raw
+
+
+@pytest.mark.asyncio
+async def test_path_traversal_passes_when_no_fingerprint(tmp_path):
+    endpoint = Endpoint(url="https://x/download", method="GET", endpoint_type="page", parameters=["file"])
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, params=None, max_redirects=0):
+        return _response(200, "report.pdf contents here")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.8"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_path_traversal_ignores_fingerprint_present_in_baseline_too(tmp_path):
+    """False-positive guard: a page whose response happens to contain
+    the 'root:x:0:0:' text UNRELATED to the traversal attempt (e.g. a
+    docs page mentioning it) must not be flagged -- the fingerprint has
+    to be ABSENT from the baseline (a harmless, non-traversal value for
+    the same parameter) and appear ONLY once the traversal payload is
+    sent, or it isn't evidence the payload did anything."""
+    endpoint = Endpoint(url="https://x/download", method="GET", endpoint_type="page", parameters=["file"])
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, params=None, max_redirects=0):
+        # Same fingerprint text shows up regardless of what value was
+        # sent -- e.g. a static help page mentioning root:x:0:0: in a
+        # tutorial snippet, nothing to do with this parameter at all.
+        return _response(200, "see /etc/passwd docs: root:x:0:0:root:/root:/bin/bash")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.8"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_path_traversal_skipped_when_no_file_shaped_param(tmp_path):
+    endpoint = Endpoint(url="https://x/search", method="GET", endpoint_type="page", parameters=["query"])
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, params=None, max_redirects=0):
+        return _response(200, "ok")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.8"].status == SKIPPED
+
+
+# ---------------------------------------------------------------------------
+# _sensitive_field_names / _internal_looking_paths — pure functions
+# ---------------------------------------------------------------------------
+
+
+def test_sensitive_field_names_matches_json_key():
+    body = '{"id": 1, "username": "jane", "password_hash": "$2b$12$abc"}'
+    assert _sensitive_field_names(body) == {"password_hash"}
+
+
+def test_sensitive_field_names_ignores_value_only_match():
+    """A sensitive-shaped word appearing only inside a VALUE, never as
+    an actual JSON key, is not a finding -- this is a field-NAME check."""
+    body = '{"note": "please reset your password_hash manually"}'
+    assert _sensitive_field_names(body) == set()
+
+
+def test_sensitive_field_names_walks_nested_structures():
+    body = '{"user": {"profile": {"api_key": "sk-abc123"}}}'
+    assert _sensitive_field_names(body) == {"api_key"}
+
+
+def test_sensitive_field_names_empty_on_non_json():
+    assert _sensitive_field_names("<html>not json</html>") == set()
+
+
+def test_internal_looking_paths_flags_admin_disallow():
+    body = "User-agent: *\nDisallow: /admin\nDisallow: /images/\n"
+    assert _internal_looking_paths(body) == ["/admin"]
+
+
+def test_internal_looking_paths_ignores_benign_disallow():
+    body = "User-agent: *\nDisallow: /images/\nDisallow: /assets/\n"
+    assert _internal_looking_paths(body) == []
+
+
+def test_internal_looking_paths_flags_sitemap_loc():
+    body = "<urlset><url><loc>https://x/internal-console</loc></url></urlset>"
+    assert _internal_looking_paths(body) == ["https://x/internal-console"]
+
+
+# ---------------------------------------------------------------------------
+# TC-105.9 — excessive data exposure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_excessive_data_exposure_fails_on_sensitive_field(tmp_path):
+    endpoint = Endpoint(url="https://x/api/users/1", method="GET", endpoint_type="api")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, params=None, max_redirects=0):
+        return _response(200, '{"id": 1, "username": "jane", "password_hash": "$2b$12$abc"}')
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.9"].status == FAIL
+    assert by_id["TC-105.9"].finding is not None
+
+
+@pytest.mark.asyncio
+async def test_excessive_data_exposure_passes_on_clean_response(tmp_path):
+    endpoint = Endpoint(url="https://x/api/users/1", method="GET", endpoint_type="api")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, params=None, max_redirects=0):
+        return _response(200, '{"id": 1, "username": "jane"}')
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.9"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_excessive_data_exposure_skipped_when_no_api_endpoint(tmp_path):
+    endpoint = Endpoint(url="https://x/page", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context(lambda url, params=None, max_redirects=0: _response(200, "ok")))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.9"].status == SKIPPED
+
+
+# ---------------------------------------------------------------------------
+# TC-105.10 — robots.txt / sitemap.xml internal-path disclosure
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_robots_sitemap_disclosure_fails_on_internal_path(tmp_path):
+    endpoint = Endpoint(url="https://x/page", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, params=None, max_redirects=0):
+        if url.endswith("/robots.txt"):
+            return _response(200, "User-agent: *\nDisallow: /admin-console\n")
+        return _response(404, "not found")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.10"].status == FAIL
+    assert by_id["TC-105.10"].finding is not None
+
+
+@pytest.mark.asyncio
+async def test_robots_sitemap_disclosure_passes_when_nothing_internal(tmp_path):
+    endpoint = Endpoint(url="https://x/page", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, params=None, max_redirects=0):
+        if url.endswith("/robots.txt"):
+            return _response(200, "User-agent: *\nDisallow: /images/\n")
+        return _response(404, "not found")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.10"].status == PASS

@@ -201,6 +201,99 @@ async def _first_matching_scoped(
     return await _first_matching(page, selectors, purpose)
 
 
+async def extract_cookies(page: "Page") -> dict[str, str]:
+    """Free function (not a bound method) so `AssistedLoginProvider`
+    (`stof/auth/assisted_login.py`) can reuse the exact same cookie-jar
+    -> dict shape `FormLoginProvider` already uses, instead of a second,
+    possibly-drifting copy."""
+    raw_cookies = await page.context.cookies()
+    return {cookie["name"]: cookie["value"] for cookie in raw_cookies}
+
+
+# Common key names modern SPAs (React/Vue/Angular) actually use to stash
+# a bearer token in localStorage/sessionStorage instead of a cookie --
+# confirmed as the real, standard pattern (not a guess): browser-based
+# DAST tools handling SPAs extract exactly cookies + localStorage +
+# sessionStorage post-login for this reason. There is no single
+# universal key name, so this is a candidate list, same shape as the
+# GENERIC_*_SELECTORS above -- an app using a custom key still needs
+# `is_authenticated`'s cookie check or a future explicit override, this
+# just covers the common cases without guessing at arbitrary app-specific
+# names.
+GENERIC_TOKEN_STORAGE_KEYS = [
+    "token", "access_token", "accessToken", "authToken", "auth_token",
+    "jwt", "id_token", "idToken",
+]
+
+
+async def extract_storage_token(page: "Page") -> str | None:
+    """Best-effort: looks in localStorage then sessionStorage for any of
+    `GENERIC_TOKEN_STORAGE_KEYS`, returns the first non-empty value
+    found, or `None` if the app doesn't use this pattern at all (a
+    cookie-based app is untouched -- this is purely additive). Never
+    raises: a page that blocks storage access (rare, some strict CSPs)
+    just means no token was found, not a login failure."""
+    try:
+        return await page.evaluate(
+            "(keys) => { "
+            "for (const store of [window.localStorage, window.sessionStorage]) { "
+            "  for (const key of keys) { "
+            "    const value = store.getItem(key); "
+            "    if (value) return value; "
+            "  } "
+            "} "
+            "return null; }",
+            GENERIC_TOKEN_STORAGE_KEYS,
+        )
+    except Exception:
+        return None
+
+
+async def wait_for_login_success(
+    page: "Page", login_url: str, success_selector: str | list[str] | None, timeout_ms: int, context_label: str
+) -> None:
+    """The `success_selector`-or-URL-change wait `FormLoginProvider.
+    authenticate()` already does after submitting a form -- extracted
+    as a free function so `AssistedLoginProvider` can run the exact
+    same "did this actually succeed" check against a page a HUMAN just
+    finished driving, rather than trusting "the operator said so" alone.
+    `context_label` names whoever/whatever is being confirmed (a user id
+    for a real login, or a role name for an assisted one) in the raised
+    error, so the message stays meaningful for both callers."""
+    if success_selector is not None:
+        candidates = [success_selector] if isinstance(success_selector, str) else success_selector
+        found = False
+        last_exc: Exception | None = None
+        for candidate in candidates:
+            try:
+                await page.wait_for_selector(candidate, timeout=timeout_ms)
+                found = True
+                break
+            except Exception as exc:
+                last_exc = exc
+        if not found:
+            raise AuthFailedError(
+                f"login could not be confirmed for '{context_label}': none of the success selectors "
+                f"{candidates!r} appeared: {last_exc}"
+            ) from last_exc
+        return
+    # No success_selector configured -- a real login form nearly always
+    # navigates away from its own login URL on success (including
+    # client-routed SPAs), so waiting for that is a generic,
+    # app-agnostic signal. Deliberately not `wait_for_load_state
+    # ("networkidle")`: confirmed against a real target that keeps
+    # background network activity alive indefinitely (e.g. periodic
+    # polling), which made "networkidle" hang for the full timeout on
+    # every login.
+    try:
+        await page.wait_for_url(lambda url: url.rstrip("/") != login_url.rstrip("/"), timeout=timeout_ms)
+    except Exception as exc:
+        raise AuthFailedError(
+            f"login could not be confirmed for '{context_label}': still on the login page "
+            "(no success_selector configured to confirm otherwise)"
+        ) from exc
+
+
 class FormLoginProvider(AuthProvider):
     """`login_url`/selectors describe the target's login form. Phase 1's
     `UserConfig` schema (Layer 1) only has id/role/username/password/
@@ -254,44 +347,23 @@ class FormLoginProvider(AuthProvider):
             # confirmed this selector is the real submit control.
             await page.click(submit_sel, force=True)
 
-        if self._success_selector is not None:
-            candidates = [self._success_selector] if isinstance(self._success_selector, str) else self._success_selector
-            found = False
-            last_exc: Exception | None = None
-            for candidate in candidates:
-                try:
-                    await page.wait_for_selector(candidate, timeout=self._timeout_ms)
-                    found = True
-                    break
-                except Exception as exc:
-                    last_exc = exc
-            if not found:
-                raise AuthFailedError(
-                    f"login failed for user '{user.id}': none of the success selectors "
-                    f"{candidates!r} appeared: {last_exc}"
-                ) from last_exc
-        else:
-            # No success_selector configured -- a real login form nearly
-            # always navigates away from its own login URL on success
-            # (including client-routed SPAs), so waiting for that is a
-            # generic, app-agnostic signal. Deliberately not
-            # `wait_for_load_state("networkidle")`: confirmed against a
-            # real target that keeps background network activity alive
-            # indefinitely (e.g. periodic polling), which made
-            # "networkidle" hang for the full timeout on every login.
-            try:
-                await page.wait_for_url(
-                    lambda url: url.rstrip("/") != self._login_url.rstrip("/"), timeout=self._timeout_ms
-                )
-            except Exception as exc:
-                raise AuthFailedError(
-                    f"login failed for user '{user.id}': still on the login page after submit "
-                    "(no success_selector configured to confirm otherwise)"
-                ) from exc
+        await wait_for_login_success(page, self._login_url, self._success_selector, self._timeout_ms, user.id)
 
-        cookies = await self._extract_cookies(page)
+        cookies = await extract_cookies(page)
         expires_at = datetime.now(timezone.utc) + self._session_lifetime
         session = Session(user_id=user.id, role=user.role, auth_type="form_login", cookies=cookies, expires_at=expires_at)
+        # Modern SPAs that store their token in local/sessionStorage
+        # rather than a cookie (see GENERIC_TOKEN_STORAGE_KEYS above)
+        # would otherwise produce a Session with real cookies=={} and no
+        # way to actually reach an authenticated page afterward --
+        # SessionPool.apply_session() already forwards session.headers
+        # via set_extra_http_headers() (the same mechanism JWTAuthProvider
+        # uses), so this alone is enough to make replay/crawl/vuln-module
+        # requests carry the token, no other layer needs to change.
+        token = await extract_storage_token(page)
+        if token:
+            session.headers["Authorization"] = f"Bearer {token}"
+            _log.info(f"captured a storage-based bearer token for user '{user.id}' (role={user.role})")
         _log.info(f"authenticated user '{user.id}' (role={user.role}) via form_login, expires_at={expires_at}")
         return session
 
@@ -306,9 +378,14 @@ class FormLoginProvider(AuthProvider):
     async def is_authenticated(self, session: Session, page: "Page") -> bool:
         if not session.is_valid:
             return False
-        current_cookies = await self._extract_cookies(page)
+        # A pure-token SPA session has cookies == {} by design (see
+        # extract_storage_token above) -- `all()` over an empty dict is
+        # vacuously True, which would silently report "still logged in"
+        # for a session that's actually gone (token expired, storage
+        # cleared) and was never carrying any cookie to check in the
+        # first place. Require the stored bearer header still be present
+        # in that case instead of trusting an empty cookie comparison.
+        if not session.cookies:
+            return bool(session.headers.get("Authorization"))
+        current_cookies = await extract_cookies(page)
         return all(current_cookies.get(name) == value for name, value in session.cookies.items())
-
-    async def _extract_cookies(self, page: "Page") -> dict[str, str]:
-        raw_cookies = await page.context.cookies()
-        return {cookie["name"]: cookie["value"] for cookie in raw_cookies}

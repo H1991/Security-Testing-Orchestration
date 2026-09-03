@@ -127,6 +127,28 @@ _HTML_COMMENT_OPEN, _HTML_COMMENT_CLOSE = "<!--", "-->"
 # echo, or a search box that renders its own query client-side).
 _DOM_XSS_DEFAULT_PARAM = "q"
 
+# TC-128.8: installed via `page.add_init_script()` BEFORE navigation --
+# wraps two real DOM/storage sinks to record every call made with a
+# value containing this run's marker, without altering their actual
+# behavior (each wrapper still calls the original function). Never
+# calls a sink itself; only observes what the target's OWN client-side
+# JS does with the marker once it's in location.hash/location.search.
+_DOM_SINK_INSTRUMENT_SCRIPT = """
+(() => {
+  window.__stofDomSinks = [];
+  const origSetItem = Storage.prototype.setItem;
+  Storage.prototype.setItem = function (key, value) {
+    window.__stofDomSinks.push({ sink: 'storage.setItem', value: String(value) });
+    return origSetItem.apply(this, arguments);
+  };
+  const origSetAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function (name, value) {
+    window.__stofDomSinks.push({ sink: 'setAttribute:' + name, value: String(value) });
+    return origSetAttribute.apply(this, arguments);
+  };
+})();
+"""
+
 
 def _url_with_hash(url: str, payload: str) -> str:
     """`url` with `payload` set as its `location.hash` (replacing any
@@ -245,6 +267,16 @@ class XssTestsModule(VulnModule):
             # fires on genuine in-browser execution, caught via
             # `page.on('dialog')`, not response inspection.
             "TC-128.5": f"<img src=x onerror=confirm('{marker}')>",
+            # TC-128.7 CSS injection -- closes an attribute-context CSS
+            # value and injects a fresh rule with a uniquely-tagged
+            # exfiltration-shaped url() (a `.invalid` marker host, never
+            # dispatched anywhere -- same "marker host, never a real
+            # exploit" precedent as TC-137.7/TC-128.6's redirect
+            # markers). Reuses the exact same byte-for-byte-unencoded-
+            # reflection oracle as TC-128.2's attribute breakout: the
+            # underlying gap (unencoded reflection allowing a context
+            # breakout) is identical, only the injected content differs.
+            "TC-128.7": f"';}}*{{background:url(https://stof-css-{marker}.invalid/)}}/*",
         }
 
     def _register_payloads(self) -> None:
@@ -281,6 +313,7 @@ class XssTestsModule(VulnModule):
     async def _technique_reflection(
         self, technique_id: str, technique_name: str, context_label: str,
         candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
+        vuln_type: str = "Reflected Cross-Site Scripting",
     ) -> TestCaseResult:
         """Shared body for all three context-variant techniques --
         each `_technique_*` wrapper below just supplies its own
@@ -308,7 +341,7 @@ class XssTestsModule(VulnModule):
                 "confirm() dialog tagged with this run's own random marker."
             )
             finding = Finding(
-                module_id=self.module_id, vuln_type="Reflected Cross-Site Scripting", severity="High", cvss_score=6.1,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.1,
                 endpoint=endpoint, user_role=self.config.low_priv_role,
                 request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
                 response_raw=body[:300],
@@ -316,7 +349,7 @@ class XssTestsModule(VulnModule):
                 recommendation="HTML-encode all untrusted output at the point it's rendered (context-aware encoding for HTML body, attribute, and script/event-handler positions); do not rely on input validation alone.",
             )
             finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"xss-{technique_id}-{param}") if evidence else []
-            return self._result(technique_id, technique_name, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+            return self._result(technique_id, technique_name, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, vuln_type=vuln_type)
         return self._result(
             technique_id, technique_name, PASS,
             f"{len(bounded)} parameter(s) probed with a {context_label} marker payload, no unencoded reflection observed",
@@ -539,6 +572,174 @@ class XssTestsModule(VulnModule):
             role=self.config.low_priv_role, vuln_type="DOM-based Cross-Site Scripting",
         )
 
+    async def _navigate_and_check_redirect(self, page, url: str, marker_host: str, timeout_ms: int = 10000) -> bool:
+        """Same hang-safety discipline as `_navigate_and_check_dialog`
+        (external `asyncio.wait_for` deadline, `goto()` failures logged
+        and swallowed, never let a single probe block the whole scan) --
+        but the signal here is where the browser ENDS UP after
+        navigating, not a dialog. A DOM-based open redirect fires when
+        client-side JS reads `location.hash`/`location.search` and
+        assigns it straight into `location.href`/`.assign()`/`.replace()`
+        with no validation -- there's no server round-trip to inspect at
+        all, so (like TC-128.5's DOM XSS) the only way to detect this is
+        to actually navigate a real browser and watch what it does."""
+        try:
+            await asyncio.wait_for(page.goto(url, timeout=timeout_ms), timeout=(timeout_ms / 1000) + 5)
+        except Exception as exc:
+            _log.warning(f"DOM open-redirect probe navigation failed for {url}: {exc}")
+            return False
+        await asyncio.sleep(0.3)
+        return marker_host in urlsplit(page.url).netloc
+
+    async def _technique_dom_open_redirect(
+        self,
+        endpoints: "list[Endpoint]",
+        session_manager: "SessionManager",
+        session_pool: "SessionPool",
+        evidence: "EvidenceCollector | None",
+    ) -> TestCaseResult:
+        """TC-128.6 -- DOM-based Open Redirect (CWE-601), added after
+        cross-referencing a real Burp Active Scan run against this
+        target and finding no STOF equivalent for Burp's own "Open
+        redirection (DOM-based)" finding. Distinct from TC-137.7 in
+        `ssrf_tests.py` (a SERVER-side redirect via the HTTP `Location`
+        response header) -- this one has no server round-trip at all,
+        reusing TC-128.5's exact "navigate a real browser, observe what
+        actually happens" model since a client-side-only sink is
+        structurally invisible to response inspection."""
+        tid, technique = "TC-128.6", "DOM-based Open Redirect (real in-browser navigation confirmation)"
+        vuln_type = "DOM-based Open Redirect"
+        candidates = self._dom_xss_candidates(endpoints)
+        if not candidates:
+            return self._result(tid, technique, SKIPPED, "no GET page endpoint discovered to navigate to", vuln_type=vuln_type)
+
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.low_priv_role, candidates[0].url)
+        except KeyError as exc:
+            return self._result(tid, technique, SKIPPED, f"role '{self.config.low_priv_role}' not configured: {exc}", vuln_type=vuln_type)
+
+        page = await context.new_page()
+        probes_run = 0
+        try:
+            for endpoint in candidates:
+                marker_host = f"stof-dom-redirect-{secrets.token_hex(5)}.invalid"
+                marker_url = f"https://{marker_host}/"
+                for injection_point, probe_url in (
+                    ("location.hash", _url_with_hash(endpoint.url, marker_url)),
+                    (
+                        "location.search",
+                        _url_with_search(endpoint.url, endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM, marker_url),
+                    ),
+                ):
+                    probes_run += 1
+                    if await self._navigate_and_check_redirect(page, probe_url, marker_host):
+                        description = (
+                            f"Navigating a real browser to {probe_url} with an external marker URL placed in "
+                            f"{injection_point} caused the browser to actually navigate to that external host "
+                            f"({marker_host}) -- confirmed client-side redirect with no server round-trip "
+                            "involved at all."
+                        )
+                        finding = Finding(
+                            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.1,
+                            endpoint=endpoint, user_role=self.config.low_priv_role,
+                            request_raw=f"GET {probe_url}", response_raw=f"browser navigated to: https://{marker_host}/",
+                            description=description,
+                            recommendation="Never assign location.hash/location.search (or any client-controlled value) directly into location.href/.assign()/.replace(); validate against an explicit allowlist of same-origin/known-partner destinations first.",
+                        )
+                        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"dom-open-redirect-{injection_point}") if evidence else []
+                        return self._result(tid, technique, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, vuln_type=vuln_type)
+        finally:
+            await page.close()
+        return self._result(
+            tid, technique, PASS,
+            f"{probes_run} navigation(s) across {len(candidates)} endpoint(s) (location.hash and location.search) "
+            "with a real browser, none redirected to the injected external marker host",
+            role=self.config.low_priv_role, vuln_type=vuln_type,
+        )
+
+    async def _technique_dom_data_manipulation(
+        self,
+        endpoints: "list[Endpoint]",
+        session_manager: "SessionManager",
+        session_pool: "SessionPool",
+        evidence: "EvidenceCollector | None",
+    ) -> TestCaseResult:
+        """TC-128.8 -- DOM Data Manipulation (CWE-79/CWE-915 family):
+        the last of the "DOM-sink" categories cross-referenced against a
+        real Burp Active Scan run (see TC-128.6's own note) with no STOF
+        equivalent -- client-controlled data (location.hash/search)
+        flowing into a sensitive DOM/storage sink WITHOUT necessarily
+        executing script (TC-128.5's job) or causing navigation
+        (TC-128.6's job). Detected the same "navigate a real browser,
+        observe what actually happens" way those two already use, since
+        this is equally invisible to response inspection -- but the
+        observation itself is different: an `add_init_script()`
+        installed BEFORE navigation wraps `Storage.prototype.setItem`
+        and `Element.prototype.setAttribute` to record every call whose
+        value contains this run's marker, then the sweep checks whether
+        any were recorded. This never itself calls a dangerous API --
+        it only observes calls the PAGE's own JS already makes."""
+        tid, technique = "TC-128.8", "DOM Data Manipulation (client-controlled value reaches a storage/attribute sink)"
+        vuln_type = "DOM Data Manipulation"
+        candidates = self._dom_xss_candidates(endpoints)
+        if not candidates:
+            return self._result(tid, technique, SKIPPED, "no GET page endpoint discovered to navigate to", vuln_type=vuln_type)
+
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.low_priv_role, candidates[0].url)
+        except KeyError as exc:
+            return self._result(tid, technique, SKIPPED, f"role '{self.config.low_priv_role}' not configured: {exc}", vuln_type=vuln_type)
+
+        page = await context.new_page()
+        await page.add_init_script(_DOM_SINK_INSTRUMENT_SCRIPT)
+        probes_run = 0
+        try:
+            for endpoint in candidates:
+                marker = f"stof-dom-sink-{secrets.token_hex(5)}"
+                for injection_point, probe_url in (
+                    ("location.hash", _url_with_hash(endpoint.url, marker)),
+                    (
+                        "location.search",
+                        _url_with_search(endpoint.url, endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM, marker),
+                    ),
+                ):
+                    probes_run += 1
+                    try:
+                        await asyncio.wait_for(page.goto(probe_url, timeout=10000), timeout=15)
+                    except Exception as exc:
+                        _log.warning(f"DOM data-manipulation probe navigation failed for {probe_url}: {exc}")
+                        continue
+                    await asyncio.sleep(0.3)
+                    sinks = await page.evaluate(
+                        "(marker) => (window.__stofDomSinks || []).filter((s) => s.value && s.value.includes(marker))", marker,
+                    )
+                    if not sinks:
+                        continue
+                    hit = sinks[0]
+                    description = (
+                        f"Navigating a real browser to {probe_url} with a unique marker placed in {injection_point} "
+                        f"caused the page's own client-side JS to write that marker into a '{hit['sink']}' sink "
+                        f"(observed value: {hit['value']!r}) -- client-controlled data reaching a storage/DOM-"
+                        "attribute sink without validation, confirmed by real in-browser observation."
+                    )
+                    finding = Finding(
+                        module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.4,
+                        endpoint=endpoint, user_role=self.config.low_priv_role,
+                        request_raw=f"GET {probe_url}", response_raw=f"sink: {hit['sink']}, value: {hit['value']!r}",
+                        description=description,
+                        recommendation="Never write location.hash/location.search (or any client-controlled value) directly into localStorage/sessionStorage or a DOM element's attribute without validating/sanitizing it first -- treat it exactly as untrusted as any server-side input.",
+                    )
+                    finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="dom-data-manipulation") if evidence else []
+                    return self._result(tid, technique, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, vuln_type=vuln_type)
+        finally:
+            await page.close()
+        return self._result(
+            tid, technique, PASS,
+            f"{probes_run} navigation(s) across {len(candidates)} endpoint(s) (location.hash and location.search) "
+            "with a real browser, no marker value observed reaching a storage/setAttribute sink",
+            role=self.config.low_priv_role, vuln_type=vuln_type,
+        )
+
     async def run_techniques(
         self,
         endpoints: "list[Endpoint]",
@@ -550,6 +751,7 @@ class XssTestsModule(VulnModule):
             ("TC-128.1", "Reflected XSS in raw HTML body context", "an unescaped HTML body position"),
             ("TC-128.2", "Reflected XSS via HTML attribute breakout", "an HTML attribute breakout"),
             ("TC-128.3", "Reflected XSS via inline script/event-handler breakout", "an inline script/event-handler breakout"),
+            ("TC-128.7", "CSS Injection via attribute-context breakout", "a CSS injection / attribute-context breakout"),
         )
         candidates = self._param_candidates(endpoints)
         stored_tid, stored_technique = "TC-128.4", "Stored Cross-Site Scripting (planted marker, cross-endpoint/role verification)"
@@ -566,9 +768,10 @@ class XssTestsModule(VulnModule):
             else:
                 results = []
                 for tid, name, label in technique_defs:
+                    vt = "CSS Injection" if tid == "TC-128.7" else "Reflected Cross-Site Scripting"
                     results.append(await self._safe_result(
-                        self._technique_reflection(tid, name, label, candidates, context, evidence),
-                        "TC-128", tid, name, "Reflected Cross-Site Scripting", role=self.config.low_priv_role,
+                        self._technique_reflection(tid, name, label, candidates, context, evidence, vuln_type=vt),
+                        "TC-128", tid, name, vt, role=self.config.low_priv_role,
                     ))
 
         # TC-128.4 runs independently of the same-request `candidates`
@@ -592,5 +795,17 @@ class XssTestsModule(VulnModule):
         results.append(await self._safe_result(
             self._technique_dom_xss(endpoints, session_manager, session_pool, evidence),
             "TC-128", dom_tid, dom_technique, "DOM-based Cross-Site Scripting", role=self.config.low_priv_role,
+        ))
+
+        dom_redirect_tid, dom_redirect_technique = "TC-128.6", "DOM-based Open Redirect (real in-browser navigation confirmation)"
+        results.append(await self._safe_result(
+            self._technique_dom_open_redirect(endpoints, session_manager, session_pool, evidence),
+            "TC-128", dom_redirect_tid, dom_redirect_technique, "DOM-based Open Redirect", role=self.config.low_priv_role,
+        ))
+
+        dom_data_tid, dom_data_technique = "TC-128.8", "DOM Data Manipulation (client-controlled value reaches a storage/attribute sink)"
+        results.append(await self._safe_result(
+            self._technique_dom_data_manipulation(endpoints, session_manager, session_pool, evidence),
+            "TC-128", dom_data_tid, dom_data_technique, "DOM Data Manipulation", role=self.config.low_priv_role,
         ))
         return results

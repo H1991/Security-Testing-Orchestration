@@ -1,0 +1,27 @@
+{
+  "_meta": {
+    "purpose": "STOF Business Logic Knowledge Base -- real disclosed bug bounty patterns for stof/modules/business_logic_tests.py.",
+    "sources": [
+      "HackerOne #59179 (Dropbox) -- race condition when redeeming a coupon code allowed reusing the same code many times",
+      "HackerOne #157996 (Instacart) -- race condition in redeeming promo codes allowed stacking savings by firing concurrent requests",
+      "HackerOne #759247 (Reverb.com) -- race condition allowed redeeming the same gift card multiple times",
+      "HackerOne #220445 -- race condition leads to duplicate application of a limited-use action",
+      "OWASP WSTG-BUSL-06 'Test Upload of Unexpected File Types' family and general Business Logic race-condition guidance"
+    ],
+    "generated_for": "STOF stof/modules/business_logic_tests.py"
+  },
+  "patterns": [
+    {
+      "id": "race_condition_limited_use_action",
+      "generalized_transformation": "Discover a limited-use-shaped endpoint (redeem/claim/vote/coupon/activate URL hints), then fire TWO structurally identical requests at it CONCURRENTLY via asyncio.gather (never sequentially, which would let the server's normal serialization mask the race window). If both requests come back looking like independent successes -- no HTTP 4xx, and neither response body contains a conflict/duplicate/already-used-shaped signal -- that is consistent with (never proof of) a race window letting the action apply more than once. STOF cannot inspect the target's own database/ledger to confirm the underlying state was actually double-applied, so a hit is reported honestly as worth manual review, never as a confirmed double-spend.",
+      "abstracted_endpoint_pattern": "Any discovered POST/PUT endpoint whose URL contains a limited-use hint (redeem, claim, vote, coupon, activate, checkout).",
+      "evidence_signal": "Two concurrent identical requests both return HTTP < 400 with no conflict/duplicate/already-used marker in either response body.",
+      "real_example": "Four independently disclosed HackerOne reports describe the identical class: Dropbox #59179 (a coupon code redeemable many times via a race condition), Instacart #157996 (concurrent promo-code redemption stacking savings), Reverb.com #759247 (a gift card redeemable multiple times via the same race), and #220445 (race condition leading to duplicate application of a limited-use action). All four were exploited the same way this technique tests for: firing the same request concurrently rather than sequentially, so the server's validation check and its state-commit step both run before either has finished.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": ["TC-135.4"],
+        "note": "Implemented in stof/modules/business_logic_tests.py as _technique_race_condition, gated behind allow_state_changing_probes (sends two real concurrent writes). Bounded at exactly two concurrent requests -- enough to observe the signal, never a load/stress test against the target. SKIPs cleanly when no limited-use-shaped endpoint is discovered."
+      }
+    }
+  ]
+}

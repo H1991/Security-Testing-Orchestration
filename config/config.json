@@ -20,9 +20,7 @@
       "800009",
       "800010"
     ],
-    "username_selector": "#uid",
-    "password_selector": "#passw",
-    "submit_selector": "input[name='btnSubmit']"
+    "requires_assisted_login": false
   },
   "browser": {
     "headless": true,
@@ -55,10 +53,12 @@
   "burp": {
     "enabled": false,
     "api_url": "http://127.0.0.1:1337",
-    "api_key": "",
+    "api_key": "2y3BosZg9Z8APj9pcJ2XRtx6ERXWHHer",
     "scan_timeout_s": 1800,
     "poll_interval_s": 5,
-    "collaborator_url": "abc123.oastify.com"
+    "collaborator_url": "2tw3c9zy0lcf4vj0ceo1lvkh88e02p.burpcollaborator.net",
+    "proxy_url": "http://127.0.0.1:8080",
+    "run_active_scan": false
   },
   "testing": {
     "allow_state_changing_probes": false

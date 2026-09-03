@@ -104,7 +104,7 @@ async def test_run_techniques_skipped_when_no_url_shaped_param():
     results = await module.run_techniques([endpoint], session_manager, pool)
 
     by_id = _by_id(results)
-    assert len(by_id) == 6
+    assert len(by_id) == 7
     assert all(r.status == SKIPPED for r in by_id.values())
 
 
@@ -407,3 +407,79 @@ async def test_oob_callback_sends_marker_and_reports_skipped_with_instructions()
     assert "oast.example.com" in sent_urls[0]
     assert "stof-" in sent_urls[0]
     assert "check its dashboard" in result.detail.lower() or "check the collaborator" in result.detail.lower() or "collaborator's own dashboard" in result.detail.lower()
+
+
+# ---------------------------------------------------------------------------
+# TC-137.7: open redirect
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_open_redirect_fails_when_marker_host_reflected_in_location():
+    endpoint = Endpoint(url="https://x/go", method="GET", endpoint_type="page", parameters=["next"])
+
+    def fake_get(url, params=None, max_redirects=0):
+        value = params.get("next", "")
+        if value.startswith("https://stof-redirect-"):
+            marker_host = value.split("://", 1)[1].rstrip("/")
+            return _response(302, "", headers={"location": f"https://{marker_host}/"})
+        return _response(200, "ok")
+
+    context = _fake_context(get_side_effect=fake_get)
+    module = SsrfTestsModule()
+
+    result = await module._technique_open_redirect(
+        module._param_candidates([endpoint]), context, evidence=None,
+    )
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.severity == "Medium"
+    assert result.finding.vuln_type == "Open Redirect"
+
+
+@pytest.mark.asyncio
+async def test_open_redirect_passes_when_no_redirect_follows():
+    endpoint = Endpoint(url="https://x/go", method="GET", endpoint_type="page", parameters=["next"])
+
+    def fake_get(url, params=None, max_redirects=0):
+        return _response(200, "ok")
+
+    context = _fake_context(get_side_effect=fake_get)
+    module = SsrfTestsModule()
+
+    result = await module._technique_open_redirect(
+        module._param_candidates([endpoint]), context, evidence=None,
+    )
+
+    assert result.status == PASS
+
+
+@pytest.mark.asyncio
+async def test_open_redirect_passes_on_same_origin_redirect():
+    """False-positive guard: a normal same-origin redirect (e.g. bouncing
+    to a login page) must never be mistaken for an open redirect."""
+    endpoint = Endpoint(url="https://x/go", method="GET", endpoint_type="page", parameters=["next"])
+
+    def fake_get(url, params=None, max_redirects=0):
+        return _response(302, "", headers={"location": "https://x/login"})
+
+    context = _fake_context(get_side_effect=fake_get)
+    module = SsrfTestsModule()
+
+    result = await module._technique_open_redirect(
+        module._param_candidates([endpoint]), context, evidence=None,
+    )
+
+    assert result.status == PASS
+
+
+@pytest.mark.asyncio
+async def test_open_redirect_skipped_when_no_url_shaped_param():
+    endpoint = Endpoint(url="https://x/search", method="GET", endpoint_type="page", parameters=["query"])
+    module = SsrfTestsModule()
+
+    result = await module._technique_open_redirect(
+        module._param_candidates([endpoint]), context=AsyncMock(), evidence=None,
+    )
+
+    assert result.status == SKIPPED

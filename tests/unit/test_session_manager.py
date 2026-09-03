@@ -155,6 +155,43 @@ def test_invalidate_unknown_role_does_not_raise(tmp_path):
     manager.invalidate("ghost")  # must not raise
 
 
+@pytest.mark.asyncio
+async def test_seed_session_is_returned_by_get_session_without_calling_a_provider(tmp_path):
+    """Assisted login (stof/auth/assisted_login.py): a session
+    confirmed against a real, human-operated browser before the scan's
+    normal flow starts must be usable exactly like a normally-
+    authenticated one -- get_session() should hand it back directly,
+    never touch a provider for it."""
+    # UserConfig.auth_type stays "form_login" -- requires_assisted_login
+    # is a TARGET-level switch, not a per-user auth_type value (see
+    # stof/main.py's _build_login_provider docstring); "assisted_manual"
+    # only ever appears as the resulting Session's own auth_type.
+    user = _user("admin", auth_type="form_login")
+    provider = AsyncMock()
+    manager = _manager(tmp_path, users={"admin": user}, providers={"form_login": provider})
+    seeded = Session(
+        user_id="admin-01", role="admin", auth_type="assisted_manual", cookies={"session_id": "real"},
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=6),
+    )
+
+    manager.seed_session(seeded)
+    result = await manager.get_session("admin", page=AsyncMock())
+
+    assert result is seeded
+    provider.authenticate.assert_not_awaited()
+    provider.refresh.assert_not_awaited()
+
+
+def test_seed_session_persists_to_the_store(tmp_path):
+    manager = _manager(tmp_path)
+    session = Session(user_id="admin-01", role="admin", auth_type="assisted_manual", cookies={"a": "b"})
+
+    manager.seed_session(session)
+
+    reloaded = SessionManager(users={}, providers={}, store=SessionStore(db_path=tmp_path / "stof.db"))
+    assert reloaded._sessions["admin"].cookies == {"a": "b"}
+
+
 # ---------------------------------------------------------------------------
 # Crash-resume: sessions persist across separate manager instances
 # ---------------------------------------------------------------------------
