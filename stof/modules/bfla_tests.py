@@ -100,12 +100,27 @@ class BFLATechniquesMixin:
         vuln_type = "Missing Function-Level Authorization (BFLA) via a state-changing request"
         if not self.config.allow_state_changing_probes:
             return [self._gated_skip(test_id, tid, technique, vuln_type, "state-changing BFLA probing is disabled by default")]
-        privileged_write_endpoints = list({
-            e.url: e for e in endpoints
-            if e.method.upper() in ("POST", "PUT", "PATCH", "DELETE") and _looks_privileged(e.url, self.config.privileged_path_hints)
-        }.values())
+        # NOT gated on `_looks_privileged()`'s URL-naming heuristic --
+        # confirmed live against a real target whose write endpoints are
+        # plainly named (`/api/add-category`, `/api/delete-category`,
+        # `/api/publish-article`, no "admin"/"manage" anywhere) but
+        # still had ZERO independent server-side authorization: a
+        # read-only session could call them directly and the server
+        # accepted every one. Requiring an admin-sounding URL before
+        # even trying this probe was silently skipping exactly the
+        # class of app this technique exists to catch. Every write
+        # endpoint is a real BFLA candidate regardless of what it's
+        # named; privileged-looking ones are tried first since they're
+        # the highest-confidence candidates, capped by
+        # `max_bfla_write_endpoints` so a target with a large discovered
+        # surface doesn't turn this into an unbounded write-probe spree.
+        write_endpoints = {
+            e.url: e for e in endpoints if e.method.upper() in ("POST", "PUT", "PATCH", "DELETE")
+        }
+        ranked = sorted(write_endpoints.values(), key=lambda e: not _looks_privileged(e.url, self.config.privileged_path_hints))
+        privileged_write_endpoints = ranked[: self.config.max_bfla_write_endpoints]
         if not privileged_write_endpoints:
-            return [self._result(test_id, tid, technique, vuln_type, SKIPPED, "no privileged-looking POST/PUT/PATCH/DELETE endpoint discovered")]
+            return [self._result(test_id, tid, technique, vuln_type, SKIPPED, "no POST/PUT/PATCH/DELETE endpoint discovered")]
         try:
             _session, context = await self._authenticated_context(session_manager, session_pool, self.low_priv_role, target_url)
         except KeyError as exc:
@@ -135,12 +150,17 @@ class BFLATechniquesMixin:
     async def _technique_bfla_verb_tampering(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
         test_id, tid, technique = "TC-055", "TC-055.3", "HTTP verb tampering to bypass a method-scoped authorization check"
         vuln_type = "Missing Function-Level Authorization (BFLA) via HTTP verb tampering"
-        privileged_write_endpoints = list({
-            e.url: e for e in endpoints
-            if e.method.upper() in ("POST", "PUT", "PATCH", "DELETE") and _looks_privileged(e.url, self.config.privileged_path_hints)
-        }.values())
+        # Same widening as TC-055.2 above, and lower-risk still: this
+        # technique only ever issues a GET (downgrading the verb, never
+        # replaying the real write), so there's no added blast radius
+        # from dropping the URL-naming requirement here.
+        write_endpoints = {
+            e.url: e for e in endpoints if e.method.upper() in ("POST", "PUT", "PATCH", "DELETE")
+        }
+        ranked = sorted(write_endpoints.values(), key=lambda e: not _looks_privileged(e.url, self.config.privileged_path_hints))
+        privileged_write_endpoints = ranked[: self.config.max_bfla_write_endpoints]
         if not privileged_write_endpoints:
-            return [self._result(test_id, tid, technique, vuln_type, SKIPPED, "no privileged-looking POST/PUT/PATCH/DELETE endpoint discovered to downgrade to GET")]
+            return [self._result(test_id, tid, technique, vuln_type, SKIPPED, "no POST/PUT/PATCH/DELETE endpoint discovered to downgrade to GET")]
         try:
             session, context = await self._authenticated_context(session_manager, session_pool, self.low_priv_role, target_url)
         except KeyError as exc:

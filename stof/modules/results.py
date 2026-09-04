@@ -100,6 +100,8 @@ def extract_findings(results: list[TestCaseResult]) -> list["Finding"]:
     once per actual root cause (a real reviewer flagged this exact
     "11 Critical findings" over-count against this project's own
     scan output)."""
+    from stof.findings.classification import classify_finding_taxonomy
+
     findings: list[Finding] = []
     seen_ids: set[str] = set()
     for r in results:
@@ -108,6 +110,14 @@ def extract_findings(results: list[TestCaseResult]) -> list["Finding"]:
         if r.finding.finding_id in seen_ids:
             continue
         seen_ids.add(r.finding.finding_id)
+        # Stamped here, not at each of the ~130 `Finding(...)` call
+        # sites across the vuln modules -- this is the one place every
+        # module's results already funnel through, and the one place
+        # that has both the `Finding` and the `TestCaseResult` (whose
+        # `technique_id` a bare `Finding` never carried) in hand
+        # together. See `Finding.technique_id`'s own docstring.
+        r.finding.technique_id = r.technique_id
+        r.finding.cwe, r.finding.owasp_category = classify_finding_taxonomy(r.finding)
         findings.append(r.finding)
     return findings
 

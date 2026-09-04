@@ -1,0 +1,1 @@
+cookie 'cookieconsent_status': httpOnly=False, secure=False, sameSite='Lax'

@@ -25,6 +25,8 @@ from stof.main import (
     _build_module_builders,
     _burp_scope_prefix,
     _burp_seed_urls,
+    _coverage_funnel,
+    _findings_from_recon_secrets,
     _looks_like_driver_dead,
     _module_hit_dead_driver,
     _module_note,
@@ -338,6 +340,109 @@ def test_module_note_no_explanation_for_zero_idor_findings():
 
     assert note["finding_count"] == 0
     assert note["note"] is None
+
+
+# ---------------------------------------------------------------------------
+# _findings_from_recon_secrets
+# ---------------------------------------------------------------------------
+
+
+class _FakeReconReport:
+    def __init__(self, secrets):
+        self.secrets = secrets
+
+
+def test_findings_from_recon_secrets_returns_empty_for_no_recon():
+    assert _findings_from_recon_secrets(None) == []
+
+
+def test_findings_from_recon_secrets_returns_empty_when_none_found():
+    assert _findings_from_recon_secrets(_FakeReconReport([])) == []
+
+
+def test_findings_from_recon_secrets_converts_a_detected_secret_into_a_real_finding():
+    """Regression: recon's own secrets scanner already detects
+    hardcoded credentials in client-side JS (confirmed live -- a real
+    third-party API token in a shipped bundle), but that used to only
+    ever become a console log line and a raw JSON dump, never a
+    `Finding` -- invisible in every report, the dashboard, and
+    severity counts despite being a genuine, confirmed detection."""
+    secret = {"source_url": "https://x/assets/app-abc123.js", "label": "Generic API Key Assignment", "match_preview": "apikey...6789"}
+
+    findings = _findings_from_recon_secrets(_FakeReconReport([secret]))
+
+    assert len(findings) == 1
+    f = findings[0]
+    assert f.severity == "High"
+    assert f.module_id == "disclosure_tests"
+    assert "Generic API Key Assignment" in f.vuln_type
+    assert f.endpoint.url == "https://x/assets/app-abc123.js"
+    assert f.endpoint.endpoint_type == "api"
+    assert f.cwe == "CWE-798 - Use of Hard-coded Credentials"
+    assert f.owasp_category == "A02:2025 - Security Misconfiguration"
+
+
+def test_findings_from_recon_secrets_handles_multiple_secrets_independently():
+    secrets = [
+        {"source_url": "https://x/a.js", "label": "AWS Access Key", "match_preview": "AKIA1...abcd"},
+        {"source_url": "https://x/page", "label": "Private Key Block", "match_preview": "-----B...KEY--"},
+    ]
+
+    findings = _findings_from_recon_secrets(_FakeReconReport(secrets))
+
+    assert len(findings) == 2
+    assert findings[1].endpoint.endpoint_type == "page"  # non-.js source stays a "page" endpoint
+
+
+# ---------------------------------------------------------------------------
+# _coverage_funnel
+# ---------------------------------------------------------------------------
+
+
+def _tc_result(status: str, endpoint: Endpoint | None = None):
+    from stof.modules.results import PASS, TestCaseResult
+
+    kwargs = {}
+    if status == "FAIL":
+        kwargs["finding"] = _finding("idor_tests")
+    return TestCaseResult(
+        test_id="TC-X", technique_id="TC-X.1", technique="t", vuln_type="v",
+        module_id="idor_tests", severity="Info", status=status or PASS, detail="",
+        endpoint=endpoint, **kwargs,
+    )
+
+
+def test_coverage_funnel_counts_discovered_tested_and_verified_exploitable():
+    from stof.modules.results import FAIL, PASS, SKIPPED
+
+    endpoints = [_endpoint("https://x/a"), _endpoint("https://x/b"), _endpoint("https://x/c")]
+    finding = _finding("idor_tests")
+    finding.endpoint = _endpoint("https://x/a")
+    vuln_results = [
+        _tc_result(PASS, endpoint=_endpoint("https://x/a")),
+        _tc_result(SKIPPED, endpoint=_endpoint("https://x/b")),
+        _tc_result(FAIL, endpoint=_endpoint("https://x/a")),
+    ]
+
+    coverage = _coverage_funnel(endpoints, vuln_results, [finding])
+
+    assert coverage == {"endpoints_discovered": 3, "endpoints_tested": 2, "endpoints_verified_exploitable": 1}
+
+
+def test_coverage_funnel_ignores_results_with_no_endpoint():
+    from stof.modules.results import PASS
+
+    vuln_results = [_tc_result(PASS, endpoint=None)]
+
+    coverage = _coverage_funnel([], vuln_results, [])
+
+    assert coverage["endpoints_tested"] == 0
+
+
+def test_coverage_funnel_zero_across_the_board_with_no_data():
+    assert _coverage_funnel([], [], []) == {
+        "endpoints_discovered": 0, "endpoints_tested": 0, "endpoints_verified_exploitable": 0,
+    }
 
 
 # ---------------------------------------------------------------------------

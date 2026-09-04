@@ -83,6 +83,23 @@ def test_extract_findings_deduplicates_a_finding_reused_across_techniques():
     assert findings == [shared, distinct]
 
 
+def test_extract_findings_stamps_technique_id_cwe_and_owasp_onto_the_finding():
+    """Regression: `Finding` never carried the `technique_id` of the
+    technique that produced it, forcing every downstream consumer
+    (the walkthrough builder, the frontend's own CWE/OWASP display) to
+    independently re-guess a classification from prose text. This is
+    the one place (`extract_findings`) that has both objects in hand
+    to stamp it once, authoritatively."""
+    finding = _finding()  # module_id="idor_tests", vuln_type="IDOR"
+    result = _result(FAIL, finding=finding)  # technique_id="TC-053.1"
+
+    extracted = extract_findings([result])
+
+    assert extracted[0].technique_id == "TC-053.1"
+    assert extracted[0].cwe is not None and extracted[0].cwe != "Unmapped"
+    assert extracted[0].owasp_category is not None and extracted[0].owasp_category != "Unmapped"
+
+
 def test_extract_findings_empty_when_no_fail():
     results = [_result(PASS), _result(SKIPPED), _result(NOT_IMPLEMENTED)]
     assert extract_findings(results) == []

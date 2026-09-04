@@ -108,7 +108,10 @@
       "description": "cookie 'cookieconsent_status' is missing the HttpOnly flag -- identified as a session/auth cookie because it was newly issued or changed value across the login boundary for role 'admin'.",
       "recommendation": "Set HttpOnly and Secure on every session/auth cookie, and never set SameSite=None without also setting Secure.",
       "discovered_at": "2026-09-04T05:58:51.501252+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-1004 - Sensitive Cookie Without 'HttpOnly' Flag",
+      "owasp_category": "A04:2025 - Cryptographic Failures",
+      "technique_id": null
     },
     {
       "finding_id": "2ccbbece-727e-4c6c-9acc-2334b4ca618f",
@@ -133,7 +136,10 @@
       "description": "The session cookie captured from a first login for role 'admin' still authenticates against 'http://127.0.0.1:3001/#/' (HTTP 200) after a second, independent login for the same role has completed -- the server does not revoke prior sessions when a new one is established.",
       "recommendation": "Either revoke prior sessions when a new authentication event occurs for the same account, or provide the user a way to view and remotely terminate concurrent sessions, per the OWASP Session Management Cheat Sheet.",
       "discovered_at": "2026-09-04T05:58:56.170001+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-287 - Improper Authentication",
+      "owasp_category": "A07:2025 - Identification and Authentication Failures",
+      "technique_id": null
     },
     {
       "finding_id": "4f9b9290-a989-404a-8042-95450862b760",
@@ -158,7 +164,10 @@
       "description": "Cookie 'token' -- two independently-issued tokens for this cookie share an identical 541-character prefix, suggesting a predictable/non-random component.",
       "recommendation": "Generate session identifiers with a cryptographically secure PRNG carrying at least 64 bits of entropy, with no fixed, sequential, or otherwise predictable component, per the OWASP Session Management Cheat Sheet.",
       "discovered_at": "2026-09-04T05:59:01.406609+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-287 - Improper Authentication",
+      "owasp_category": "A07:2025 - Identification and Authentication Failures",
+      "technique_id": null
     },
     {
       "finding_id": "42b313f5-bf02-4f43-8bf0-9797598f3e6e",
@@ -183,7 +192,10 @@
       "description": "'http://127.0.0.1:3001/#/' authenticated response has no Cache-Control: no-store/no-cache directive -- a shared or public browser's back-button/disk cache can replay this authenticated page's content even after the user has logged out.",
       "recommendation": "Set Cache-Control: no-store (and Pragma: no-cache for older HTTP/1.0 caches) on every authenticated response.",
       "discovered_at": "2026-09-04T05:59:04.040789+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-287 - Improper Authentication",
+      "owasp_category": "A07:2025 - Identification and Authentication Failures",
+      "technique_id": null
     },
     {
       "finding_id": "be9d5269-ecee-4ce5-8b5f-f5b9fc40d7f7",
@@ -218,7 +230,10 @@
       "description": "6 consecutive authenticated requests to 'http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling&t=Q1g_Jed' produced no HTTP 429 or throttling-shaped response -- this API endpoint has no observable rate limiting at the authenticated/token level, beyond whatever login-only limiting TC-129.3 already checks.",
       "recommendation": "Apply per-token/per-account rate limiting to authenticated API endpoints, not just the unauthenticated login endpoint.",
       "discovered_at": "2026-09-04T05:59:04.139114+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-307 - Improper Restriction of Excessive Authentication Attempts",
+      "owasp_category": "API4:2023 - Unrestricted Resource Consumption",
+      "technique_id": null
     },
     {
       "finding_id": "c7a3e62d-2517-4d4c-942c-991f4b7c970f",
@@ -243,7 +258,10 @@
       "description": "The session cookie for role 'admin' is accepted from a client presenting a completely different User-Agent than the one that logged in -- the session is not bound to any client fingerprint, so a stolen cookie alone (no other client secret) is sufficient to hijack the session from a different device/browser.",
       "recommendation": "This is a defense-in-depth gap, not a standalone vulnerability (per-request client-binding is unusual and has real usability tradeoffs) -- consider it alongside session lifetime/rotation controls, not as a required fix on its own.",
       "discovered_at": "2026-09-04T05:59:06.482818+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-287 - Improper Authentication",
+      "owasp_category": "A07:2025 - Identification and Authentication Failures",
+      "technique_id": null
     },
     {
       "finding_id": "39ffbe1b-5a31-483d-a033-77a273866e52",
@@ -273,7 +291,10 @@
       "description": "A single authenticated session (role 'admin') retrieved 6 distinct objects from 'http://127.0.0.1:3001/rest/basket/0' by varying its trailing path segment across ['1', '2', '3'], with no apparent server-side ownership check.",
       "recommendation": "Enforce object-level authorization on every request that takes an object id from the URL path, not just from query parameters.",
       "discovered_at": "2026-09-04T05:59:07.101155+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-639 - Authorization Bypass Through User-Controlled Key",
+      "owasp_category": "API1:2023 - Broken Object Level Authorization",
+      "technique_id": null
     },
     {
       "finding_id": "dadc8fe3-b9bd-48a8-91f3-c3f448658bc0",
@@ -303,7 +324,10 @@
       "description": "A single authenticated session (role 'admin') retrieved 6 distinct objects from 'http://127.0.0.1:3001/rest/products/24/reviews' by varying its trailing path segment across ['1', '2', '3'], with no apparent server-side ownership check.",
       "recommendation": "Enforce object-level authorization on every request that takes an object id from the URL path, not just from query parameters.",
       "discovered_at": "2026-09-04T05:59:07.527067+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-639 - Authorization Bypass Through User-Controlled Key",
+      "owasp_category": "API1:2023 - Broken Object Level Authorization",
+      "technique_id": null
     },
     {
       "finding_id": "1edd8ae0-bd56-43e7-a921-95dc86f16988",
@@ -333,7 +357,10 @@
       "description": "A single authenticated session (role 'admin') retrieved 6 distinct objects from 'http://127.0.0.1:3001/rest/products/6/reviews' by varying its trailing path segment across ['1', '2', '3'], with no apparent server-side ownership check.",
       "recommendation": "Enforce object-level authorization on every request that takes an object id from the URL path, not just from query parameters.",
       "discovered_at": "2026-09-04T05:59:07.987511+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-639 - Authorization Bypass Through User-Controlled Key",
+      "owasp_category": "API1:2023 - Broken Object Level Authorization",
+      "technique_id": null
     },
     {
       "finding_id": "a0709ac7-7082-4914-aebd-01e4be25e586",
@@ -362,7 +389,10 @@
       "description": "'http://127.0.0.1:3001' no CSP header present (Content-Type: text/html; charset=UTF-8). This is a defense-in-depth gap, not a confirmed exploit path on its own -- it only matters if the application also has an injection point (e.g. reflected/DOM XSS) for a CSP to have blocked, consistent with real disclosed reports of this class (HackerOne #225833) being low-severity precisely because they lacked an actual XSS to chain with.",
       "recommendation": "Deploy a strict Content-Security-Policy on every HTML response (e.g. script-src 'self' plus nonces/hashes for any required inline scripts) with no unsafe-inline/unsafe-eval/wildcard sources.",
       "discovered_at": "2026-09-04T05:59:09.043127+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-693 - Protection Mechanism Failure",
+      "owasp_category": "A02:2025 - Security Misconfiguration",
+      "technique_id": null
     },
     {
       "finding_id": "2304ef78-9215-4179-8554-92f50bdd3440",
@@ -391,7 +421,10 @@
       "description": "'http://127.0.0.1:3001' imports 2 stylesheet(s) using an href relative to the current page's own path rather than the site root: styles.css, styles.css. If this page can ever be rendered at an unexpected/attacker-influenced path (a path-based router, a reflected-path error page), the browser resolves that relative href against the wrong base and can be made to load an attacker-controlled stylesheet from a trusted origin -- a known technique for exfiltrating page content via CSS selectors/attribute readers.",
       "recommendation": "Reference stylesheets with a root-relative ('/css/app.css') or absolute (https://...) href, never one relative to the current page's own path.",
       "discovered_at": "2026-09-04T05:59:09.193133+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-16 - Configuration",
+      "owasp_category": "A02:2025 - Security Misconfiguration",
+      "technique_id": null
     },
     {
       "finding_id": "486e33fd-2499-4566-bcb7-cf8645d8b062",
@@ -420,7 +453,10 @@
       "description": "'http://127.0.0.1:3001/api/Feedbacks/' returned 3 apparent PII value(s) (Email address) in its raw API response.",
       "recommendation": "Apply field-level output filtering server-side so an API response never includes more than the calling UI actually needs to render.",
       "discovered_at": "2026-09-04T05:59:09.554834+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-200 - Exposure of Sensitive Information",
+      "owasp_category": "A02:2025 - Security Misconfiguration",
+      "technique_id": null
     },
     {
       "finding_id": "39f76aae-2334-4a69-99b5-d18206c6e142",
@@ -449,7 +485,10 @@
       "description": "'http://127.0.0.1:3001/rest/memories/' returns JSON containing internal/sensitive-shaped field name(s) (password) -- consistent with the API serializing an internal model directly rather than an explicit, minimized response shape.",
       "recommendation": "Define an explicit response DTO/serializer per endpoint that only includes fields the client actually needs; never serialize an ORM/internal model directly.",
       "discovered_at": "2026-09-04T05:59:11.330895+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-200 - Exposure of Sensitive Information",
+      "owasp_category": "API3:2023 - Broken Object Property Level Authorization",
+      "technique_id": null
     },
     {
       "finding_id": "49416857-051e-4d3c-ab9a-89126fe1dbfe",
@@ -478,7 +517,10 @@
       "description": "'http://127.0.0.1:3001/ftp/' returns a directory listing exposing 12 file(s) (., quarantine, acquisitions.md, announcement_encrypted.md, coupons_2013.md.bak, eastere.gg, encrypt.pyc, incident-support.kdbx, legal.md, package-lock.json.bak...) -- an attacker gets the exact filenames of everything served from this directory for free, without guessing or brute-forcing, including files nothing on the site links to.",
       "recommendation": "Disable directory-listing/autoindexing on the webserver (or the static-file middleware serving this path) so only explicitly-linked files are reachable.",
       "discovered_at": "2026-09-04T05:59:11.457468+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-200 - Exposure of Sensitive Information",
+      "owasp_category": "A02:2025 - Security Misconfiguration",
+      "technique_id": null
     },
     {
       "finding_id": "7c1e769c-6c94-4194-9f3c-baca3ed573cf",
@@ -511,7 +553,10 @@
       "description": "Injecting \"'\" into parameter 'q' (query) on GET http://127.0.0.1:3001/rest/products/search?q= produced a database-error fingerprint ('sqlite_error') in the response (HTTP 500) -- the injected value reached the SQL layer unsanitized. This is a candidate signal only: no data was extracted or altered.",
       "recommendation": "Use parameterized queries/prepared statements for every database call; never build SQL from unsanitized request input.",
       "discovered_at": "2026-09-04T05:59:12.467820+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-89 - SQL Injection",
+      "owasp_category": "A05:2025 - Injection",
+      "technique_id": null
     },
     {
       "finding_id": "d643304e-7c95-4fc5-b42f-89927d28d5f4",
@@ -540,7 +585,10 @@
       "description": "Navigating a real browser to http://127.0.0.1:3001/#/?q=%3Cimg+src%3Dx+onerror%3Dconfirm%28%27stofxsse434c4a4%27%29%3E with the marker payload placed in location.hash route query triggered a real confirm() dialog whose message ('stofxsse434c4a4') contains this run's own unique marker -- genuine, confirmed in-browser script execution, not a response-inspection signal. The dialog was auto-dismissed immediately and had no other effect.",
       "recommendation": "Never pass location.hash/location.search (or any other client-controlled value) into innerHTML, document.write, eval, or a jQuery selector without HTML-encoding/sanitizing it first; prefer safe DOM APIs (textContent, createElement) for rendering untrusted client-side data.",
       "discovered_at": "2026-09-04T05:59:16.848068+00:00",
-      "scanner_source": "stof"
+      "scanner_source": "stof",
+      "cwe": "CWE-79 - Cross-Site Scripting",
+      "owasp_category": "A05:2025 - Injection",
+      "technique_id": null
     }
   ],
   "recon": {

@@ -45,15 +45,16 @@ from stof.core.module_registry import VULN_MODULE_NAMES
 from stof.core.test_orchestrator import build_test_plan
 from stof.crawler.crawler import CrawlerConfig, verify_auth_required
 from stof.crawler.crawler import crawl as run_crawler
+from stof.crawler.endpoint_store import Endpoint, write_endpoints
 from stof.crawler.endpoint_store import load as load_endpoints
 from stof.crawler.endpoint_store import merge as merge_endpoints
-from stof.crawler.endpoint_store import write_endpoints
 from stof.engine.burp_capture import capture_findings_via_burp
 from stof.engine.burp_controller import BurpApiError, BurpController
 from stof.engine.multi_session import SessionPool
 from stof.engine.playwright_engine import PlaywrightEngine
 from stof.evidence import EvidenceCollector
 from stof.findings.burp_normalizer import normalize_burp_issues
+from stof.findings.models import Finding
 from stof.findings.store import write_findings
 from stof.modules.auth_tests import AuthTestConfig, AuthTestsModule
 from stof.modules.business_logic_tests import BusinessLogicTestConfig, BusinessLogicTestsModule
@@ -728,6 +729,81 @@ async def _run_burp_scan(pw, config, endpoint_list, evidence, click_echo=click.e
             await controller.close()
 
 
+def _findings_from_recon_secrets(recon_report) -> list[Finding]:
+    """Recon (`stof/recon/secrets_scanner.py`) already scans every
+    inline/external script and HTML comment for secret-shaped strings
+    (API keys, JWTs, private-key blocks, generic token/secret
+    assignments) -- confirmed live against a real target where this
+    caught a hardcoded third-party API token in a shipped JS bundle.
+    That detection used to dead-end as a console log line ("N
+    secret(s)") and a raw JSON dump: never a `Finding`, so it never
+    reached severity, OWASP/CWE classification, the HTML/Excel reports,
+    or the dashboard's finding counts -- a confirmed real detection
+    silently invisible everywhere a tester actually looks. One `Finding`
+    per `SecretFinding`, `technique_id` deliberately left unset (this
+    didn't come from a `TestCaseResult`/technique catalog entry) with
+    `cwe`/`owasp_category` stamped directly rather than through
+    `classify_finding_taxonomy()`, since "hardcoded credential exposed
+    client-side" is unambiguous regardless of which page it came from."""
+    if recon_report is None or not recon_report.secrets:
+        return []
+    findings = []
+    for secret in recon_report.secrets:
+        # `ReconReport.secrets` stores plain dicts (see
+        # `recon_engine.run_recon`'s own `secret_findings.extend({...})`
+        # call), not `secrets_scanner.SecretFinding` objects -- it's
+        # already been through a dict round-trip once by the time it
+        # gets here (also true after a JSON reload via
+        # `write_recon_report`/`load_recon_report`).
+        source_url = secret["source_url"]
+        label = secret["label"]
+        match_preview = secret["match_preview"]
+        endpoint = Endpoint(url=source_url, method="GET", endpoint_type="api" if source_url.endswith(".js") else "page")
+        findings.append(Finding(
+            module_id="disclosure_tests",
+            vuln_type=f"Hardcoded Secret Exposed Client-Side ({label})",
+            severity="High",
+            cvss_score=8.6,
+            endpoint=endpoint,
+            user_role="",
+            request_raw=f"GET {source_url}",
+            response_raw=f"matched pattern '{label}': {match_preview}",
+            description=(
+                f"A {label}-shaped secret was found in a client-accessible resource at "
+                f"'{source_url}' ({match_preview}). Client-side JS/HTML is visible to "
+                f"any visitor, so any real credential embedded there must be treated as public."
+            ),
+            recommendation=(
+                "Revoke this credential if it is real and confirm whether it is still active. "
+                "Never ship API keys/tokens/secrets in client-side JS, HTML, or source maps -- "
+                "route the calls that need it through a server-side component and use a secrets-"
+                "management solution to store it."
+            ),
+            cwe="CWE-798 - Use of Hard-coded Credentials",
+            owasp_category="A02:2025 - Security Misconfiguration",
+        ))
+    return findings
+
+
+def _coverage_funnel(endpoint_list, vuln_results, all_findings) -> dict[str, int]:
+    """Discovered -> tested -> verified-exploitable, for the
+    dashboard's coverage view. "Tested" comes from `vuln_results`
+    (every `TestCaseResult` from every module, not just the FAILs
+    `extract_findings()` keeps) -- it used to be discarded right after
+    computing PASS/FAIL/SKIP counts (the `_vuln_results` underscore-
+    prefix said as much), even though it's the only place that
+    actually knows which endpoints a technique probed. Scoped to this
+    project's own modules; Burp Active Scan's own endpoint coverage
+    isn't tracked here, so it's never counted in."""
+    tested_endpoint_urls = {r.endpoint.url for r in vuln_results if r.endpoint is not None}
+    verified_exploitable_urls = {f.endpoint.url for f in all_findings if f.endpoint is not None}
+    return {
+        "endpoints_discovered": len(endpoint_list),
+        "endpoints_tested": len(tested_endpoint_urls),
+        "endpoints_verified_exploitable": len(verified_exploitable_urls),
+    }
+
+
 def _module_note(module_name: str, all_findings, jwt_roles: list[str] | None = None) -> dict:
     count = sum(1 for f in all_findings if f.module_id == module_name)
     note = None
@@ -1210,15 +1286,16 @@ async def _run_test(
                 # wait on Burp's own 30-minute crawl+audit, which was never
                 # what "capture evidence via Burp" was supposed to mean.
                 if config.burp.enabled and config.burp.run_active_scan:
-                    (vuln_findings, _vuln_results), burp_findings = await asyncio.gather(
+                    (vuln_findings, vuln_results), burp_findings = await asyncio.gather(
                         _run_all_vuln_modules(), _run_burp_scan(pw, config, endpoint_list, evidence)
                     )
                 else:
-                    vuln_findings, _vuln_results = await _run_all_vuln_modules()
+                    vuln_findings, vuln_results = await _run_all_vuln_modules()
                     burp_findings = []
 
                 all_findings.extend(vuln_findings)
                 all_findings.extend(burp_findings)
+                all_findings.extend(_findings_from_recon_secrets(recon_report))
 
                 # Distinct from the Active Scan above (gated on
                 # run_active_scan): this only sends each already-confirmed
@@ -1273,6 +1350,8 @@ async def _run_test(
             modules_run.append("burp_active_scan")
             module_notes.append(_module_note("burp_active_scan", all_findings))
 
+        coverage = _coverage_funnel(endpoint_list, vuln_results, all_findings)
+
         reports_dir = output_override or config.output.reports_dir
         scan_metadata = {
             "scan_id": scan_id,
@@ -1280,6 +1359,7 @@ async def _run_test(
             "modules_run": modules_run,
             "module_notes": module_notes,
             "duration_seconds": duration,
+            "coverage": coverage,
         }
         report_paths = generate_reports(
             all_findings, scan_metadata, output_dir=reports_dir,

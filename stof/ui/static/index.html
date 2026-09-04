@@ -829,6 +829,56 @@
   .summary-kpis { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; padding: 20px 26px 0; margin-bottom: 6px; }
   .summary-kpis .kpi { padding: 14px; box-shadow: none; background: var(--surface-2); border-color: var(--border); }
   .summary-kpis .kpi .val { font-size: 22px; }
+  .summary-coverage { padding: 4px 26px 14px; }
+  .summary-coverage h4 { margin: 0 0 10px; font-size: 12.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; }
+  .cov-row { display: grid; grid-template-columns: 150px 1fr 44px; align-items: center; gap: 10px; padding: 5px 0; font-size: 12.5px; }
+  .cov-row .cov-label { color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cov-track { height: 8px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+  .cov-fill { height: 100%; border-radius: 99px; transition: width .5s cubic-bezier(.2,.7,.2,1); }
+  .cov-row .cov-val { font-weight: 700; text-align: right; font-family: var(--mono); }
+  .cov-empty { padding: 6px 0; color: var(--text-faint); font-size: 12.5px; }
+  .cov-duration-note { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--text-muted); font-family: var(--mono); }
+  .grid8 { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 10px; }
+  .grid8 .tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
+  .grid8 .tile .tv { font-size: 21px; font-weight: 800; letter-spacing: -.3px; font-family: var(--mono); }
+  .grid8 .tile .tl { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+  .app-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+  .app-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius, 12px);
+    box-shadow: var(--shadow); padding: 16px 18px; cursor: pointer; position: relative;
+    transition: transform .18s cubic-bezier(.16,1,.3,1), border-color .18s cubic-bezier(.16,1,.3,1), box-shadow .18s cubic-bezier(.16,1,.3,1);
+  }
+  .app-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .app-card:active { transform: translateY(-2px) scale(.98); }
+  .app-card .app-head { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+  .app-card .icon-chip { width: 32px; height: 32px; border-radius: 9px; font-size: 15px; }
+  .app-card .icon-chip svg { width: 16px; height: 16px; }
+  .app-card .app-head-text { min-width: 0; flex: 1; }
+  .app-card .app-name { font-size: 13.5px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .app-card .app-meta { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; font-family: var(--mono); }
+  .app-card .app-sevs { display: flex; gap: 5px; flex-wrap: wrap; }
+  .app-card .app-sevs .sev-pill {
+    font-size: 10.5px; font-weight: 700; padding: 3px 7px; border-radius: 6px; font-family: var(--mono);
+    background: var(--surface-2); border: 1px solid var(--border);
+  }
+  .statrow {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 1px;
+    background: var(--border); border: 1px solid var(--border); border-radius: var(--radius, 12px);
+    overflow: hidden; box-shadow: var(--shadow);
+  }
+  @media (max-width: 1100px) { .statrow { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 640px) { .statrow { grid-template-columns: repeat(2, 1fr); } }
+  .statrow .st { background: var(--surface); padding: 14px 16px; }
+  .statrow .st .sl { font-size: 10px; text-transform: uppercase; letter-spacing: .7px; color: var(--text-faint); font-weight: 700; white-space: nowrap; }
+  .statrow .st .sv { font-size: 22px; font-weight: 800; margin-top: 5px; letter-spacing: -.3px; font-family: var(--mono); }
+  .statrow .st .sd { font-size: 11px; margin-top: 3px; color: var(--text-muted); }
+  .dashboard-ops-divider { display: flex; align-items: center; gap: 12px; margin: 8px 0 22px; color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; font-weight: 700; }
+  .dashboard-ops-divider::before, .dashboard-ops-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .app-card .app-arrow {
+    position: absolute; top: 16px; right: 16px; width: 18px; height: 18px; color: var(--text-faint);
+    opacity: 0; transform: translateX(-3px); transition: opacity .18s ease, transform .18s ease;
+  }
+  .app-card:hover .app-arrow { opacity: 1; transform: translateX(0); }
   .summary-body { display: grid; grid-template-columns: 0.8fr 1.3fr 0.9fr; gap: 24px; padding: 18px 26px; margin-bottom: 0; min-width: 0; }
   .summary-reports-list { display: flex; flex-direction: column; gap: 6px; }
   .summary-report-link {
@@ -999,8 +1049,24 @@
     <section class="panel active" id="panel-dashboard" aria-labelledby="h1-dashboard">
       <div class="page-head">
         <div>
-          <h1 id="h1-dashboard">Risk posture</h1>
-          <p id="riskPostureSub">Across every scan run against this target.</p>
+          <h1>Executive overview</h1>
+          <p>Every number below is computed from a real scan on disk — nothing here is an estimate.</p>
+        </div>
+      </div>
+      <div class="statrow" id="execStatRow" style="margin-bottom: 26px;"></div>
+
+      <div class="page-head">
+        <div>
+          <h1 style="font-size: 17px;">Applications scanned</h1>
+          <p>Every real target STOF has a scan history for — not a portfolio estimate, the actual list.</p>
+        </div>
+      </div>
+      <div class="app-strip" id="appStrip" style="margin-bottom: 26px;"></div>
+
+      <div class="page-head">
+        <div>
+          <h1 id="h1-dashboard" style="font-size: 17px;">Trend &amp; classification</h1>
+          <p id="riskPostureSub">Direction of travel, then what kind of risk it is.</p>
         </div>
       </div>
 
@@ -1038,6 +1104,54 @@
           <div class="card-body" id="topModulesList" style="padding: 6px 18px 14px;"></div>
         </div>
       </div>
+
+      <div class="row-2" id="execCoverageRow" style="margin-bottom: 26px;">
+        <div class="card">
+          <div class="card-head">
+            <span class="icon-chip violet" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.4 9.5 8 10.5 4.6-1 8-5.5 8-10.5V6z"/><path d="M9 12l2 2 4-4"/></svg></span>
+            <h3>OWASP Top 10 findings (portfolio)</h3>
+            <div class="meta" id="owaspTotalsMeta">&mdash;</div>
+          </div>
+          <div class="card-body" id="owaspTotalsList" style="padding: 6px 18px 14px;"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="icon-chip teal" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h16M4 6h10M4 18h6"/></svg></span>
+            <h3>Endpoint coverage</h3>
+            <div class="meta" id="execCoverageMeta">&mdash;</div>
+          </div>
+          <div class="summary-coverage" id="execCoverageFunnel" style="padding: 10px 18px 14px;"></div>
+        </div>
+      </div>
+
+      <div class="row-2" style="margin-bottom: 26px;">
+        <div class="card">
+          <div class="card-head">
+            <span class="icon-chip blue" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 4 5.5 4 9s-1.5 6.5-4 9c-2.5-2.5-4-5.5-4-9s1.5-6.5 4-9z"/></svg></span>
+            <h3>Discovered attack surface</h3>
+            <div class="meta" id="attackSurfaceMeta">latest crawl</div>
+          </div>
+          <div class="grid8" id="attackSurfaceGrid" style="padding: 6px 18px 16px;"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <span class="icon-chip violet" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2 4 6v6c0 5 3.4 9.5 8 10.5 4.6-1 8-5.5 8-10.5V6z"/><path d="M9 12l2 2 4-4"/></svg></span>
+            <h3>OWASP Top 10 test coverage</h3>
+            <div class="meta" id="owaspCoverageMeta">&mdash;</div>
+          </div>
+          <div class="card-body" id="owaspCoverageList" style="padding: 6px 18px 14px;"></div>
+        </div>
+      </div>
+
+      <!-- Everything above is the executive narrative: verdict, by-
+           application, trend, classification, testing thoroughness --
+           in that order. Everything below is operational/practitioner
+           detail (per-technique progress, a live event feed) a manager
+           has no reason to read; kept on the same page for a scan
+           operator's convenience, but visually demarcated and last. -->
+      <div class="dashboard-ops-divider"><span>Latest scan — operational detail</span></div>
 
       <div class="page-head">
         <div>
@@ -1092,6 +1206,8 @@
         </div>
         <button class="btn btn-primary" data-runscan>▶ Run Scan</button>
       </div>
+
+      <div class="statrow" id="scansStatRow" style="margin-bottom: 16px;"></div>
 
       <div id="scansByTarget"><div class="card-empty">No scans yet — click "Run Scan" to launch one.</div></div>
     </section>
@@ -1276,6 +1392,7 @@
           <p>Generated at the end of every scan, in three formats, from <code class="inline">data/reports/</code>.</p>
         </div>
       </div>
+      <div class="statrow" id="reportsStatRow" style="margin-bottom: 16px;"></div>
       <div class="reports-list" id="reportsList"><div class="card-empty">No reports on disk yet — run a scan to generate one.</div></div>
     </section>
 
@@ -1532,6 +1649,7 @@
       <p class="modal-wide-meta" id="summaryMeta">&mdash;</p>
     </div>
     <div class="summary-kpis" id="summaryKpis"></div>
+    <div class="summary-coverage" id="summaryCoverage"></div>
     <div class="summary-body">
       <div>
         <h4>Module breakdown</h4>
@@ -1639,27 +1757,38 @@
   // check against the finding's own vuln_type/description when a module
   // spans more than one category (e.g. auth_tests covers both broken
   // access control AND authentication-failure techniques).
+  // Same tiering as stof/findings/classification.py's own
+  // OWASP_API_MODULE_DEFAULT_2023 / OWASP_WEB_MODULE_DEFAULT_2025 --
+  // API Security Top 10:2023 preferred for API-shaped modules (a more
+  // precise category than the general Web list would give them),
+  // Web Top 10:2025 (current edition) otherwise. Kept in sync by hand
+  // (this file can't import the Python module) -- if you change one,
+  // change the other. Used only for MODULE-level aggregates (the
+  // "Most affected modules" badge, the per-scan OWASP test-coverage
+  // chart); a real Finding's own f.owasp_category (server-stamped,
+  // authoritative) is always preferred over this table wherever a
+  // finding is available -- see owaspCategoryFor()'s own comment.
   var OWASP_MODULE_DEFAULT = {
-    idor_tests: "A01:2021 – Broken Access Control",
-    csrf_tests: "A01:2021 – Broken Access Control",
-    jwt_tests: "A07:2021 – Identification and Authentication Failures",
-    auth_tests: "A07:2021 – Identification and Authentication Failures",
-    oauth_tests: "A07:2021 – Identification and Authentication Failures",
-    sqli_tests: "A03:2021 – Injection",
-    xss_tests: "A03:2021 – Injection",
-    injection_variants_tests: "A03:2021 – Injection",
-    graphql_tests: "A05:2021 – Security Misconfiguration",
-    configuration_tests: "A05:2021 – Security Misconfiguration",
-    cache_tests: "A05:2021 – Security Misconfiguration",
-    disclosure_tests: "A05:2021 – Security Misconfiguration",
-    deserialization_tests: "A08:2021 – Software and Data Integrity Failures",
-    business_logic_tests: "A04:2021 – Insecure Design",
-    ssrf_tests: "A10:2021 – Server-Side Request Forgery",
-    bfla_tests: "A01:2021 – Broken Access Control",
-    role_tests: "A01:2021 – Broken Access Control",
-    tenant_tests: "A01:2021 – Broken Access Control",
-    mass_assignment_tests: "A08:2021 – Software and Data Integrity Failures",
-    session_weakness_tests: "A07:2021 – Identification and Authentication Failures",
+    idor_tests: "API1:2023 – Broken Object Level Authorization",
+    tenant_tests: "API1:2023 – Broken Object Level Authorization",
+    jwt_tests: "API2:2023 – Broken Authentication",
+    mass_assignment_tests: "API3:2023 – Broken Object Property Level Authorization",
+    bfla_tests: "API5:2023 – Broken Function Level Authorization",
+    role_tests: "API5:2023 – Broken Function Level Authorization",
+    business_logic_tests: "API6:2023 – Unrestricted Access to Sensitive Business Flows",
+    ssrf_tests: "API7:2023 – Server Side Request Forgery (SSRF)",
+    graphql_tests: "API8:2023 – Security Misconfiguration",
+    csrf_tests: "A01:2025 – Broken Access Control",
+    auth_tests: "A07:2025 – Identification and Authentication Failures",
+    oauth_tests: "A07:2025 – Identification and Authentication Failures",
+    sqli_tests: "A05:2025 – Injection",
+    xss_tests: "A05:2025 – Injection",
+    injection_variants_tests: "A05:2025 – Injection",
+    configuration_tests: "A02:2025 – Security Misconfiguration",
+    cache_tests: "A02:2025 – Security Misconfiguration",
+    disclosure_tests: "A02:2025 – Security Misconfiguration",
+    deserialization_tests: "A08:2025 – Software or Data Integrity Failures",
+    session_weakness_tests: "A07:2025 – Identification and Authentication Failures",
   };
   // ---------------------------------------------------------------- CWE mapping
   // Same shape as the OWASP map above: a per-module default, refined by
@@ -1727,6 +1856,14 @@
     ["cross-tenant", "CWE-284 – Improper Access Control"],
   ];
   function cweFor(f) {
+    // The server now stamps an authoritative cwe/owasp_category onto
+    // every Finding at the one place (extract_findings()) that has
+    // both the Finding and its originating technique_id in hand --
+    // see stof/findings/classification.py. Prefer that; the keyword
+    // guess below only still fires for a finding from BEFORE this
+    // existed (an old cached findings.json/report on disk), so nothing
+    // already saved breaks.
+    if (f.cwe) return f.cwe;
     var hay = ((f.vuln_type || "") + " " + (f.description || "")).toLowerCase();
     for (var i = 0; i < CWE_KEYWORD_OVERRIDES.length; i++) {
       if (hay.indexOf(CWE_KEYWORD_OVERRIDES[i][0]) !== -1) return CWE_KEYWORD_OVERRIDES[i][1];
@@ -1736,26 +1873,44 @@
   function cweCode(cwe) { return cwe.split(" –")[0]; }
   // [keyword, category] pairs checked in order against vuln_type +
   // description (lowercased) -- first match wins, before the module default.
+  // Kept in sync by hand with stof/findings/classification.py's own
+  // OWASP_KEYWORD_OVERRIDES -- only reached for a finding predating
+  // f.owasp_category (see owaspCategoryFor() below), which the
+  // scripts/backfill_classification.py migration should leave nothing
+  // on disk falling into after a --force run.
   var OWASP_KEYWORD_OVERRIDES = [
-    ["access control", "A01:2021 – Broken Access Control"],
-    ["privilege escalation", "A01:2021 – Broken Access Control"],
-    ["role manipulation", "A01:2021 – Broken Access Control"],
-    ["object-level authorization", "A01:2021 – Broken Access Control"],
-    ["function-level authorization", "A01:2021 – Broken Access Control"],
-    ["weak secret", "A02:2021 – Cryptographic Failures"],
-    ["alg:none", "A02:2021 – Cryptographic Failures"],
-    ["algorithm confusion", "A02:2021 – Cryptographic Failures"],
-    ["signature", "A02:2021 – Cryptographic Failures"],
-    ["pii", "A02:2021 – Cryptographic Failures"],
-    ["sensitive data", "A02:2021 – Cryptographic Failures"],
-    ["httponly", "A02:2021 – Cryptographic Failures"],
-    ["samesite", "A02:2021 – Cryptographic Failures"],
-    ["injection", "A03:2021 – Injection"],
-    ["cross-site scripting", "A03:2021 – Injection"],
-    ["xss", "A03:2021 – Injection"],
-    ["deserialization", "A08:2021 – Software and Data Integrity Failures"],
+    ["mass assignment", "API3:2023 – Broken Object Property Level Authorization"],
+    ["excessive data exposure", "API3:2023 – Broken Object Property Level Authorization"],
+    ["object-level authorization", "API1:2023 – Broken Object Level Authorization"],
+    ["idor", "API1:2023 – Broken Object Level Authorization"],
+    ["cross-tenant", "API1:2023 – Broken Object Level Authorization"],
+    ["function-level authorization", "API5:2023 – Broken Function Level Authorization"],
+    ["privilege escalation", "API5:2023 – Broken Function Level Authorization"],
+    ["role manipulation", "API5:2023 – Broken Function Level Authorization"],
+    ["ssrf", "API7:2023 – Server Side Request Forgery (SSRF)"],
+    ["rate limit", "API4:2023 – Unrestricted Resource Consumption"],
+    ["brute force", "API4:2023 – Unrestricted Resource Consumption"],
+    ["access control", "A01:2025 – Broken Access Control"],
+    ["open redirect", "A01:2025 – Broken Access Control"],
+    ["csrf", "A01:2025 – Broken Access Control"],
+    ["weak secret", "A04:2025 – Cryptographic Failures"],
+    ["httponly", "A04:2025 – Cryptographic Failures"],
+    ["samesite", "A04:2025 – Cryptographic Failures"],
+    ["alg:none", "A07:2025 – Identification and Authentication Failures"],
+    ["algorithm confusion", "A07:2025 – Identification and Authentication Failures"],
+    ["signature", "A07:2025 – Identification and Authentication Failures"],
+    ["cors", "A02:2025 – Security Misconfiguration"],
+    ["pii", "A02:2025 – Security Misconfiguration"],
+    ["sensitive data", "A02:2025 – Security Misconfiguration"],
+    ["injection", "A05:2025 – Injection"],
+    ["cross-site scripting", "A05:2025 – Injection"],
+    ["xss", "A05:2025 – Injection"],
+    ["deserialization", "A08:2025 – Software or Data Integrity Failures"],
   ];
   function owaspCategoryFor(f) {
+    // Same "prefer the server-stamped, authoritative value" precedent
+    // as cweFor() -- see its own comment.
+    if (f.owasp_category) return f.owasp_category;
     var hay = ((f.vuln_type || "") + " " + (f.description || "")).toLowerCase();
     for (var i = 0; i < OWASP_KEYWORD_OVERRIDES.length; i++) {
       if (hay.indexOf(OWASP_KEYWORD_OVERRIDES[i][0]) !== -1) return OWASP_KEYWORD_OVERRIDES[i][1];
@@ -3011,6 +3166,7 @@ async function loadHealth() {
       renderCrawlKpi(s.crawl);
       renderTechniquesKpi(s.modules_state);
       renderLiveFindingsKpi(s.live_findings);
+      renderOwaspTestCoverage(s.modules_state);
       (s.events || []).forEach(function (event) {
         appendFeedEvent(event);
         applyEventToDashboard(event);
@@ -3057,6 +3213,58 @@ async function loadHealth() {
     val.textContent = sum;
     sub.textContent = done.length + " of " + entries.length + " module" + (entries.length === 1 ? "" : "s") + " complete";
   }
+  // OWASP Top 10 (2021) TEST coverage -- distinct from renderOwaspTotals's
+  // portfolio finding-count breakdown above. This one answers "how much
+  // of STOF's own testing in this category actually ran to a real
+  // verdict against this target" (PASS+FAIL, out of every technique that
+  // category's modules define), not "how many findings landed in this
+  // category." Computed entirely from modules_state (already fetched
+  // for the KPI row above) via OWASP_MODULE_DEFAULT -- no new API call.
+  // A module SKIPPED/NOT_IMPLEMENTED/ERROR shows up as reduced coverage,
+  // not silently dropped -- an honest "how thorough was this run" signal,
+  // the thing worth putting in front of management, not a finding count.
+  function renderOwaspTestCoverage(modulesState) {
+    var list = document.getElementById("owaspCoverageList");
+    var meta = document.getElementById("owaspCoverageMeta");
+    list.innerHTML = "";
+    var modIds = Object.keys(modulesState || {}).filter(function (id) { return modulesState[id].status === "complete"; });
+    if (!modIds.length) {
+      meta.textContent = "—";
+      list.innerHTML = '<div class="card-empty">No completed modules yet for this scan.</div>';
+      return;
+    }
+    var byCategory = {};
+    modIds.forEach(function (modId) {
+      var category = OWASP_MODULE_DEFAULT[modId];
+      if (!category) return;  // a module with no OWASP mapping (e.g. crawler) contributes nothing
+      var counts = modulesState[modId].counts || {};
+      var entry = byCategory[category] || (byCategory[category] = { total: 0, executed: 0 });
+      entry.total += modulesState[modId].total || 0;
+      entry.executed += (counts.PASS || 0) + (counts.FAIL || 0);
+    });
+    var categories = Object.keys(byCategory).sort();
+    if (!categories.length) {
+      meta.textContent = "—";
+      list.innerHTML = '<div class="card-empty">No OWASP-mapped modules completed yet for this scan.</div>';
+      return;
+    }
+    meta.textContent = categories.length + " categor" + (categories.length === 1 ? "y" : "ies") + " covered";
+    categories.forEach(function (category) {
+      var entry = byCategory[category];
+      var pct = entry.total > 0 ? Math.round((entry.executed / entry.total) * 100) : 0;
+      var row = document.createElement("div");
+      row.className = "top-mod-row";
+      var color = pct >= 85 ? "var(--low)" : pct >= 60 ? "var(--medium)" : "var(--critical)";
+      row.innerHTML =
+        '<span class="name"><span class="name-text"></span></span>' +
+        '<span class="top-mod-bar" style="width:' + Math.max(pct, 4) + '%"><span style="flex:1; background:' + color + '"></span></span>' +
+        '<span class="count">' + pct + "%</span>";
+      row.querySelector(".name-text").textContent = category;
+      row.querySelector(".name").title = entry.executed + " / " + entry.total + " technique(s) executed to a verdict";
+      list.appendChild(row);
+    });
+  }
+
   function renderLiveFindingsKpi(liveFindings) {
     liveFindings = liveFindings || [];
     var counts = { Critical: 0, High: 0 };
@@ -3228,7 +3436,38 @@ async function loadHealth() {
   // row opens the Scan Summary modal on click (the whole row, not just
   // a button -- matches "I'll click the scan I need to see the
   // summary").
+  function renderScansStatRow() {
+    var row = document.getElementById("scansStatRow");
+    if (!row) return;
+    if (!state.scans.length) { row.innerHTML = ""; return; }
+    var targets = {}; var running = 0; var complete = 0; var failed = 0; var latest = null;
+    state.scans.forEach(function (s) {
+      targets[s.target] = true;
+      if (s.status === "running") running++;
+      else if (s.status === "complete") complete++;
+      else if (s.status === "failed") failed++;
+      if (!latest || (s.started_at && s.started_at > (latest.started_at || ""))) latest = s;
+    });
+    var cells = [
+      ["Total scans", state.scans.length, ""],
+      ["Targets", Object.keys(targets).length, ""],
+      ["Running now", running, running ? "in progress" : "none"],
+      ["Completed", complete, ""],
+      ["Failed", failed, ""],
+      ["Most recent", latest ? new Date(latest.started_at).toLocaleDateString() : "—", latest ? latest.target : ""],
+    ];
+    row.innerHTML = cells.map(function (c) {
+      return '<div class="st"><div class="sl"></div><div class="sv"></div><div class="sd"></div></div>';
+    }).join("");
+    row.querySelectorAll(".st").forEach(function (el, i) {
+      el.querySelector(".sl").textContent = cells[i][0];
+      el.querySelector(".sv").textContent = cells[i][1];
+      el.querySelector(".sd").textContent = cells[i][2];
+    });
+  }
+
   function renderScans() {
+    renderScansStatRow();
     var container = document.getElementById("scansByTarget");
     container.innerHTML = "";
     if (!state.scans.length) {
@@ -3304,6 +3543,32 @@ async function loadHealth() {
     }
   });
 
+  // discovered -> tested -> verified-exploitable, from scan_metadata's
+  // "coverage" key (stof/main.py's _coverage_funnel()) -- absent for
+  // any report generated before this existed, so a null/undefined
+  // `coverage` renders nothing rather than a broken all-zero funnel.
+  function renderCoverageFunnel(coverage, containerId, showHeading) {
+    var el = document.getElementById(containerId || "summaryCoverage");
+    if (!coverage || typeof coverage.endpoints_discovered !== "number") {
+      el.innerHTML = "";
+      return;
+    }
+    var rows = [
+      ["Discovered", coverage.endpoints_discovered, "var(--accent)"],
+      ["Tested", coverage.endpoints_tested, "var(--info, var(--accent))"],
+      ["Verified exploitable", coverage.endpoints_verified_exploitable, "var(--danger, var(--accent))"],
+    ];
+    var max = Math.max(1, coverage.endpoints_discovered);
+    el.innerHTML = (showHeading === false ? "" : "<h4>Endpoint coverage</h4>") + rows.map(function (r) {
+      var pct = Math.round((r[1] / max) * 1000) / 10;
+      return '<div class="cov-row"><div class="cov-label"></div><div class="cov-track"><div class="cov-fill" style="width:' + pct + '%;background:' + r[2] + ';"></div></div><div class="cov-val"></div></div>';
+    }).join("");
+    el.querySelectorAll(".cov-row").forEach(function (rowEl, i) {
+      rowEl.querySelector(".cov-label").textContent = rows[i][0];
+      rowEl.querySelector(".cov-val").textContent = rows[i][1];
+    });
+  }
+
   async function openScanSummary(scanId) {
     summaryBackdrop.classList.add("open");
     var modalEl = document.getElementById("summaryModal");
@@ -3314,6 +3579,7 @@ async function loadHealth() {
     document.getElementById("summaryStatusPill").textContent = "SCAN SUMMARY";
     document.getElementById("summaryScanName").textContent = "";
     document.getElementById("summaryKpis").innerHTML = "";
+    document.getElementById("summaryCoverage").innerHTML = "";
     document.getElementById("summaryModules").innerHTML = "";
     document.getElementById("summaryFindings").innerHTML = "";
     document.getElementById("summaryReports").innerHTML = "";
@@ -3339,6 +3605,7 @@ async function loadHealth() {
       });
       var f = await api("/api/scans/" + scanId + "/findings");
       var summary = f.summary || { total_findings: (f.findings || []).length, by_severity: {} };
+      renderCoverageFunnel(f.coverage);
 
       // Accent the whole modal (top border + eyebrow label) by the
       // worst severity present -- the same "state visible at a glance,
@@ -3687,6 +3954,11 @@ async function loadHealth() {
       renderTrendChart(d.trend);
       renderCurrentRisk(d.latest);
       renderTopModules(d.top_modules, d.coverage);
+      renderOwaspTotals(d.owasp_totals);
+      renderExecCoverageFunnel(d.latest, d.duration_stats);
+      renderAttackSurface(d.attack_surface);
+      renderAppStrip(d.by_target);
+      renderExecStatRow(d);
       document.getElementById("trendMeta").textContent = d.total_scans + " scan" + (d.total_scans === 1 ? "" : "s") + " total";
       document.getElementById("riskPostureSub").textContent = d.latest
         ? ("Latest scan " + d.latest.scan_id + " — " + d.latest.total + " finding(s) as of " + new Date(d.latest.generated_at).toLocaleString())
@@ -3895,14 +4167,211 @@ async function loadHealth() {
     });
   }
 
+  // OWASP Top 10 (2021) breakdown across every scan ever run against
+  // this target -- d.owasp_totals, from the server's own authoritative
+  // classification (stof/findings/classification.py), not a client-side
+  // re-guess. "Unmapped" (a finding predating Finding.owasp_category,
+  // or one no keyword/module default matches) is real signal, not
+  // hidden -- it tells an operator this project's own classification
+  // coverage has a gap worth closing, not that the finding doesn't exist.
+  function renderOwaspTotals(totals) {
+    var list = document.getElementById("owaspTotalsList");
+    var meta = document.getElementById("owaspTotalsMeta");
+    list.innerHTML = "";
+    if (!totals || !totals.length) {
+      meta.textContent = "—";
+      list.innerHTML = '<div class="card-empty">No findings recorded yet — run a scan to see OWASP category coverage here.</div>';
+      return;
+    }
+    meta.textContent = totals.length + " categor" + (totals.length === 1 ? "y" : "ies");
+    var maxTotal = Math.max.apply(null, totals.map(function (o) { return o.count; }));
+    totals.forEach(function (o) {
+      var row = document.createElement("div");
+      row.className = "top-mod-row";
+      var widthPct = Math.max((o.count / maxTotal) * 100, 8);
+      var isUnmapped = o.category === "Unmapped";
+      row.innerHTML =
+        '<span class="name"><span class="name-text"></span></span>' +
+        '<span class="top-mod-bar" style="width:' + widthPct + '%"><span style="flex:1; background:' + (isUnmapped ? "var(--text-faint)" : "var(--accent)") + '"></span></span>' +
+        '<span class="count">' + o.count + "</span>";
+      var nameTextEl = row.querySelector(".name-text");
+      nameTextEl.textContent = o.category;
+      row.querySelector(".name").title = o.category;
+      list.appendChild(row);
+    });
+  }
+
+  function renderExecCoverageFunnel(latest, durationStats) {
+    var meta = document.getElementById("execCoverageMeta");
+    var coverage = latest ? latest.endpoint_coverage : null;
+    var el = document.getElementById("execCoverageFunnel");
+    if (!coverage) {
+      meta.textContent = "—";
+      el.innerHTML = '<div class="card-empty" style="padding:6px 0;">No coverage data yet — run a scan to see discovered/tested/verified-exploitable endpoint counts here.</div>';
+    } else {
+      meta.textContent = latest.scan_id;
+      renderCoverageFunnel(coverage, "execCoverageFunnel", false);
+    }
+    // Scan duration -- avg/min/max across every scan that reported a
+    // duration (stof/ui/server.py's _duration_stats()). Appended below
+    // the funnel rather than its own card: this is "how the scan
+    // engine performed," not another finding-shaped metric, so it
+    // reads as a footnote to endpoint coverage, not a peer of it.
+    if (durationStats) {
+      var durEl = document.createElement("div");
+      durEl.className = "cov-duration-note";
+      durEl.textContent = "Scan duration -- avg " + durationStats.avg + "s (min " + durationStats.min + "s, max " + durationStats.max + "s across " + durationStats.count + " scan" + (durationStats.count === 1 ? "" : "s") + ")";
+      el.appendChild(durEl);
+    }
+  }
+
+  // Real counts from data/endpoints.json's most recent crawl
+  // (stof/ui/server.py's _attack_surface_summary()) -- deliberately no
+  // "Domains"/"Subdomains"/"Applications" tiles, since a single-target
+  // crawl has no such concept; every tile here is a field Endpoint
+  // actually records. A single flat file with no scan-id history (see
+  // ENDPOINTS_PATH's own comment), so this is always "as of the latest
+  // crawl," not a trend -- labeled that way rather than implying one.
+  function renderAttackSurface(attackSurface) {
+    var grid = document.getElementById("attackSurfaceGrid");
+    if (!attackSurface || !attackSurface.endpoints) {
+      grid.innerHTML = '<div class="card-empty">No crawl data yet — run a scan to map this target\'s attack surface here.</div>';
+      return;
+    }
+    var tiles = [
+      ["Endpoints", attackSurface.endpoints],
+      ["Pages", attackSurface.pages],
+      ["Forms", attackSurface.forms],
+      ["API endpoints", attackSurface.api_endpoints],
+      ["Distinct parameters", attackSurface.parameters],
+    ];
+    grid.innerHTML = tiles.map(function (t) {
+      return '<div class="tile"><div class="tv"></div><div class="tl"></div></div>';
+    }).join("");
+    grid.querySelectorAll(".tile").forEach(function (tileEl, i) {
+      tileEl.querySelector(".tv").textContent = tiles[i][1];
+      tileEl.querySelector(".tl").textContent = tiles[i][0];
+    });
+  }
+
+  // Real per-application rollup (stof/ui/server.py's _group_by_target())
+  // -- every DISTINCT target a report exists for, each with its own
+  // real scan count and latest-scan severity mix. Deliberately not a
+  // fabricated "N applications" tile: however many targets actually
+  // show up here (one, two, a dozen) is the honest number. Clicking a
+  // card jumps "Scan detail" below to that application's latest scan.
+  // Executive KPI strip -- the visual TREATMENT (bordered single-row
+  // grid, uppercase micro-labels, large bold mono numbers) matches a
+  // polished enterprise-dashboard reference the operator asked for;
+  // every VALUE is real, computed from /api/dashboard/summary's own
+  // fields, nothing estimated or fabricated. No trend arrows/deltas --
+  // computing an honest "vs. previous period" for each of these would
+  // need real historical aggregation this project doesn't have yet,
+  // and a fake trend arrow would be worse than none.
+  function renderExecStatRow(d) {
+    var row = document.getElementById("execStatRow");
+    var latest = d.latest;
+    var appCount = (d.by_target || []).length;
+    var stats = [
+      ["Applications", appCount, appCount === 1 ? "1 real target" : appCount + " real targets"],
+      ["Total scans", d.total_scans, "across every application"],
+      ["Critical", latest ? (latest.by_severity.Critical || 0) : "—", latest ? "in " + latest.scan_id : "no scans yet"],
+      ["High", latest ? (latest.by_severity.High || 0) : "—", "latest scan"],
+      ["Open findings", latest ? latest.total : "—", "latest scan"],
+      ["Avg scan duration", d.duration_stats ? d.duration_stats.avg + "s" : "—", d.duration_stats ? "across " + d.duration_stats.count + " scan(s)" : "no duration data yet"],
+    ];
+    row.innerHTML = stats.map(function () {
+      return '<div class="st"><div class="sl"></div><div class="sv"></div><div class="sd"></div></div>';
+    }).join("");
+    row.querySelectorAll(".st").forEach(function (el, i) {
+      el.querySelector(".sl").textContent = stats[i][0];
+      el.querySelector(".sv").textContent = stats[i][1];
+      el.querySelector(".sd").textContent = stats[i][2];
+    });
+  }
+
+  function renderAppStrip(byTarget) {
+    var strip = document.getElementById("appStrip");
+    if (!byTarget || !byTarget.length) {
+      strip.innerHTML = '<div class="card-empty">No scans yet — run one to see it appear here.</div>';
+      return;
+    }
+    strip.innerHTML = byTarget.map(function () {
+      return '<div class="app-card">' +
+        '<svg class="app-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>' +
+        '<div class="app-head"><span class="icon-chip blue" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 4 5.5 4 9s-1.5 6.5-4 9c-2.5-2.5-4-5.5-4-9s1.5-6.5 4-9z"/></svg></span>' +
+        '<div class="app-head-text"><div class="app-name"></div><div class="app-meta"></div></div></div>' +
+        '<div class="app-sevs"></div></div>';
+    }).join("");
+    strip.querySelectorAll(".app-card").forEach(function (cardEl, i) {
+      var app = byTarget[i];
+      cardEl.querySelector(".app-name").textContent = app.target;
+      cardEl.querySelector(".app-name").title = app.target;
+      cardEl.querySelector(".app-meta").textContent =
+        app.scan_count + " scan" + (app.scan_count === 1 ? "" : "s") + " · " + app.latest_total + " finding" + (app.latest_total === 1 ? "" : "s") + " in latest";
+      var sevsEl = cardEl.querySelector(".app-sevs");
+      var anySev = false;
+      SEV_ORDER.forEach(function (sev) {
+        var count = (app.latest_by_severity || {})[sev] || 0;
+        if (!count) return;
+        anySev = true;
+        var pill = document.createElement("span");
+        pill.className = "sev-pill";
+        pill.style.color = SEV_COLOR[sev];
+        pill.textContent = sev[0] + count;
+        pill.title = count + " " + sev;
+        sevsEl.appendChild(pill);
+      });
+      if (!anySev) {
+        var clean = document.createElement("span");
+        clean.className = "sev-pill";
+        clean.style.color = SEV_COLOR.Low;
+        clean.textContent = "Clean";
+        sevsEl.appendChild(clean);
+      }
+      cardEl.addEventListener("click", function () {
+        if (app.latest_scan_id) attachToScan(app.latest_scan_id);
+      });
+    });
+  }
+
   // ---------------------------------------------------------------- reports
   async function loadReports() {
     try {
       var reports = await api("/api/reports");
       document.getElementById("navReportsCount").textContent = reports.filter(function (r) { return r.type === "HTML"; }).length;
+      var statRow = document.getElementById("reportsStatRow");
       var list = document.getElementById("reportsList");
       list.innerHTML = "";
-      if (!reports.length) { list.innerHTML = '<div class="card-empty">No reports on disk yet — run a scan to generate one.</div>'; return; }
+      if (!reports.length) {
+        if (statRow) statRow.innerHTML = "";
+        list.innerHTML = '<div class="card-empty">No reports on disk yet — run a scan to generate one.</div>';
+        return;
+      }
+      if (statRow) {
+        var rTargets = {}; var latestR = null; var byType = {};
+        reports.forEach(function (r) {
+          rTargets[r.target || "unknown target"] = true;
+          byType[r.type] = (byType[r.type] || 0) + 1;
+          if (!latestR || (r.modified_at && r.modified_at > (latestR.modified_at || ""))) latestR = r;
+        });
+        var rCells = [
+          ["Total reports", reports.length, ""],
+          ["Targets", Object.keys(rTargets).length, ""],
+          ["HTML", byType.HTML || 0, ""],
+          ["JSON", byType.JSON || 0, ""],
+          ["Excel", byType.XLSX || byType.Excel || 0, ""],
+          ["Most recent", latestR ? new Date(latestR.modified_at).toLocaleDateString() : "—", latestR ? (latestR.target || "") : ""],
+        ];
+        statRow.innerHTML = rCells.map(function () {
+          return '<div class="st"><div class="sl"></div><div class="sv"></div><div class="sd"></div></div>';
+        }).join("");
+        statRow.querySelectorAll(".st").forEach(function (el, i) {
+          el.querySelector(".sl").textContent = rCells[i][0];
+          el.querySelector(".sv").textContent = rCells[i][1];
+          el.querySelector(".sd").textContent = rCells[i][2];
+        });
+      }
 
       // Grouped by target, same structure as the Scans tab -- a flat
       // list here was fine for one engagement but unworkable once

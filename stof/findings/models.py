@@ -45,6 +45,21 @@ class Finding:
     evidence_refs: list[str] = field(default_factory=list)
     discovered_at: datetime = field(default_factory=_utcnow)
     scanner_source: str = "stof"
+    # The originating `TestCaseResult.technique_id` (e.g. "TC-127.4") --
+    # NOT set by any of the ~130 `Finding(...)` call sites across the
+    # vuln modules (a `Finding` never knew which technique produced it).
+    # `stof.modules.results.extract_findings()` is the one place every
+    # module's results already funnel through on the way to becoming
+    # this project's canonical findings list, so it's the one place
+    # that stamps this in -- see its own docstring. `cwe`/`owasp_category`
+    # are derived from `technique_id` (falling back to `module_id`/
+    # `vuln_type` keyword matching) by `stof.findings.classification`,
+    # stamped in at the same point -- a single authoritative source
+    # instead of the frontend re-guessing from prose text on every
+    # render, which is what this replaces.
+    technique_id: str | None = None
+    cwe: str | None = None
+    owasp_category: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +77,9 @@ class Finding:
             "recommendation": self.recommendation,
             "discovered_at": self.discovered_at.isoformat(),
             "scanner_source": self.scanner_source,
+            "technique_id": self.technique_id,
+            "cwe": self.cwe,
+            "owasp_category": self.owasp_category,
         }
 
     @classmethod
@@ -83,6 +101,9 @@ class Finding:
             recommendation=data["recommendation"],
             discovered_at=datetime.fromisoformat(data["discovered_at"]),
             scanner_source=data.get("scanner_source", "stof"),
+            technique_id=data.get("technique_id"),
+            cwe=data.get("cwe"),
+            owasp_category=data.get("owasp_category"),
         )
 
     def to_row(self) -> dict[str, Any]:
@@ -104,6 +125,9 @@ class Finding:
             "recommendation": self.recommendation,
             "discovered_at": self.discovered_at.isoformat(),
             "scanner_source": self.scanner_source,
+            "technique_id": self.technique_id,
+            "cwe": self.cwe,
+            "owasp_category": self.owasp_category,
         }
 
     @classmethod
@@ -125,4 +149,7 @@ class Finding:
             recommendation=row["recommendation"],
             discovered_at=datetime.fromisoformat(row["discovered_at"]),
             scanner_source=row["scanner_source"],
+            technique_id=row.get("technique_id"),
+            cwe=row.get("cwe"),
+            owasp_category=row.get("owasp_category"),
         )

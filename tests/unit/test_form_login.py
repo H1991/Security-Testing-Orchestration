@@ -69,7 +69,8 @@ async def test_authenticate_with_success_selector_captures_cookies():
     page.goto.assert_awaited_once_with(LOGIN_URL)
     page.fill.assert_any_await("#uid", "admin")
     page.fill.assert_any_await("#passw", "s3cr3t")
-    page.wait_for_selector.assert_awaited_once_with("text=Welcome", timeout=10000)
+    page.wait_for_selector.assert_any_await("#passw", timeout=20000, state="attached")
+    page.wait_for_selector.assert_any_await("text=Welcome", timeout=20000)
 
 
 @pytest.mark.asyncio
@@ -127,6 +128,31 @@ async def test_authenticate_without_success_selector_uses_url_change_fallback():
 
 
 @pytest.mark.asyncio
+async def test_authenticate_waits_for_password_field_before_probing():
+    """Regression: a client-rendered SPA can still be mounting its login
+    form after `page.goto()`'s 'load' event fires -- probing for the
+    password field immediately used to race the page and fail with
+    a spurious AuthFailedError even though the field appears moments
+    later. `authenticate()` must wait for it first."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#uid",
+        password_selector="#passw",
+        submit_selector="#login-btn",
+    )
+    page = _page(LOGIN_URL.rstrip(".jsp") + "/dashboard")
+    # wait_for_selector succeeding here is what stands in for "the SPA
+    # finished rendering the form" -- the subsequent _first_matching()
+    # calls still rely on page.locator(...).count(), already stubbed
+    # to "found" by _page().
+    page.wait_for_selector = AsyncMock(return_value=None)
+
+    await provider.authenticate(_user(), page)
+
+    page.wait_for_selector.assert_any_await("#passw", timeout=20000, state="attached")
+
+
+@pytest.mark.asyncio
 async def test_authenticate_raises_when_success_selector_never_appears():
     provider = FormLoginProvider(
         login_url=LOGIN_URL,
@@ -155,6 +181,29 @@ async def test_authenticate_raises_when_still_on_login_page_with_no_selector_con
 
     with pytest.raises(AuthFailedError, match="still on the login page"):
         await provider.authenticate(_user(), page)
+
+
+@pytest.mark.asyncio
+async def test_authenticate_retries_once_and_succeeds_after_a_transient_rejection():
+    """Regression: a real SPA sometimes rejects fully correct
+    credentials on the first submit (an async init race, most likely a
+    CSRF/nonce fetch not yet resolved) and accepts them cleanly on a
+    second, freshly-reloaded attempt. authenticate() must not give up
+    after just one try."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL,
+        username_selector="#uid",
+        password_selector="#passw",
+        submit_selector="#login-btn",
+    )
+    page = _page("https://demo.testfire.net/bank/main.jsp")
+    page.wait_for_url = AsyncMock(side_effect=[TimeoutError("timed out"), None])
+
+    session = await provider.authenticate(_user(), page)
+
+    assert session.auth_type == "form_login"
+    assert page.wait_for_url.await_count == 2
+    assert page.goto.await_count == 2  # initial navigate + one retry reload
 
 
 @pytest.mark.asyncio
@@ -453,6 +502,28 @@ async def test_extract_storage_token_returns_none_when_evaluate_raises():
     page.evaluate = AsyncMock(side_effect=RuntimeError("storage access blocked"))
 
     assert await extract_storage_token(page) is None
+
+
+@pytest.mark.asyncio
+async def test_extract_storage_token_passes_the_fixed_candidate_keys_and_returns_result():
+    from stof.auth.form_login import GENERIC_TOKEN_STORAGE_KEYS, extract_storage_token
+
+    page = AsyncMock()
+    page.evaluate = AsyncMock(return_value="the-token-value")
+
+    result = await extract_storage_token(page)
+
+    assert result == "the-token-value"
+    script_arg, keys_arg = page.evaluate.await_args.args
+    assert keys_arg == GENERIC_TOKEN_STORAGE_KEYS
+    # Regression guard: the JWT-value-shape fallback scan (added after a
+    # real target stored its auth token under an app-specific, oddly-
+    # capitalized key like "kautorAuthTOken" that no fixed candidate
+    # list could match) must still be present in the evaluated script --
+    # this is the actual behavior change under test, since
+    # `page.evaluate` itself is mocked and can't run the real JS.
+    assert "jwtShape" in script_arg
+    assert "eyJ" in script_arg
 
 
 @pytest.mark.asyncio

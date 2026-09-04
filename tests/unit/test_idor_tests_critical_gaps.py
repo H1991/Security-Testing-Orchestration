@@ -722,3 +722,50 @@ async def test_bola_put_not_confirmed_when_marker_never_reflected(tmp_path):
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-054.2"].status == PASS
     assert by_id["TC-054.2"].finding is None
+
+
+@pytest.mark.asyncio
+async def test_bfla_state_changing_tests_plainly_named_write_endpoint(tmp_path):
+    """Regression: a real target's write endpoints were plainly named
+    (no "admin"/"manage"/etc. anywhere in the URL, e.g.
+    "/api/delete-category") yet had zero independent server-side
+    authorization -- a low-privileged session could call them directly
+    and the server accepted it. TC-055.2 used to require the URL match
+    `_looks_privileged()`'s naming heuristic before even attempting the
+    probe, silently skipping exactly this class of app."""
+    endpoint = Endpoint(url="https://x/api/delete-category", method="DELETE", endpoint_type="api")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    normal_context = _fake_context(delete=lambda url, max_redirects=0: _response(200, "ok"))
+    browser = AsyncMock()
+    pool = SessionPool(browser)
+    pool._contexts["normal"] = normal_context
+    module = IdorTestsModule(config=IdorTestConfig(allow_state_changing_probes=True))
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results if r.technique_id == "TC-055.2"}
+    assert by_id["TC-055.2"].status == FAIL
+    assert by_id["TC-055.2"].finding.severity == "Critical"
+    assert "delete-category" in by_id["TC-055.2"].finding.description
+
+
+@pytest.mark.asyncio
+async def test_bfla_state_changing_still_finds_nothing_when_server_denies(tmp_path):
+    """Companion to the regression above: widening the candidate set
+    must not turn every discovered write endpoint into a false
+    positive -- a server that correctly denies the low-priv call still
+    reports PASS."""
+    endpoint = Endpoint(url="https://x/api/delete-category", method="DELETE", endpoint_type="api")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    normal_context = _fake_context(delete=lambda url, max_redirects=0: _response(403, "Forbidden"))
+    browser = AsyncMock()
+    pool = SessionPool(browser)
+    pool._contexts["normal"] = normal_context
+    module = IdorTestsModule(config=IdorTestConfig(allow_state_changing_probes=True))
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results if r.technique_id == "TC-055.2"}
+    assert by_id["TC-055.2"].status == PASS

@@ -73,6 +73,21 @@ def test_build_report_includes_scan_metadata_and_findings():
     assert report["summary"]["total_findings"] == 1
 
 
+def test_build_report_includes_coverage_when_supplied():
+    metadata = {"scan_id": "abc123", "target": "https://x", "coverage": {
+        "endpoints_discovered": 25, "endpoints_tested": 18, "endpoints_verified_exploitable": 4,
+    }}
+
+    report = build_report([], metadata)
+
+    assert report["coverage"] == {"endpoints_discovered": 25, "endpoints_tested": 18, "endpoints_verified_exploitable": 4}
+
+
+def test_build_report_coverage_is_none_when_not_supplied():
+    report = build_report([], {"scan_id": "abc123", "target": "https://x"})
+    assert report["coverage"] is None
+
+
 def test_write_produces_valid_json_file(tmp_path):
     findings = [_finding()]
     path = write(findings, {"scan_id": "abc123"}, tmp_path / "scan_abc123.json")

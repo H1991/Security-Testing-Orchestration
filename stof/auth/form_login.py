@@ -29,6 +29,7 @@ leaving it unset.
 """
 from __future__ import annotations
 
+import contextlib
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
@@ -228,11 +229,33 @@ GENERIC_TOKEN_STORAGE_KEYS = [
 
 async def extract_storage_token(page: "Page") -> str | None:
     """Best-effort: looks in localStorage then sessionStorage for any of
-    `GENERIC_TOKEN_STORAGE_KEYS`, returns the first non-empty value
-    found, or `None` if the app doesn't use this pattern at all (a
-    cookie-based app is untouched -- this is purely additive). Never
-    raises: a page that blocks storage access (rare, some strict CSPs)
-    just means no token was found, not a login failure."""
+    `GENERIC_TOKEN_STORAGE_KEYS` first (fast, exact-match path -- kept
+    as the priority order since it's the common case), or `None` if the
+    app doesn't use this pattern at all (a cookie-based app is untouched
+    -- this is purely additive). Never raises: a page that blocks
+    storage access (rare, some strict CSPs) just means no token was
+    found, not a login failure.
+
+    Falls back to a scan of EVERY stored VALUE (not key name) for one
+    that's JWT-shaped if none of the exact candidate keys match --
+    confirmed live against a real target storing its auth token under
+    `kautorAuthTOken` (an app-specific, oddly-capitalized key), which no
+    fixed candidate list could ever exhaustively cover. This is why
+    STOF's own authenticated write/BFLA probes were silently getting
+    401'd with no auth header attached at all, never even reaching the
+    target's real authorization logic -- a session that "worked" well
+    enough to render pages (cookie-based navigation) but couldn't carry
+    an app that authenticates its API calls via a bearer token instead.
+
+    Matching by VALUE SHAPE rather than key-NAME substring is
+    deliberate: an earlier version of this fallback scanned key names
+    for "token"/"jwt" and, against this same real target, matched an
+    unrelated `tokenAccess: "true"` feature flag before ever reaching
+    the real token -- confirmed live as a genuine false positive that
+    silently sent `Authorization: Bearer true` on every request. A
+    JWT's three-dot-separated-base64 shape is specific enough that this
+    class of collision doesn't happen; same regex family already used
+    by `stof/recon/secrets_scanner.py` to identify JWTs in scanned JS."""
     try:
         return await page.evaluate(
             "(keys) => { "
@@ -240,6 +263,13 @@ async def extract_storage_token(page: "Page") -> str | None:
             "  for (const key of keys) { "
             "    const value = store.getItem(key); "
             "    if (value) return value; "
+            "  } "
+            "} "
+            "const jwtShape = /^eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}$/; "
+            "for (const store of [window.localStorage, window.sessionStorage]) { "
+            "  for (let i = 0; i < store.length; i++) { "
+            "    const value = store.getItem(store.key(i)); "
+            "    if (value && jwtShape.test(value)) return value; "
             "  } "
             "} "
             "return null; }",
@@ -308,7 +338,7 @@ class FormLoginProvider(AuthProvider):
         password_selector: str | list[str] = GENERIC_PASSWORD_SELECTORS,
         submit_selector: str | list[str] = GENERIC_SUBMIT_SELECTORS,
         success_selector: str | list[str] | None = None,
-        timeout_ms: int = 10000,
+        timeout_ms: int = 20000,
         session_lifetime: timedelta = DEFAULT_SESSION_LIFETIME,
     ) -> None:
         self._login_url = login_url
@@ -322,32 +352,94 @@ class FormLoginProvider(AuthProvider):
     async def authenticate(self, user: "UserConfig", page: "Page") -> Session:
         await page.goto(self._login_url)
         await _dismiss_overlays(page)
-        # Password field first: it's the most reliable anchor for "which
-        # form is the login form" (nearly every real page has exactly
-        # one, unlike the broader username/submit candidates which can't
-        # tell one <input type=text> from another on their own) -- see
-        # `_form_scope_selector()`'s docstring for the failure mode this
-        # scoping fixes.
-        password_sel = await _first_matching(page, self._password_selector, "password")
-        form_scope = await _form_scope_selector(page, password_sel)
-        username_sel = await _first_matching_scoped(page, form_scope, self._username_selector, "username/email")
-        submit_sel = await _first_matching_scoped(page, form_scope, self._submit_selector, "submit button")
-        await page.fill(username_sel, user.username)
-        await page.fill(password_sel, user.password)
-        try:
-            await page.click(submit_sel)
-        except Exception:
-            # A persistent decorative overlay (e.g. a "fork me on
-            # GitHub" corner ribbon, confirmed live) can occupy the
-            # same bounding box as the real button without visually
-            # covering it -- Playwright correctly refuses a normal
-            # click since another element would receive the pointer
-            # event there. `force=True` bypasses that actionability
-            # check; safe here since `_first_matching` already
-            # confirmed this selector is the real submit control.
-            await page.click(submit_sel, force=True)
-
-        await wait_for_login_success(page, self._login_url, self._success_selector, self._timeout_ms, user.id)
+        # `page.goto()` only waits for the 'load' event (document +
+        # resources) -- a heavy client-rendered SPA (confirmed live: a
+        # 4MB+ JS bundle) can still be mounting its login form well
+        # after that fires, so probing for the password field
+        # immediately raced the page and failed intermittently. Give
+        # the DOM up to `_timeout_ms` to actually contain one of the
+        # candidate fields before falling through to the same
+        # `_first_matching()` used everywhere else; a page that's
+        # already rendered (the common case) resolves this instantly.
+        candidates = [self._password_selector] if isinstance(self._password_selector, str) else self._password_selector
+        with contextlib.suppress(Exception):
+            await page.wait_for_selector(", ".join(candidates), timeout=self._timeout_ms, state="attached")
+        # The field existing in the DOM isn't the same as the app being
+        # READY to accept a submission -- confirmed live against a real
+        # SPA: its login form mounts before an async init call (almost
+        # certainly a CSRF/nonce fetch) resolves, and submitting during
+        # that window gets rejected with a generic "Invalid email or
+        # password" even with fully correct credentials. A short,
+        # bounded settle wait fixes it without risking an indefinite
+        # hang: `networkidle` can legitimately never fire on a page with
+        # background polling (the exact reason `wait_for_login_success`
+        # below deliberately avoids it for the POST-submit wait), so
+        # this is capped well under `_timeout_ms` and swallowed on
+        # expiry -- a page that's already settled (the common case)
+        # resolves this instantly either way.
+        with contextlib.suppress(Exception):
+            await page.wait_for_load_state("networkidle", timeout=min(3000, self._timeout_ms))
+        # Up to two retries, whole-sequence: confirmed live against a
+        # real SPA that sometimes rejects fully correct credentials
+        # with a generic "Invalid email or password" when submitted
+        # during some async init window (a CSRF/nonce fetch, most
+        # likely) that the settle wait above can't reliably outlast --
+        # `networkidle` legitimately never fires on a page with any
+        # background polling, so it's not a dependable signal that the
+        # app is actually ready, and how long the window stays open is
+        # itself variable (confirmed live: sometimes clears on the
+        # first retry, sometimes needs a second). Retrying the full
+        # fill/submit/verify cycle against a freshly reloaded page is a
+        # generic fix for "this transient rejection eventually clears"
+        # that doesn't depend on guessing which specific async call is
+        # racing.
+        #
+        # Selectors are re-resolved on EVERY attempt, not just the
+        # first: `_form_scope_selector()` tags the live DOM with a
+        # one-off marker attribute, which a reload between attempts
+        # wipes -- reusing attempt 0's scoped selector against a
+        # reloaded page would target a marker that no longer exists.
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            if attempt > 0:
+                await page.goto(self._login_url)
+                await _dismiss_overlays(page)
+                with contextlib.suppress(Exception):
+                    await page.wait_for_selector(", ".join(candidates), timeout=self._timeout_ms, state="attached")
+                with contextlib.suppress(Exception):
+                    await page.wait_for_load_state("networkidle", timeout=min(3000, self._timeout_ms))
+            # Password field first: it's the most reliable anchor for
+            # "which form is the login form" (nearly every real page
+            # has exactly one, unlike the broader username/submit
+            # candidates which can't tell one <input type=text> from
+            # another on their own) -- see `_form_scope_selector()`'s
+            # docstring for the failure mode this scoping fixes.
+            password_sel = await _first_matching(page, self._password_selector, "password")
+            form_scope = await _form_scope_selector(page, password_sel)
+            username_sel = await _first_matching_scoped(page, form_scope, self._username_selector, "username/email")
+            submit_sel = await _first_matching_scoped(page, form_scope, self._submit_selector, "submit button")
+            await page.fill(username_sel, user.username)
+            await page.fill(password_sel, user.password)
+            try:
+                await page.click(submit_sel)
+            except Exception:
+                # A persistent decorative overlay (e.g. a "fork me on
+                # GitHub" corner ribbon, confirmed live) can occupy the
+                # same bounding box as the real button without visually
+                # covering it -- Playwright correctly refuses a normal
+                # click since another element would receive the pointer
+                # event there. `force=True` bypasses that actionability
+                # check; safe here since `_first_matching` already
+                # confirmed this selector is the real submit control.
+                await page.click(submit_sel, force=True)
+            try:
+                await wait_for_login_success(page, self._login_url, self._success_selector, self._timeout_ms, user.id)
+                last_exc = None
+                break
+            except AuthFailedError as exc:
+                last_exc = exc
+        if last_exc is not None:
+            raise last_exc
 
         cookies = await extract_cookies(page)
         expires_at = datetime.now(timezone.utc) + self._session_lifetime

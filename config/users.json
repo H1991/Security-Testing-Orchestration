@@ -3,14 +3,14 @@
     {
       "id": "admin-01",
       "role": "admin",
-      "username": "admin",
+      "username": "vapt_admin@yopmail.com",
       "password": "{{env:ADMIN_PASSWORD}}",
       "auth_type": "form_login"
     },
     {
       "id": "user-01",
       "role": "normal",
-      "username": "jsmith",
+      "username": "vapt_write@yopmail.com",
       "password": "{{env:USER_PASSWORD}}",
       "auth_type": "form_login"
     }

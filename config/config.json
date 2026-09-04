@@ -1,7 +1,7 @@
 {
   "target": {
-    "base_url": "https://demo.testfire.net",
-    "login_url": "https://demo.testfire.net/login.jsp",
+    "base_url": "https://test.kapturekm.com/kauthor/login",
+    "login_url": "https://test.kapturekm.com/kauthor/login",
     "crawler_exclude_patterns": [
       "content=inside_",
       "survey_questions",

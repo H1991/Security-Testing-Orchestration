@@ -128,6 +128,12 @@ class IdorTestConfig:
     # endpoint list the same way other techniques in this file already
     # cap their own probe counts.
     max_role_differential_endpoints: int = 40
+    # Bound on TC-055.2/TC-055.3's discovered-write-endpoint candidate
+    # set (see bfla_tests.py) now that it's no longer filtered down to
+    # only URL-naming-privileged endpoints -- caps the request volume
+    # against a target with a large discovered write surface, same
+    # rationale as max_role_differential_endpoints above.
+    max_bfla_write_endpoints: int = 30
     # Off by default: PUT/PATCH/DELETE-based technique probes (TC-054.2/
     # .3, TC-055.2, TC-056.2) actually write or destroy data on the
     # target if they succeed -- per this project's own safety rule for

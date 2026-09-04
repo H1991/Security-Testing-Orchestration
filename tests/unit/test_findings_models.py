@@ -59,6 +59,11 @@ def test_to_dict_matches_claude_md_documented_field_order():
         "finding_id", "module_id", "vuln_type", "severity", "cvss_score", "endpoint",
         "user_role", "request_raw", "response_raw", "evidence_refs", "description",
         "recommendation", "discovered_at", "scanner_source",
+        # Additive-only, appended after the CLAUDE.md-documented base
+        # shape (same "extends, never reorders" precedent every other
+        # additive Finding/Endpoint field in this project already
+        # follows) -- see Finding.technique_id's own docstring.
+        "technique_id", "cwe", "owasp_category",
     ]
 
 

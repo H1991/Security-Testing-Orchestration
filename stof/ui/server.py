@@ -39,6 +39,13 @@ TESTCASES_PATH = REPO_ROOT / "config" / "testcases.json"
 LOGS_DIR = REPO_ROOT / "data" / "logs"
 REPORTS_DIR = REPO_ROOT / "data" / "reports"
 FINDINGS_DIR = REPO_ROOT / "data" / "findings"
+# A single flat file, always overwritten by the most recent crawl (see
+# stof/crawler/endpoint_store.py's own DEFAULT_ENDPOINTS_PATH) -- no
+# per-scan history exists here the way data/reports/scan_*.json has,
+# so the "Discovered Attack Surface" card can only ever show the
+# latest crawl, never a trend. Labeled that way in the UI rather than
+# implying a history that doesn't exist.
+ENDPOINTS_PATH = REPO_ROOT / "data" / "endpoints.json"
 WORKFLOWS_DIR = REPO_ROOT / "data" / "workflows"
 EVIDENCE_DIR = REPO_ROOT / "data" / "evidence"
 RECON_DIR = REPO_ROOT / "data" / "recon"
@@ -1972,6 +1979,80 @@ async def global_stream(websocket: WebSocket) -> None:
         GLOBAL_SUBSCRIBERS.discard(websocket)
 
 
+def _group_by_target(reports: list[dict]) -> list[dict]:
+    """Real per-application rollup -- every distinct `target` a report
+    was ever generated against, with its own actual scan count and
+    latest-scan stats. Deliberately the honest alternative to a
+    portfolio-shaped "N applications" tile: this shows the REAL
+    targets STOF has scanned (however many that actually is), not a
+    fabricated count. `reports` is already sorted oldest-to-newest by
+    the caller, so the last entry seen for a target is its latest scan."""
+    by_target: dict[str, dict] = {}
+    order: list[str] = []
+    for r in reports:
+        target = r.get("target") or "unknown target"
+        if target not in by_target:
+            order.append(target)
+            by_target[target] = {"target": target, "scan_count": 0}
+        entry = by_target[target]
+        entry["scan_count"] += 1
+        entry["latest_scan_id"] = r.get("scan_id")
+        entry["latest_generated_at"] = r.get("generated_at")
+        entry["latest_by_severity"] = r.get("summary", {}).get("by_severity", {})
+        entry["latest_total"] = r.get("summary", {}).get("total_findings", 0)
+    # Most-recently-scanned application first.
+    return sorted((by_target[t] for t in order), key=lambda e: e.get("latest_generated_at") or "", reverse=True)
+
+
+def _attack_surface_summary(endpoints: list[dict]) -> dict:
+    """Real counts from the most recent crawl's data/endpoints.json --
+    deliberately NOT "Domains"/"Subdomains"/"Applications" (a portfolio
+    concept a single-target crawl has no way to know): every field here
+    is something Endpoint actually records. `parameters` is deduplicated
+    by name -- the same query/body param appearing on ten endpoints is
+    one distinct parameter, not ten."""
+    distinct_params: set[str] = set()
+    # Endpoint.endpoint_type is singular ("page"/"form"/"api"/"websocket"
+    # -- see stof/crawler/endpoint_store.py), not plural.
+    counts = {"page": 0, "form": 0, "api": 0}
+    for e in endpoints:
+        kind = e.get("endpoint_type")
+        if kind in counts:
+            counts[kind] += 1
+        distinct_params.update(e.get("parameters") or [])
+    return {
+        "endpoints": len(endpoints),
+        "pages": counts["page"],
+        "forms": counts["form"],
+        "api_endpoints": counts["api"],
+        "parameters": len(distinct_params),
+    }
+
+
+def _owasp_totals(reports: list[dict]) -> list[dict]:
+    """OWASP Top 10 (2021) breakdown, portfolio-wide -- `owasp_category`
+    is stamped authoritatively onto every Finding at extract_findings()
+    time (see stof/findings/classification.py); a report generated
+    before that existed simply has `None` here, counted under
+    "Unmapped" rather than silently dropped or crashing on a missing key."""
+    owasp_counts: dict[str, int] = {}
+    for r in reports:
+        for finding in r.get("findings", []):
+            category = finding.get("owasp_category") or "Unmapped"
+            owasp_counts[category] = owasp_counts.get(category, 0) + 1
+    return sorted(
+        [{"category": category, "count": count} for category, count in owasp_counts.items()],
+        key=lambda o: o["count"], reverse=True,
+    )
+
+
+def _duration_stats(reports: list[dict]) -> dict | None:
+    durations = [r.get("duration_seconds") for r in reports if isinstance(r.get("duration_seconds"), (int, float))]
+    if not durations:
+        return None
+    return {"avg": round(sum(durations) / len(durations), 1), "min": round(min(durations), 1), "max": round(max(durations), 1), "count": len(durations)}
+
+
 @app.get("/api/dashboard/summary")
 def get_dashboard_summary() -> dict:
     """Aggregates across every completed scan's report JSON on disk --
@@ -1989,10 +2070,19 @@ def get_dashboard_summary() -> dict:
                 reports.append(report)
     reports.sort(key=lambda r: r.get("generated_at") or "")
 
+    # Independent of whether any scan report exists -- a crawl-only run
+    # (`stof crawl`, no vuln modules) still writes data/endpoints.json,
+    # so "Discovered Attack Surface" can have real data even with zero
+    # completed scans.
+    endpoints_on_disk = _read_json(ENDPOINTS_PATH)
+    attack_surface = _attack_surface_summary(endpoints_on_disk) if isinstance(endpoints_on_disk, list) else None
+
     if not reports:
         return {
             "total_scans": 0, "latest": None, "trend": [], "top_modules": [],
             "coverage": {"modules_with_findings": 0, "modules_total": len(_KNOWN_MODULES) - 1},
+            "owasp_totals": [], "duration_stats": None, "attack_surface": attack_surface,
+            "by_target": [],
         }
 
     trend = [
@@ -2018,6 +2108,9 @@ def get_dashboard_summary() -> dict:
         key=lambda m: (m["Critical"], m["High"], m["total"]), reverse=True,
     )[:8]
 
+    owasp_totals = _owasp_totals(reports)
+    duration_stats = _duration_stats(reports)
+
     latest = reports[-1]
     return {
         "total_scans": len(reports),
@@ -2026,6 +2119,10 @@ def get_dashboard_summary() -> dict:
             "generated_at": latest.get("generated_at"),
             "by_severity": latest.get("summary", {}).get("by_severity", {}),
             "total": latest.get("summary", {}).get("total_findings", 0),
+            # Endpoint discovered/tested/verified-exploitable funnel for
+            # this specific scan (stof/main.py's _coverage_funnel()) --
+            # None for a report generated before that existed.
+            "endpoint_coverage": latest.get("coverage"),
         },
         "trend": trend,
         "top_modules": top_modules,
@@ -2033,6 +2130,10 @@ def get_dashboard_summary() -> dict:
             "modules_with_findings": len(module_counts),
             "modules_total": len(_KNOWN_MODULES) - 1,  # exclude crawler (not a technique module)
         },
+        "owasp_totals": owasp_totals,
+        "duration_stats": duration_stats,
+        "attack_surface": attack_surface,
+        "by_target": _group_by_target(reports),
     }
 
 

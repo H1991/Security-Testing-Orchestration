@@ -52,6 +52,7 @@ def build_report(
         "module_notes": scan_metadata.get("module_notes", []),
         "duration_seconds": scan_metadata.get("duration_seconds"),
         "summary": build_summary(findings),
+        "coverage": scan_metadata.get("coverage"),
         "findings": [f.to_dict() for f in findings],
     }
     if recon_report is not None:

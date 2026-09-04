@@ -1,0 +1,679 @@
+{
+  "recall": 0.625,
+  "matched_count": 5,
+  "total_cases": 8,
+  "matched_cases": [
+    {
+      "case": {
+        "id": "JS-01",
+        "category": "sqli",
+        "description": "Login bypass via SQL injection in the login form (the canonical Juice Shop 'Login Admin' challenge)",
+        "expects_vuln_type_keywords": [
+          "sql injection"
+        ],
+        "expects_endpoint_keywords": [
+          "login"
+        ],
+        "expected_severity_at_least": "High"
+      },
+      "matched_finding": {
+        "vuln_type": "SQL Injection (login bypass)",
+        "severity": "Critical",
+        "endpoint": {
+          "url": "http://127.0.0.1:3001/rest/user/login",
+          "method": "POST",
+          "endpoint_type": "api",
+          "parameters": [
+            "email",
+            "password"
+          ],
+          "param_locations": {
+            "email": "body",
+            "password": "body"
+          },
+          "parameter_values": {},
+          "auth_required": false,
+          "discovered_at": "2026-09-04T06:04:59.050287+00:00"
+        }
+      }
+    },
+    {
+      "case": {
+        "id": "JS-03",
+        "category": "auth",
+        "description": "Default/weak admin credentials (admin@juice-sh.op / admin123 ships enabled)",
+        "expects_vuln_type_keywords": [
+          "default credential",
+          "weak credential",
+          "vendor default"
+        ],
+        "expects_endpoint_keywords": [
+          "login"
+        ],
+        "expected_severity_at_least": "Critical"
+      },
+      "matched_finding": {
+        "vuln_type": "Default Credentials Accepted",
+        "severity": "Critical",
+        "endpoint": {
+          "url": "http://127.0.0.1:3001/rest/user/login",
+          "method": "POST",
+          "endpoint_type": "api",
+          "parameters": [
+            "email",
+            "password"
+          ],
+          "param_locations": {
+            "email": "body",
+            "password": "body"
+          },
+          "parameter_values": {},
+          "auth_required": false,
+          "discovered_at": "2026-09-04T06:04:59.050287+00:00"
+        }
+      }
+    },
+    {
+      "case": {
+        "id": "JS-04",
+        "category": "configuration",
+        "description": "Missing/weak security headers (CSP, X-Frame-Options, etc.) on the SPA's own responses",
+        "expects_vuln_type_keywords": [
+          "security header",
+          "content-security-policy",
+          "clickjacking"
+        ],
+        "expects_endpoint_keywords": [],
+        "expected_severity_at_least": "Low"
+      },
+      "matched_finding": {
+        "vuln_type": "Default Configuration -- Missing or Weak Content-Security-Policy",
+        "severity": "Medium",
+        "endpoint": {
+          "url": "http://127.0.0.1:3001",
+          "method": "GET",
+          "endpoint_type": "api",
+          "parameters": [],
+          "param_locations": {},
+          "parameter_values": {},
+          "auth_required": false,
+          "discovered_at": "2026-09-04T06:14:14.570906+00:00"
+        }
+      }
+    },
+    {
+      "case": {
+        "id": "JS-05",
+        "category": "disclosure",
+        "description": "Sensitive file exposure under /ftp (backup files, legacy docs) -- a long-standing, still-present Juice Shop challenge",
+        "expects_vuln_type_keywords": [
+          "source map",
+          "backup",
+          "disclosure",
+          "sensitive",
+          "directory listing"
+        ],
+        "expects_endpoint_keywords": [
+          "ftp"
+        ],
+        "expected_severity_at_least": "Medium"
+      },
+      "matched_finding": {
+        "vuln_type": "Directory Listing Enabled",
+        "severity": "Medium",
+        "endpoint": {
+          "url": "http://127.0.0.1:3001/ftp/",
+          "method": "GET",
+          "endpoint_type": "page",
+          "parameters": [],
+          "param_locations": {},
+          "parameter_values": {},
+          "auth_required": false,
+          "discovered_at": "2026-09-04T06:14:17.056975+00:00"
+        }
+      }
+    },
+    {
+      "case": {
+        "id": "JS-08",
+        "category": "auth",
+        "description": "No login-attempt rate limiting / lockout -- Juice Shop ships without one by default",
+        "expects_vuln_type_keywords": [
+          "rate limit",
+          "lockout",
+          "brute"
+        ],
+        "expects_endpoint_keywords": [
+          "login"
+        ],
+        "expected_severity_at_least": "Medium"
+      },
+      "matched_finding": {
+        "vuln_type": "Missing Login Rate Limiting / Account Lockout",
+        "severity": "High",
+        "endpoint": {
+          "url": "http://127.0.0.1:3001/rest/user/login",
+          "method": "POST",
+          "endpoint_type": "api",
+          "parameters": [
+            "email",
+            "password"
+          ],
+          "param_locations": {
+            "email": "body",
+            "password": "body"
+          },
+          "parameter_values": {},
+          "auth_required": false,
+          "discovered_at": "2026-09-04T06:04:59.050287+00:00"
+        }
+      }
+    }
+  ],
+  "missed_cases": [
+    {
+      "id": "JS-02",
+      "category": "xss",
+      "description": "Reflected/DOM XSS via the search bar query parameter",
+      "expects_vuln_type_keywords": [
+        "cross-site scripting",
+        "xss"
+      ],
+      "expects_endpoint_keywords": [
+        "search",
+        "rest/products"
+      ],
+      "expected_severity_at_least": "Medium"
+    },
+    {
+      "id": "JS-06",
+      "category": "idor",
+      "description": "Broken access control -- viewing/modifying another user's basket or order by changing a numeric ID",
+      "expects_vuln_type_keywords": [
+        "insecure direct object reference",
+        "idor",
+        "broken object level authorization"
+      ],
+      "expects_endpoint_keywords": [
+        "basket",
+        "order"
+      ],
+      "expected_severity_at_least": "High"
+    },
+    {
+      "id": "JS-07",
+      "category": "jwt",
+      "description": "JWT-related weakness -- Juice Shop's own auth token is a JWT stored client-side (localStorage), a known target for alg-confusion/claim-tampering style challenges",
+      "expects_vuln_type_keywords": [
+        "jwt",
+        "json web token"
+      ],
+      "expects_endpoint_keywords": [],
+      "expected_severity_at_least": "Medium"
+    }
+  ],
+  "unmatched_findings_for_human_review": [
+    {
+      "vuln_type": "Session Cookie Missing Security Flags",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:13:50.379351+00:00"
+      }
+    },
+    {
+      "vuln_type": "Concurrent Session Not Revoked On Re-Login",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:13:55.022281+00:00"
+      }
+    },
+    {
+      "vuln_type": "Predictable / Low-Entropy Session Token",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:14:00.216528+00:00"
+      }
+    },
+    {
+      "vuln_type": "Sensitive Content Cacheable After Logout (Back/Refresh Attack)",
+      "severity": "Low",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:14:02.556978+00:00"
+      }
+    },
+    {
+      "vuln_type": "Missing Rate Limiting At The API/Token Level",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling&t=Q1h14Qd",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "EIO",
+          "transport",
+          "t",
+          "sid"
+        ],
+        "param_locations": {
+          "EIO": "query",
+          "transport": "query",
+          "t": "query",
+          "sid": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:03:57.576410+00:00"
+      }
+    },
+    {
+      "vuln_type": "Session Not Bound To Client Fingerprint (Hijacking Risk)",
+      "severity": "Low",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:14:05.128521+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/1?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:03.602148+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/24?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:04.027645+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/6?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:04.428216+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/52?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:04.841036+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/51?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:05.241402+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/42?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:05.680214+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/53?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:06.096602+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/30?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:06.492769+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/50?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:06.871840+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/3?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:07.296841+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/54?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:07.690310+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/25?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:08.033633+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/49?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:08.400164+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/22?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:08.831120+00:00"
+      }
+    },
+    {
+      "vuln_type": "Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization (path parameter)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Products/41?d=Fri%20Sep%2004%202026",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "d"
+        ],
+        "param_locations": {
+          "d": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:09.260233+00:00"
+      }
+    },
+    {
+      "vuln_type": "Predictable/Sequential Object Identifiers",
+      "severity": "Info",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "page",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:28.801787+00:00"
+      }
+    },
+    {
+      "vuln_type": "Default Configuration -- Weak TLS/Transport Configuration",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/login",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:14:14.609238+00:00"
+      }
+    },
+    {
+      "vuln_type": "Default Configuration -- Path-Relative StyleSheet Import",
+      "severity": "Low",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:14:14.734369+00:00"
+      }
+    },
+    {
+      "vuln_type": "PII Exposure via URL/Query Parameter",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/login",
+        "method": "GET",
+        "endpoint_type": "page",
+        "parameters": [
+          "email",
+          "password"
+        ],
+        "param_locations": {
+          "email": "query",
+          "password": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:05:28.382790+00:00"
+      }
+    },
+    {
+      "vuln_type": "SQL Injection (error-based)",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/rest/products/search?q=",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "q"
+        ],
+        "param_locations": {
+          "q": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:03:57.583593+00:00"
+      }
+    },
+    {
+      "vuln_type": "DOM-based Cross-Site Scripting",
+      "severity": "High",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "page",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-04T06:04:28.801787+00:00"
+      }
+    }
+  ],
+  "total_findings_in_scan": 32,
+  "target": "juiceshop",
+  "scan_id": "fa2ea60f",
+  "timestamp": "2026-09-04T06:16:35.915498+00:00"
+}
