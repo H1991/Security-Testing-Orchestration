@@ -15,6 +15,18 @@ Still a per-`CrawlerConfig` override, not hardcoded True: pass
 `submit_forms_with_test_data=False` for a target/engagement where blind
 form submission would have real consequences you don't want.
 
+Same deviation, same reasoning, for `CrawlerConfig.explore_clickable_navigation`
+(also on by default): many modern SPAs (confirmed live against Juice
+Shop, a stock Angular app) put their whole nav behind `<button>`/icon
+elements with `routerLink`/`onclick`, not `<a href>` -- a login or
+search route that's only reachable by clicking one of these is
+completely invisible to link-only crawling, no matter how well hash-
+routes are followed. `_discover_clickable_routes()` clicks these on a
+dedicated probe page (never the main BFS page) and records where the
+click actually navigated to, skipping anything whose visible text
+looks destructive (delete/buy/logout/etc. -- see `_DANGER_CLICK_TEXT`).
+Pass `explore_clickable_navigation=False` to opt back out.
+
 Signature note: CLAUDE.md shows `crawl(start_url, session, config)`.
 This takes an already-authenticated `BrowserContext` instead of a raw
 `Session` -- "uses the authenticated browser context from the session
@@ -30,6 +42,7 @@ other cross-layer handoff in this build (e.g. `WorkflowRunner`,
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import random
 import string
 from dataclasses import dataclass
@@ -53,7 +66,18 @@ _log = get_logger("crawler.crawler")
 _EXTRACT_LINKS_SCRIPT = (
     "() => Array.from(document.querySelectorAll('a[href]')).map((a) => a.getAttribute('href'))"
 )
-_IGNORED_HREF_PREFIXES = ("javascript:", "mailto:", "tel:", "#")
+_IGNORED_HREF_PREFIXES = ("javascript:", "mailto:", "tel:")
+# Angular/Vue/etc. apps using hash-based client routing (Juice Shop
+# included) render their entire nav as `<a href="#/search">`,
+# `<a href="#/login">` -- a bare "#" prefix used to be blanket-ignored
+# here on the assumption a hash href is always a same-page anchor jump,
+# which silently meant the crawler never discovered a single route on
+# this whole class of SPA (confirmed live: 8 endpoints total on Juice
+# Shop, all of them the bare root page). Only a *route-shaped* hash
+# ("#/...", or Angular's older "#!/..." hashbang form) is treated as
+# navigable; a bare "#" or "#section"-style anchor still leads nowhere
+# new and is still skipped.
+_HASH_ROUTE_PREFIXES = ("#/", "#!/")
 # Navigating to these triggers a browser download rather than a page
 # load, which can leave the page mid-transition for the *next* goto().
 # Skip them proactively rather than relying solely on the per-page
@@ -74,6 +98,51 @@ _LOGOUT_HREF_PATTERNS = ("logout", "log-out", "logoff", "log-off", "signout", "s
 # If a page redirects somewhere containing one of these, it's very
 # likely an auth wall -- worth a warning even when nothing "failed".
 _AUTH_WALL_URL_HINTS = ("login", "signin", "sign-in", "auth")
+# Structural signals a JS-routed SPA tends to put on an element that
+# triggers client-side navigation without ever being a real `<a href>`
+# -- an Angular Material icon button with `routerLink`, a raw `onclick`
+# handler, anything exposing itself as `role="button"`, or a plain
+# `<button>`. Deliberately framework-generic (no target-specific
+# selector, no hardcoded route name) so the same heuristic applies to
+# a target this project has never seen before, not just the one that
+# motivated it (Juice Shop's own login/search icons render exactly
+# this way -- neither has a plain anchor tag anywhere in the DOM).
+_CLICKABLE_SELECTOR = "button, [role='button'], [routerlink], [ng-click], [onclick]"
+# Clicking is active exploration (see module docstring's existing form-
+# submission deviation) -- these candidates are skipped outright rather
+# than clicked, since "prove this route exists" is not worth "maybe
+# delete a real resource" or fire a real purchase/account action.
+_DANGER_CLICK_TEXT = (
+    "delete", "remove", "logout", "log out", "sign out", "signout",
+    "buy", "purchase", "pay", "checkout", "unsubscribe", "confirm order",
+    "place order", "cancel account", "deactivate", "empty cart", "clear cart",
+)
+# Independent of `CrawlerConfig.timeout_ms` (a page navigation budget)
+# -- see the two-stage click in `_discover_clickable_routes` for why a
+# short first attempt matters here specifically.
+_CLICK_ACTIONABLE_TIMEOUT_MS = 2500
+_CLICK_FORCE_TIMEOUT_MS = 2000
+# Actions worth reaching first within a bounded per-page click budget
+# -- see `_discover_clickable_routes`'s own two-phase scan/click split
+# for why. Two distinct high-value families, both kept in the SAME
+# priority tier deliberately: commerce actions (adding an item is
+# reversible/non-destructive, unlike "buy"/"checkout" in
+# `_DANGER_CLICK_TEXT` above) unlock IDOR/BOLA testing against whatever
+# resource they create (a basket, a wishlist entry, ...), and
+# auth-entry actions reveal the single most security-relevant surface
+# on almost any target (a login/registration form). Confirmed live
+# against Juice Shop that these two families genuinely compete for the
+# same limited budget on the root page (a header icon each) -- ranking
+# only one of them first just traded one blind spot for another, so
+# both get equal priority rather than one crowding out the other.
+_HIGH_VALUE_CLICK_HINTS = (
+    "add to cart", "add to basket", "add to bag", "add to wishlist",
+    "account", "sign in", "log in", "login", "register", "sign up",
+)
+# How much wider than the actual click budget the cheap scan phase
+# looks -- bounded so a page with hundreds of clickable elements still
+# can't make one page's exploration arbitrarily expensive.
+_CLICK_SCAN_MULTIPLIER = 3
 
 
 @dataclass
@@ -91,6 +160,20 @@ class CrawlerConfig:
     # is filled with placeholder data and submitted, so the endpoint it
     # actually leads to gets captured. Pass False to opt back out.
     submit_forms_with_test_data: bool = True
+    # On by default -- see module docstring. Clicks button/icon-style
+    # elements that aren't real `<a href>` links (Angular `routerLink`
+    # on a `<button>`, a raw `onclick`, `role="button"`) on a dedicated
+    # probe page and queues wherever the click actually navigated to.
+    # This is what finds routes like a hash-routed SPA's login/search
+    # page when they're only reachable by clicking a header icon --
+    # the exact gap that left Juice Shop's `#/login` and `#/search`
+    # undiscovered even after hash-route links themselves were fixed.
+    explore_clickable_navigation: bool = True
+    # Hard cap per page -- a real page can have dozens of buttons
+    # (product "add to cart" grids, etc.); each candidate costs a full
+    # page reload + click + settle wait, so this bounds worst-case
+    # crawl time the same way `max_pages`/`max_depth` already do.
+    max_click_candidates_per_page: int = 12
     # Hard backstop, independent of `timeout_ms` -- a page whose
     # client-side JS keeps firing competing navigations in the
     # background can wedge the underlying CDP connection such that
@@ -125,6 +208,11 @@ class CrawlerConfig:
 def _same_origin(url: str, base_url: str) -> bool:
     a, b = urlparse(url), urlparse(base_url)
     return (a.scheme, a.hostname, a.port) == (b.scheme, b.hostname, b.port)
+
+
+def _is_hash_route_url(url: str) -> bool:
+    _, _, fragment = url.partition("#")
+    return fragment != "" and ("#" + fragment).startswith(_HASH_ROUTE_PREFIXES)
 
 
 _GET_FORM_FIELDS_SCRIPT = """
@@ -247,17 +335,35 @@ async def _submit_form_with_test_data(
         _log.warning(f"form submission probe failed for form #{form_index} on '{page_url}': {exc}")
 
 
+def _looks_like_a_credentials_form(parameters: list[str]) -> bool:
+    """A password-shaped field name is one of the strongest, most
+    framework-agnostic signals that a form is meant to be submitted --
+    stronger, in fact, than the declared HTML `method` attribute on a
+    modern JS-rendered SPA. Confirmed live against Juice Shop (a stock
+    Angular app): its login/register/reset-password forms carry no
+    `method` attribute at all (Angular submits via `(ngSubmit)` calling
+    its own HttpClient POST, not the raw HTML form-submission protocol
+    `method`/`action` describe), so `detect_forms()` defaulted every one
+    of them to `method="GET"` -- and a GET-classified form is exactly
+    what this function's caller otherwise skips, silently leaving the
+    single most security-relevant form type on the entire target never
+    submitted, on any SPA built this way, not just this one target."""
+    return any("pass" in name.lower() for name in parameters)
+
+
 async def _probe_new_forms(
     probe_page: "Page | None", landed_url: str, new_forms: list[Endpoint],
     submitted_forms: set[tuple[str, str]], timeout_ms: int,
 ) -> None:
-    """Submits every not-yet-probed POST form discovered on this page
-    with placeholder data -- a no-op when `probe_page` is None (the
-    default, passive-only crawl)."""
+    """Submits every not-yet-probed form discovered on this page with
+    placeholder data -- a POST form, or one that looks like a
+    credentials form regardless of its declared method (see
+    `_looks_like_a_credentials_form`). A no-op when `probe_page` is
+    None (the default, passive-only crawl)."""
     if probe_page is None:
         return
     for form_index, form_endpoint in enumerate(new_forms):
-        if form_endpoint.method != "POST":
+        if form_endpoint.method != "POST" and not _looks_like_a_credentials_form(form_endpoint.parameters):
             continue
         key = (form_endpoint.method, form_endpoint.url)
         if key in submitted_forms:
@@ -280,7 +386,10 @@ async def _extract_and_queue_links(
     for href in hrefs:
         if not href or href.startswith(_IGNORED_HREF_PREFIXES):
             continue
-        if href.lower().split("?", 1)[0].endswith(_SKIP_FILE_EXTENSIONS):
+        is_hash_route = href.startswith(_HASH_ROUTE_PREFIXES)
+        if href.startswith("#") and not is_hash_route:
+            continue  # plain in-page anchor (e.g. "#section") -- no route semantics
+        if href.lower().split("?", 1)[0].split("#", 1)[0].endswith(_SKIP_FILE_EXTENSIONS):
             continue
         if any(pattern in href.lower() for pattern in _LOGOUT_HREF_PATTERNS):
             continue
@@ -291,9 +400,252 @@ async def _extract_and_queue_links(
         # can differ, and resolving relative hrefs against the wrong
         # base silently produces bogus same-origin-*looking* URLs that
         # aren't real.
-        absolute = urljoin(landed_url, href).split("#", 1)[0]
-        if absolute not in visited and _same_origin(absolute, start_url):
-            queue.append((absolute, depth + 1))
+        absolute = urljoin(landed_url, href)
+        if not is_hash_route:
+            # A normal same-page anchor fragment (`page.html#foo`) isn't
+            # a distinct resource -- strip it so it collapses onto the
+            # page itself, same as before. A hash-*route* IS the
+            # distinct resource, so its fragment is kept.
+            absolute = absolute.split("#", 1)[0]
+        _queue_if_new(absolute, depth + 1, start_url, visited, queue)
+
+
+async def _click_first_newly_revealed_high_value_item(
+    click_probe_page: "Page", page_url: str, timeout_ms: int,
+) -> "str | None":
+    """Bounded, one-level follow-up for the extremely common
+    "menu/dropdown trigger" shape: a button that reveals OTHER
+    clickable elements instead of navigating anywhere itself --
+    confirmed live against Juice Shop, whose "Account" header button
+    is exactly this (`aria-label="Show/hide account menu"`); the real
+    login entry point is a "Login" menu item that doesn't exist as a
+    *visible*, clickable element until the trigger is clicked. Without
+    this, the primary click loop records "no URL change" and moves on,
+    so a route gated behind any menu/dropdown -- not just this one
+    target's -- was structurally unreachable no matter how well link-
+    and hash-route-following worked.
+
+    Deliberately ONE level, not recursive: re-scans the same clickable
+    selector for a NOW-visible element whose text/aria-label matches
+    `_HIGH_VALUE_CLICK_HINTS` (that vocabulary already covers both the
+    commerce and auth-entry cases this matters for) and clicks the
+    first one found, returning where it navigated to (or `None` if
+    nothing matched or nothing navigated). Cheap: only runs after a
+    click that produced no URL change, and a freshly-opened menu is a
+    handful of items, not a full second page scan."""
+    try:
+        count = await click_probe_page.locator(_CLICKABLE_SELECTOR).count()
+    except Exception:
+        return None
+
+    for index in range(count):
+        candidate = click_probe_page.locator(_CLICKABLE_SELECTOR).nth(index)
+        try:
+            if not await candidate.is_visible(timeout=300):
+                continue
+            text = ((await candidate.inner_text(timeout=300)) or "").strip().lower()
+            if not text:
+                text = (
+                    (await candidate.get_attribute("aria-label")) or (await candidate.get_attribute("title")) or ""
+                ).strip().lower()
+        except Exception as exc:
+            _log.info(f"revealed-item scan of candidate #{index} on '{page_url}' failed (skipping): {exc}")
+            continue
+        if not any(hint in text for hint in _HIGH_VALUE_CLICK_HINTS) or any(word in text for word in _DANGER_CLICK_TEXT):
+            continue
+        try:
+            try:
+                await candidate.click(timeout=_CLICK_ACTIONABLE_TIMEOUT_MS)
+            except Exception:
+                await candidate.click(timeout=_CLICK_FORCE_TIMEOUT_MS, force=True)
+            await _settle_after_navigation(click_probe_page, page_url)
+        except Exception as exc:
+            _log.info(f"revealed-item follow-up click #{index} on '{page_url}' failed (skipping): {exc}")
+            continue
+        landed = click_probe_page.url
+        if landed != page_url:
+            return landed
+    return None
+
+
+async def _discover_clickable_routes(
+    click_probe_page: "Page", page_url: str, timeout_ms: int, max_candidates: int,
+) -> list[str]:
+    """Best-effort discovery of routes reachable only by clicking a
+    button/icon that triggers client-side routing -- not through a
+    plain `<a href>` the BFS crawl (and `_extract_and_queue_links`)
+    already follows. See `CrawlerConfig.explore_clickable_navigation`'s
+    own docstring for why this exists.
+
+    Runs entirely on its own dedicated page, re-navigated back to
+    `page_url` before and after every single click so one candidate's
+    side effects (a modal, a route change, a client-side state change)
+    can never bleed into the next candidate's baseline. Returns
+    same-origin URLs the click actually navigated to; the caller
+    de-duplicates against `visited` the same way link-discovery does.
+    """
+    discovered: list[str] = []
+    dialog_messages: list[str] = []
+
+    async def _on_dialog(dialog: Any) -> None:
+        dialog_messages.append(dialog.message)
+        await dialog.dismiss()
+
+    click_probe_page.on("dialog", _on_dialog)
+    try:
+        try:
+            await click_probe_page.goto(page_url, timeout=timeout_ms)
+        except Exception as exc:
+            _log.warning(f"click-exploration probe couldn't load '{page_url}': {exc}")
+            return discovered
+        await _settle_after_navigation(click_probe_page, page_url)
+
+        try:
+            count = await click_probe_page.locator(_CLICKABLE_SELECTOR).count()
+        except Exception as exc:
+            _log.info(f"click-exploration couldn't enumerate candidates on '{page_url}': {exc}")
+            return discovered
+
+        # Two-phase, not one: a page can have far more clickable elements
+        # than the per-page click budget allows, and DOM order alone
+        # (the old single-pass behavior) means unrelated nav icons
+        # crowd out the handful of candidates that actually matter --
+        # confirmed live against Juice Shop, where an "Add to Basket"
+        # button never got a chance to be clicked within budget, so
+        # `/rest/basket/...` was never discovered at all and IDOR
+        # testing against it had nothing to work with. Scan (cheap:
+        # visibility + text only) a wider net first, then click only
+        # the top `max_candidates` -- commerce-shaped actions
+        # (add-to-cart/basket/bag/wishlist -- adding an item is
+        # reversible and non-destructive, unlike "buy"/"checkout",
+        # still in `_DANGER_CLICK_TEXT`) ranked first, since reaching
+        # them is what actually unlocks IDOR/BOLA testing against
+        # whatever resource they create. Generic on purpose: this
+        # vocabulary applies to any e-commerce-shaped SPA, not just
+        # this one target.
+        scan_cap = min(count, max_candidates * _CLICK_SCAN_MULTIPLIER)
+        high_priority: list[tuple[int, str]] = []
+        normal_priority: list[tuple[int, str]] = []
+        for index in range(scan_cap):
+            candidate = click_probe_page.locator(_CLICKABLE_SELECTOR).nth(index)
+            try:
+                if not await candidate.is_visible(timeout=500):
+                    continue
+                text = ((await candidate.inner_text(timeout=500)) or "").strip().lower()
+                if not text:
+                    text = (
+                        (await candidate.get_attribute("aria-label")) or (await candidate.get_attribute("title")) or ""
+                    ).strip().lower()
+            except Exception as exc:
+                _log.info(f"click-exploration scan of candidate #{index} on '{page_url}' failed (skipping): {exc}")
+                continue
+            if any(word in text for word in _DANGER_CLICK_TEXT):
+                continue
+            bucket = high_priority if any(hint in text for hint in _HIGH_VALUE_CLICK_HINTS) else normal_priority
+            bucket.append((index, text))
+
+        ranked = (high_priority + normal_priority)[:max_candidates]
+        for position, (index, text) in enumerate(ranked):
+            candidate = click_probe_page.locator(_CLICKABLE_SELECTOR).nth(index)
+            try:
+                # Two-stage click, short timeout on the first try: a
+                # normal click waits for the element to actually receive
+                # pointer events, which routinely never happens on a
+                # real target when an unrelated overlay (a cookie-
+                # consent/welcome banner, a Material CDK overlay
+                # backdrop left in the DOM) sits on top of the whole
+                # page -- confirmed live against Juice Shop, where every
+                # single candidate on every page timed out this way,
+                # burning the full 10s default each time for zero
+                # discovery. `force=True` bypasses that hit-target
+                # check specifically (still requires the element to be
+                # attached/visible) -- exactly the case an invisible
+                # full-viewport overlay represents, and generic enough
+                # to help against any target with a similar overlay,
+                # not just this one. A short first-attempt timeout means
+                # a genuinely blocked page fails fast instead of eating
+                # the whole per-candidate budget before even trying the
+                # fallback.
+                try:
+                    await candidate.click(timeout=_CLICK_ACTIONABLE_TIMEOUT_MS)
+                except Exception:
+                    await candidate.click(timeout=_CLICK_FORCE_TIMEOUT_MS, force=True)
+                try:
+                    await click_probe_page.wait_for_load_state("networkidle", timeout=2000)
+                except Exception as settle_exc:
+                    _log.info(f"click on candidate #{index} ('{text}') on '{page_url}' never reached network-idle: {settle_exc}")
+                landed = click_probe_page.url
+                if landed == page_url:
+                    landed = await _click_first_newly_revealed_high_value_item(click_probe_page, page_url, timeout_ms) or landed
+                if landed != page_url and landed not in discovered:
+                    discovered.append(landed)
+            except Exception as exc:
+                _log.info(f"click-exploration candidate #{index} on '{page_url}' failed (skipping): {exc}")
+            finally:
+                # Reset baseline for the NEXT candidate regardless of
+                # what happened -- an earlier click may have navigated
+                # away or opened a modal that would poison the next
+                # check. Skipped on the last candidate: there is no
+                # next one to protect, and this reset (a full
+                # navigation plus, for a hash-routed page, a settle
+                # wait up to `timeout_ms`) is the single most expensive
+                # step in the whole per-candidate loop -- paying it
+                # unconditionally, including after the final candidate
+                # on every page, was pure waste that added up over a
+                # full crawl.
+                if position < len(ranked) - 1:
+                    try:
+                        await click_probe_page.goto(page_url, timeout=timeout_ms)
+                    except Exception:
+                        break  # page_url itself stopped loading -- no point continuing this page
+                    await _settle_after_navigation(click_probe_page, page_url)
+    finally:
+        click_probe_page.remove_listener("dialog", _on_dialog)
+
+    if dialog_messages:
+        _log.info(f"click-exploration on '{page_url}' dismissed {len(dialog_messages)} dialog(s): {dialog_messages[:3]}")
+    return discovered
+
+
+async def _settle_after_navigation(page: "Page", url: str, timeout_ms: int = 3000) -> None:
+    """Best-effort wait for a hash-routed SPA's async render to finish
+    after navigating to `url` -- `goto()` to a hash-route resolves as
+    soon as the history/hash entry itself changes, before the app's own
+    JS has actually reacted to the hashchange event and rendered the
+    new view. Every caller that navigates somewhere and then
+    immediately inspects the DOM (link/form extraction, clickable-
+    candidate scanning) needs this, not just the main BFS loop --
+    omitting it from click-exploration's own navigation was a real,
+    confirmed source of run-to-run flakiness against a real target:
+    sometimes Angular's render finished before the scan, sometimes it
+    hadn't, so the exact same page yielded a different candidate set
+    (and therefore a different discovered-endpoint set) from one run
+    to the next. No-op for a non-hash-route URL, where `goto()`'s own
+    "load" wait already covers a normal full page load."""
+    if not _is_hash_route_url(url):
+        return
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except Exception as exc:
+        _log.info(f"'{url}' never reached network-idle after a hash-route change (proceeding with whatever rendered): {exc}")
+    # `networkidle` only means the NETWORK went quiet -- a framework's
+    # own change-detection/render cycle (Angular's zone.js digest, a
+    # React state update queued off the last response) can still be
+    # finishing a beat after that, off-thread from any network activity
+    # this wait would ever see. A short, fixed buffer here is the
+    # standard, well-documented mitigation for exactly this class of
+    # flakiness in Angular-style SPA testing -- confirmed as a real,
+    # additional source of run-to-run variance on this project's own
+    # Juice Shop benchmark target (the same page, same code, yielding a
+    # different discovered-endpoint set from one run to the next even
+    # after the networkidle fix above).
+    with contextlib.suppress(Exception):
+        await page.wait_for_timeout(250)
+
+
+def _queue_if_new(url: str, depth: int, start_url: str, visited: set[str], queue: list[tuple[str, int]]) -> None:
+    if url not in visited and _same_origin(url, start_url):
+        queue.append((url, depth))
 
 
 async def crawl(
@@ -310,6 +662,24 @@ async def crawl(
     # the main BFS page's navigation/state. Only opened if actually needed.
     probe_page = await context.new_page() if config.submit_forms_with_test_data else None
     submitted_forms: set[tuple[str, str]] = set()  # (method, action_url) already probed
+    # Separate again from both the main BFS page and the form-submission
+    # probe page -- see CrawlerConfig.explore_clickable_navigation.
+    click_probe_page = await context.new_page() if config.explore_clickable_navigation else None
+    # The sniffer must watch every page that can fire the real XHR/fetch
+    # call, not just the main BFS page -- a submitted form's actual
+    # network request happens on `probe_page`, and a discovered nav
+    # button's on `click_probe_page`. One shared `ApiSniffer` instance
+    # attached to all three is a single `_seen` dict, so the same
+    # dedup-by-(method,path) behavior holds regardless of which page
+    # actually made the request. Missing this was a real, confirmed bug:
+    # against Juice Shop, the login form was correctly identified and
+    # genuinely submitted, but the resulting `POST /rest/user/login`
+    # call landed on `probe_page` and was silently never recorded as an
+    # endpoint at all.
+    if probe_page is not None:
+        sniffer.attach(probe_page)
+    if click_probe_page is not None:
+        sniffer.attach(click_probe_page)
 
     # Passive observation, entirely opt-in (see CrawlerConfig.passive_engine's
     # own docstring) -- sync handlers only, same reasoning `ApiSniffer` and
@@ -392,12 +762,21 @@ async def crawl(
                         _log.warning(f"'{url}' redirected off-origin to '{landed_url}' -- not recording as an endpoint")
                         return
 
+                    await _settle_after_navigation(page, landed_url)
+
                     page_endpoints.append(Endpoint(url=landed_url, method="GET", endpoint_type="page"))
                     new_forms = await detect_forms(page)
                     form_endpoints.extend(new_forms)
 
                     await _probe_new_forms(probe_page, landed_url, new_forms, submitted_forms, config.timeout_ms)
                     await _extract_and_queue_links(page, landed_url, start_url, depth, config.max_depth, visited, queue, config.exclude_path_patterns)
+
+                    if click_probe_page is not None and depth < config.max_depth:
+                        clicked_urls = await _discover_clickable_routes(
+                            click_probe_page, landed_url, config.timeout_ms, config.max_click_candidates_per_page
+                        )
+                        for clicked_url in clicked_urls:
+                            _queue_if_new(clicked_url, depth + 1, start_url, visited, queue)
 
                 try:
                     await asyncio.wait_for(_visit_once(), timeout=config.page_watchdog_s)
@@ -432,7 +811,11 @@ async def crawl(
             page.remove_listener("request", _on_passive_request)
         await page.close()
         if probe_page is not None:
+            sniffer.detach(probe_page)
             await probe_page.close()
+        if click_probe_page is not None:
+            sniffer.detach(click_probe_page)
+            await click_probe_page.close()
 
     all_endpoints = page_endpoints + form_endpoints + sniffer.endpoints
     deduped = dedupe(all_endpoints)

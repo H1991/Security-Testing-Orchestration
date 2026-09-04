@@ -8,11 +8,32 @@ from stof.auth.base import AuthProvider
 from stof.config.schema import UserConfig
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
-from stof.modules.auth_tests import AuthTestConfig, AuthTestsModule
+from stof.modules.auth_tests import AuthTestConfig, AuthTestsModule, _looks_form_authenticated
 from stof.modules.results import ERROR, FAIL, NOT_IMPLEMENTED, PASS, SKIPPED
 from stof.session.models import Session
 from stof.session.session_manager import SessionManager
 from stof.session.session_store import SessionStore
+
+
+# ---------------------------------------------------------------------------
+# _looks_form_authenticated -- JSON API login responses (e.g. this
+# project's own Juice Shop benchmark target, which answers a login
+# attempt with a JSON body carrying a token, never an HTML redirect).
+# ---------------------------------------------------------------------------
+
+
+def test_looks_form_authenticated_true_on_json_body_carrying_a_token():
+    assert _looks_form_authenticated(
+        200, {}, '{"authentication":{"token":"eyJhbGciOiJSUzI1NiJ9.abc.def"}}',
+        200, {}, '{"error":{"message":"Invalid email or password."}}',
+    )
+
+
+def test_looks_form_authenticated_false_when_both_json_responses_are_errors():
+    assert not _looks_form_authenticated(
+        200, {}, '{"error":{"message":"Invalid email or password."}}',
+        200, {}, '{"error":{"message":"Invalid email or password."}}',
+    )
 
 
 def _user(role: str) -> UserConfig:

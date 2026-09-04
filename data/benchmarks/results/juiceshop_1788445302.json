@@ -1,0 +1,330 @@
+{
+  "recall": 0.25,
+  "matched_count": 2,
+  "total_cases": 8,
+  "matched_cases": [
+    {
+      "case": {
+        "id": "JS-04",
+        "category": "configuration",
+        "description": "Missing/weak security headers (CSP, X-Frame-Options, etc.) on the SPA's own responses",
+        "expects_vuln_type_keywords": [
+          "security header",
+          "content-security-policy",
+          "clickjacking"
+        ],
+        "expects_endpoint_keywords": [],
+        "expected_severity_at_least": "Low"
+      },
+      "matched_finding": {
+        "vuln_type": "Default Configuration -- Missing or Weak Content-Security-Policy",
+        "severity": "Medium",
+        "endpoint": {
+          "url": "http://127.0.0.1:3001",
+          "method": "GET",
+          "endpoint_type": "api",
+          "parameters": [],
+          "param_locations": {},
+          "parameter_values": {},
+          "auth_required": false,
+          "discovered_at": "2026-09-03T14:19:44.212995+00:00"
+        }
+      }
+    },
+    {
+      "case": {
+        "id": "JS-08",
+        "category": "auth",
+        "description": "No login-attempt rate limiting / lockout -- Juice Shop ships without one by default",
+        "expects_vuln_type_keywords": [
+          "rate limit",
+          "lockout",
+          "brute"
+        ],
+        "expects_endpoint_keywords": [
+          "login"
+        ],
+        "expected_severity_at_least": "Medium"
+      },
+      "matched_finding": {
+        "vuln_type": "Missing Login Rate Limiting / Account Lockout",
+        "severity": "High",
+        "endpoint": {
+          "url": "http://127.0.0.1:3001/rest/user/login",
+          "method": "POST",
+          "endpoint_type": "api",
+          "parameters": [
+            "email",
+            "password"
+          ],
+          "param_locations": {
+            "email": "body",
+            "password": "body"
+          },
+          "parameter_values": {},
+          "auth_required": false,
+          "discovered_at": "2026-09-03T14:18:44.106450+00:00"
+        }
+      }
+    }
+  ],
+  "missed_cases": [
+    {
+      "id": "JS-01",
+      "category": "sqli",
+      "description": "Login bypass via SQL injection in the login form (the canonical Juice Shop 'Login Admin' challenge)",
+      "expects_vuln_type_keywords": [
+        "sql injection"
+      ],
+      "expects_endpoint_keywords": [
+        "login"
+      ],
+      "expected_severity_at_least": "High"
+    },
+    {
+      "id": "JS-02",
+      "category": "xss",
+      "description": "Reflected/DOM XSS via the search bar query parameter",
+      "expects_vuln_type_keywords": [
+        "cross-site scripting",
+        "xss"
+      ],
+      "expects_endpoint_keywords": [
+        "search",
+        "rest/products"
+      ],
+      "expected_severity_at_least": "Medium"
+    },
+    {
+      "id": "JS-03",
+      "category": "auth",
+      "description": "Default/weak admin credentials (admin@juice-sh.op / admin123 ships enabled)",
+      "expects_vuln_type_keywords": [
+        "default credential",
+        "weak credential",
+        "vendor default"
+      ],
+      "expects_endpoint_keywords": [
+        "login"
+      ],
+      "expected_severity_at_least": "Critical"
+    },
+    {
+      "id": "JS-05",
+      "category": "disclosure",
+      "description": "Sensitive file exposure under /ftp (backup files, legacy docs) -- a long-standing, still-present Juice Shop challenge",
+      "expects_vuln_type_keywords": [
+        "source map",
+        "backup",
+        "disclosure",
+        "sensitive"
+      ],
+      "expects_endpoint_keywords": [
+        "ftp"
+      ],
+      "expected_severity_at_least": "Medium"
+    },
+    {
+      "id": "JS-06",
+      "category": "idor",
+      "description": "Broken access control -- viewing/modifying another user's basket or order by changing a numeric ID",
+      "expects_vuln_type_keywords": [
+        "insecure direct object reference",
+        "idor",
+        "broken object level authorization"
+      ],
+      "expects_endpoint_keywords": [
+        "basket",
+        "order"
+      ],
+      "expected_severity_at_least": "High"
+    },
+    {
+      "id": "JS-07",
+      "category": "jwt",
+      "description": "JWT-related weakness -- Juice Shop's own auth token is a JWT stored client-side (localStorage), a known target for alg-confusion/claim-tampering style challenges",
+      "expects_vuln_type_keywords": [
+        "jwt",
+        "json web token"
+      ],
+      "expects_endpoint_keywords": [],
+      "expected_severity_at_least": "Medium"
+    }
+  ],
+  "unmatched_findings_for_human_review": [
+    {
+      "vuln_type": "Session Cookie Missing Security Flags",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:19:29.308667+00:00"
+      }
+    },
+    {
+      "vuln_type": "Concurrent Session Not Revoked On Re-Login",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:19:34.004035+00:00"
+      }
+    },
+    {
+      "vuln_type": "Predictable / Low-Entropy Session Token",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:19:38.564201+00:00"
+      }
+    },
+    {
+      "vuln_type": "Sensitive Content Cacheable After Logout (Back/Refresh Attack)",
+      "severity": "Low",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:19:40.842111+00:00"
+      }
+    },
+    {
+      "vuln_type": "Missing Rate Limiting At The API/Token Level",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling&t=Q1dehqr",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "EIO",
+          "transport",
+          "t",
+          "sid"
+        ],
+        "param_locations": {
+          "EIO": "query",
+          "transport": "query",
+          "t": "query",
+          "sid": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:18:33.741346+00:00"
+      }
+    },
+    {
+      "vuln_type": "Session Not Bound To Client Fingerprint (Hijacking Risk)",
+      "severity": "Low",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:19:43.331403+00:00"
+      }
+    },
+    {
+      "vuln_type": "Default Configuration -- Weak TLS/Transport Configuration",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/login",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:19:44.251748+00:00"
+      }
+    },
+    {
+      "vuln_type": "Default Configuration -- Path-Relative StyleSheet Import",
+      "severity": "Low",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:19:44.369098+00:00"
+      }
+    },
+    {
+      "vuln_type": "PII Exposure via API Response",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Feedbacks/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:18:53.462453+00:00"
+      }
+    },
+    {
+      "vuln_type": "PII Exposure via URL/Query Parameter",
+      "severity": "Critical",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/login",
+        "method": "GET",
+        "endpoint_type": "page",
+        "parameters": [
+          "email",
+          "password"
+        ],
+        "param_locations": {
+          "email": "query",
+          "password": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:18:43.534980+00:00"
+      }
+    },
+    {
+      "vuln_type": "Excessive Data Exposure",
+      "severity": "Medium",
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/rest/memories/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:18:56.636466+00:00"
+      }
+    }
+  ],
+  "total_findings_in_scan": 13,
+  "target": "juiceshop",
+  "scan_id": "05e899fd",
+  "timestamp": "2026-09-03T14:21:42.666426+00:00"
+}

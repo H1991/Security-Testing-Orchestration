@@ -1,0 +1,14 @@
+<html>
+  <head>
+    <meta charset='utf-8'> 
+    <title>Error: SQLITE_ERROR: near &quot;,&quot;: syntax error</title>
+    <style>* {
+  margin: 0;
+  padding: 0;
+  outline: 0;
+}
+
+body {
+  padding: 80px 100px;
+  font: 13px "Helvetica Neue", "Lucida Grande", "Arial";
+  background: #ECE9E9 -webkit-gradien

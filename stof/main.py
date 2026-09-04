@@ -41,6 +41,7 @@ from stof.auth import AssistedLoginProvider, FormLoginProvider, JWTAuthProvider
 from stof.config import ConfigError, load_config, load_dotenv, load_users
 from stof.core.console import DEFAULT_LOG_DIR, ScanConsole, attach_file_logging, detach_file_logging
 from stof.core.logger import get_logger
+from stof.core.module_registry import VULN_MODULE_NAMES
 from stof.core.test_orchestrator import build_test_plan
 from stof.crawler.crawler import CrawlerConfig, verify_auth_required
 from stof.crawler.crawler import crawl as run_crawler
@@ -88,7 +89,10 @@ _log = get_logger("core.main")
 _GENERIC_IDOR_CANDIDATE_IDS = [str(i) for i in range(1, 21)]
 
 
-_KNOWN_MODULES = ("idor_tests", "jwt_tests", "auth_tests", "configuration_tests", "disclosure_tests", "graphql_tests", "deserialization_tests", "sqli_tests", "ssrf_tests", "xss_tests", "csrf_tests", "injection_variants_tests", "cache_tests", "business_logic_tests", "file_upload_tests")
+# Derived from ModulesConfig via module_registry.py, not hand-copied --
+# see that module's docstring for the real bug a second hand-maintained
+# list like this one already caused once.
+_KNOWN_MODULES = VULN_MODULE_NAMES
 
 
 def _jwt_roles(users_by_role: dict) -> list[str]:
@@ -562,6 +566,37 @@ def scan(config_path: str, users_path: str, role: str | None, endpoints_path: st
 
     exit_code = asyncio.run(_run_scan(config_path, users_path, role, endpoints_path, max_depth, max_pages, module_names, output, headless, recrawl, log_dir=log_dir, scan_id=scan_id, workflow_ids=workflow_ids))
     raise SystemExit(exit_code)
+
+
+# Confirmed live: a Playwright driver connection dying mid-scan
+# (`Browser.new_context: Connection closed while reading from the
+# driver`) does NOT raise up through `vm.run_techniques()` -- each
+# technique's own per-technique isolation (`base.py`'s `_safe_result`)
+# already catches it and turns it into an ERROR TestCaseResult, same as
+# any other technique failure. That's correct behavior for an ordinary
+# probe failure, but it means `_with_retry`'s exception-based retry
+# never fires for THIS failure class, and every module after the one
+# where the driver died silently inherits the same dead browser/
+# session_pool and fails the same way -- confirmed by a real scan where
+# a driver death partway through produced a cascade of near-identical
+# ERROR results across every remaining module. The fix has to look at
+# the RESULTS a module actually returned, not just whether an exception
+# was raised.
+_DRIVER_DEAD_SIGNATURES = (
+    "connection closed while reading from the driver",
+    "target page, context or browser has been closed",
+    "browser has been closed",
+    "target closed",
+)
+
+
+def _looks_like_driver_dead(detail: str) -> bool:
+    lowered = (detail or "").lower()
+    return any(sig in lowered for sig in _DRIVER_DEAD_SIGNATURES)
+
+
+def _module_hit_dead_driver(results: list) -> bool:
+    return any(r.status == ERROR and _looks_like_driver_dead(r.detail) for r in results)
 
 
 async def _with_retry(coro_fn, attempts: int = 3):
@@ -1084,6 +1119,7 @@ async def _run_test(
                 console.phase("VULNERABILITY TESTING")
 
                 async def _run_all_vuln_modules() -> tuple[list, list]:
+                    nonlocal browser, session_pool
                     module_findings: list = []
                     all_results: list = []
                     total_modules = len(module_names)
@@ -1110,7 +1146,14 @@ async def _run_test(
                             # timeouts twice per candidate parameter).
                             results = await asyncio.wait_for(
                                 _with_retry(
-                                    lambda vm=vuln_module: vm.run_techniques(endpoint_list, session_manager, session_pool, evidence=evidence)
+                                    # Deliberately reads session_pool live, not
+                                    # a value frozen at lambda-definition time --
+                                    # value frozen at lambda-definition time --
+                                    # a prior iteration may have just replaced
+                                    # it (browser restart after a dead-driver
+                                    # detection, below), and this module's own
+                                    # call needs the live one, not the dead one.
+                                    lambda vm=vuln_module: vm.run_techniques(endpoint_list, session_manager, session_pool, evidence=evidence)  # noqa: B023
                                 ),
                                 timeout=480,
                             )
@@ -1121,6 +1164,29 @@ async def _run_test(
                                 vuln_type="N/A", module_id=name, severity="Info", status=ERROR,
                                 detail="This module did not complete within the 8-minute per-module ceiling and was skipped so the rest of the scan could continue. Investigate separately (re-run with just --module " + name + ").",
                             )]
+                        if _module_hit_dead_driver(results):
+                            # The browser process/CDP connection itself died --
+                            # every technique in this module (and, left alone,
+                            # every module after it) would keep failing the
+                            # same way against the same dead browser. Restart
+                            # it once here so the REMAINING modules in this
+                            # scan get a real, working browser instead of a
+                            # wall of identical "connection closed" ERROR
+                            # results -- this module's own results are kept
+                            # as-is (an honest ERROR, not silently retried and
+                            # hidden), only the browser is recovered for what
+                            # comes next.
+                            click.echo(f"[STOF]  ⚠ browser driver appears to have died during {name} -- restarting the browser for the remaining modules")
+                            try:
+                                await browser.close()
+                            except Exception as exc:
+                                click.echo(f"[STOF]  (old browser was already unusable: {exc})")
+                            try:
+                                browser = await pw.chromium.launch(headless=headless, slow_mo=config.browser.slowmo_ms or None)
+                                session_pool = SessionPool(browser, ignore_https_errors=True)
+                                click.echo("[STOF]  ✓ browser restarted, continuing scan")
+                            except Exception as exc:
+                                click.echo(f"[STOF]  ✗ could not restart the browser ({exc}) -- remaining modules will likely fail the same way")
                         console.progress_bar(i + 1, total_modules, f"{name} complete")
                         console.module_header(name, len(results))
                         for result in results:

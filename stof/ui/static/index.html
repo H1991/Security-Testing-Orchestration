@@ -7,7 +7,7 @@
 <link rel="icon" type="image/jpeg" href="/nusummit-favicon.jpg" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
 <style>
   :root {
     --bg: #f6f7f9;
@@ -33,7 +33,7 @@
     --shadow: 0 1px 2px rgba(20, 30, 40, 0.06), 0 8px 24px -12px rgba(20, 30, 40, 0.12);
     --radius: 8px;
     --mono: "JetBrains Mono", "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    --sans: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
     /* The sidebar (.brand/.nav) is a deliberate always-dark brand surface,
        independent of the light/dark theme applied to the rest of the app
@@ -123,6 +123,7 @@
   /* ---------------------------------------------------------------- shell */
   .shell {
     display: grid;
+    position: relative;
     /* VS Code-style icon rail by default (--nav-width: 64px) -- a
        narrow icon-only strip, not the old always-expanded 246px
        labeled list. body.nav-expanded (toggled by the same navToggle
@@ -161,7 +162,6 @@
     border-right: 1px solid var(--sidebar-border);
     background: var(--sidebar-bg);
     transition: padding 160ms ease, align-items 160ms ease;
-    overflow: hidden;
   }
   body.nav-expanded .brand { align-items: flex-start; padding: 0 24px; }
   /* Collapsed rail: the full wordmark logo just gets clipped by the
@@ -187,9 +187,12 @@
     display: none;
   }
   body.nav-expanded .brand .mark::after { display: block; }
-  .brand .name { font-weight: 700; font-size: 15.5px; letter-spacing: -0.01em; color: #fff; display: none; white-space: nowrap; }
+  .brand .name { font-weight: 700; font-size: 16px; letter-spacing: -0.015em; color: #fff; display: none; white-space: nowrap; }
   body.nav-expanded .brand .name { display: block; }
-  .brand .name small { display: block; font-weight: 500; font-size: 11px; color: rgba(255,255,255,0.42); letter-spacing: 0.08em; text-transform: uppercase; margin-top: 3px; }
+  .brand .name small {
+    display: block; font-weight: 500; font-size: 9.5px; color: rgba(255,255,255,0.4);
+    letter-spacing: 0.05em; text-transform: uppercase; margin-top: 4px; white-space: normal;
+  }
 
   .topbar {
     grid-area: topbar;
@@ -304,17 +307,23 @@
   .nav-foot .row { display: flex; justify-content: space-between; gap: 10px; }
   .nav-foot .v { font-family: var(--mono); color: rgba(255,255,255,0.55); }
 
-  /* Pin/expand toggle -- lives at the top of the rail itself (not just
-     the mobile topbar hamburger, which this button IS, reused) so it's
-     reachable without hunting for it once collapsed to icon-only. */
+  /* Pin/expand toggle -- a small floating button straddling the exact
+     border between the rail and .main (half in, half out), not an item
+     inside the nav list itself. Positioned against .shell (not .nav)
+     so its left offset can track --nav-width directly and it never
+     scrolls away with the nav item list. Always visible in both
+     collapsed and expanded states -- the whole point is it's reachable
+     without hunting for it either way. */
   .nav-rail-toggle {
-    display: flex; align-items: center; justify-content: center;
-    width: 100%; height: 34px; margin-bottom: 10px; border-radius: 7px;
-    border: 1px solid var(--sidebar-border); background: rgba(255,255,255,0.04); color: var(--sidebar-text);
-    cursor: pointer; transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+    position: absolute; top: 92px; left: var(--nav-width); transform: translateX(-50%);
+    z-index: 5; display: flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 50%;
+    border: 1px solid var(--sidebar-border); background: var(--sidebar-bg); color: var(--sidebar-text);
+    cursor: pointer; box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    transition: left 160ms ease, background 120ms ease, color 120ms ease, border-color 120ms ease;
   }
-  .nav-rail-toggle:hover { background: rgba(255,255,255,0.1); color: var(--sidebar-text-hover); border-color: rgba(255,255,255,0.24); }
-  .nav-rail-toggle svg { transition: transform 160ms ease; }
+  .nav-rail-toggle:hover { background: rgba(255,255,255,0.14); color: var(--sidebar-text-hover); border-color: rgba(255,255,255,0.3); }
+  .nav-rail-toggle svg { width: 12px; height: 12px; transition: transform 160ms ease; }
   body.nav-expanded .nav-rail-toggle svg { transform: rotate(180deg); }
 
   /* ---------------------------------------------------------------- main */
@@ -363,12 +372,23 @@
   .card-head h3 { font-size: 14.5px; font-weight: 700; flex: 1; }
   .card-head .meta { font-size: 12.5px; color: var(--text-faint); font-family: var(--mono); }
   .icon-chip {
-    width: 36px; height: 36px; border-radius: 8px; flex-shrink: 0;
+    width: 36px; height: 36px; border-radius: 10px; flex-shrink: 0;
     background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted);
     display: flex; align-items: center; justify-content: center; font-size: 17px;
     font-family: var(--mono); font-weight: 700;
   }
   .icon-chip svg { width: 18px; height: 18px; }
+  /* Colored category badges -- a tinted background + matching icon
+     color per card, not a flat neutral square for everything. Same
+     visual language dashboards like Wiz use so a card's subject reads
+     at a glance before the title is even read; kept desaturated per
+     this project's own color-calibration rule (no neon/oversaturated
+     fills), just a real accent instead of none. */
+  .icon-chip.blue { background: var(--info-soft, rgba(59,130,246,0.12)); border-color: transparent; color: #3b82f6; }
+  .icon-chip.red { background: var(--critical-soft); border-color: transparent; color: var(--critical); }
+  .icon-chip.orange { background: var(--high-soft); border-color: transparent; color: var(--high); }
+  .icon-chip.teal { background: var(--accent-soft); border-color: transparent; color: var(--accent-text); }
+  .icon-chip.violet { background: rgba(139,92,246,0.12); border-color: transparent; color: #8b5cf6; }
   .card-body { padding: 6px 0; }
   .card-empty { padding: 32px 18px; text-align: center; color: var(--text-faint); font-size: 13.5px; }
   .settings-status {
@@ -545,11 +565,19 @@
 
   /* modules grid */
   .mods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-  .mod-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-  .mod-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
+  .mod-card { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  .mod-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; padding-right: 46px; }
   .mod-card-top::-webkit-details-marker { display: none; }
   .mod-card h4 { font-size: 14.5px; font-weight: 700; }
   .mod-card .layer { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
+  /* The enable/disable switch is a sibling of <summary>, not nested
+     inside it (a <label>/checkbox descendant of <summary> is an
+     accessibility violation -- nested interactive controls inside an
+     already-interactive <summary> break keyboard/screen-reader
+     navigation, confirmed via Chrome DevTools' own "Disallowed
+     descendant" audit against this exact markup). Positioned to sit
+     visually where it always did, top-right of the card. */
+  .mod-card-switch { position: absolute; top: 16px; right: 16px; }
   .mod-card-foot { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 4px; }
   .tc-count { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
   .mod-tc-list { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
@@ -937,10 +965,11 @@
     </div>
   </div>
 
+  <button type="button" class="nav-rail-toggle" id="navRailToggle" title="Expand sidebar" aria-label="Expand sidebar">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="9 18 15 12 9 6"/></svg>
+  </button>
+
   <nav class="nav" id="primaryNav" aria-label="Primary">
-    <button type="button" class="nav-rail-toggle" id="navRailToggle" title="Expand sidebar" aria-label="Expand sidebar">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="16" height="16"><polyline points="9 18 15 12 9 6"/></svg>
-    </button>
     <div class="nav-label">Overview</div>
     <button class="nav-item active" data-panel="dashboard" aria-current="page" title="Dashboard"><span class="ic" aria-hidden="true">◧</span><span class="label-text">Dashboard</span></button>
     <button class="nav-item" data-panel="scans" title="Scans"><span class="ic" aria-hidden="true">⟳</span><span class="label-text">Scans</span> <span class="count" id="navScanCount">0</span></button>
@@ -978,18 +1007,22 @@
       <div class="row-3" id="riskPostureRow" style="margin-bottom: 26px;">
         <div class="card">
           <div class="card-head">
+            <span class="icon-chip blue" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 18l5-6 4 3.5 7-8.5"/><path d="M15 6.5h4.5V11"/></svg></span>
             <h3>Findings trend</h3>
             <div class="meta" id="trendMeta">&mdash;</div>
           </div>
           <div class="card-body" style="padding: 16px 18px;">
             <div class="sev-legend" id="trendLegend"></div>
-            <div class="chart-wrap"><svg id="trendChart" viewBox="0 0 640 200" preserveAspectRatio="none"></svg></div>
-            <div class="chart-tooltip" id="trendTooltip" hidden></div>
+            <div class="chart-wrap">
+              <svg id="trendChart" viewBox="0 0 640 200" preserveAspectRatio="none"></svg>
+              <div class="chart-tooltip" id="trendTooltip" hidden></div>
+            </div>
           </div>
         </div>
 
         <div class="card">
           <div class="card-head">
+            <span class="icon-chip red" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M12 8v5"/><circle cx="12" cy="16" r="0.6" fill="currentColor" stroke="none"/></svg></span>
             <h3>Current risk</h3>
             <div class="meta" id="currentRiskMeta">&mdash;</div>
           </div>
@@ -998,6 +1031,7 @@
 
         <div class="card">
           <div class="card-head">
+            <span class="icon-chip orange" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.3"/></svg></span>
             <h3>Most affected modules</h3>
             <div class="meta" id="coverageMeta">&mdash;</div>
           </div>
@@ -1082,7 +1116,7 @@
 
           <div class="card">
             <div class="card-head">
-              <span class="icon-chip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" width="15" height="15"><rect x="3.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.3"/></svg></span>
+              <span class="icon-chip orange" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.3"/></svg></span>
               <h3>Modules to run</h3>
               <div class="meta" id="scanNewModuleCount"></div>
               <span>
@@ -1110,7 +1144,7 @@
 
           <div class="card" id="scanNewWorkflowField" hidden>
             <div class="card-head">
-              <span class="icon-chip" aria-hidden="true">▶</span>
+              <span class="icon-chip violet" aria-hidden="true">▶</span>
               <h3>Recorded workflows to replay</h3>
               <div class="meta">optional — login flow, checkout, a signup wizard...</div>
             </div>
@@ -1123,7 +1157,7 @@
         <div class="scan-new-side">
           <div class="card scan-new-summary-card">
             <div class="card-head">
-              <span class="icon-chip" aria-hidden="true">◈</span>
+              <span class="icon-chip teal" aria-hidden="true">◈</span>
               <h3>Scan scope</h3>
             </div>
             <div class="card-body scan-new-summary-body">
@@ -1144,7 +1178,7 @@
 
           <div class="card">
             <div class="card-head">
-              <span class="icon-chip" aria-hidden="true">✓</span>
+              <span class="icon-chip blue" aria-hidden="true">✓</span>
               <h3>Readiness</h3>
             </div>
             <div class="card-body" style="padding: 16px 18px; display: flex; flex-direction: column; gap: 14px;">
@@ -2221,12 +2255,22 @@ async function loadHealth() {
     el.title = text;
     el.className = "meta" + (tone ? " " + tone : "");
   }
+  // Auto-hides the screenshot 10s after it appears -- the status line
+  // above it (setVerifyLoginStatus, e.g. "login successful (admin)") is
+  // left alone, only the screenshot preview itself collapses back to
+  // blank. Any new call cancels a still-pending hide timer first, so a
+  // stale 10s countdown from a previous check can never wipe out a
+  // screenshot that just arrived for a new one.
+  var VERIFY_LOGIN_SHOT_AUTOHIDE_MS = 10000;
+  var verifyLoginShotHideTimer = null;
   function setVerifyLoginShot(dataUrl) {
     var wrap = document.getElementById("verifyLoginShotWrap");
     var img = document.getElementById("verifyLoginShot");
+    clearTimeout(verifyLoginShotHideTimer);
     if (dataUrl) {
       img.src = dataUrl;
       wrap.hidden = false;
+      verifyLoginShotHideTimer = setTimeout(function () { setVerifyLoginShot(null); }, VERIFY_LOGIN_SHOT_AUTOHIDE_MS);
     } else {
       wrap.hidden = true;
       img.removeAttribute("src");
@@ -2337,8 +2381,8 @@ async function loadHealth() {
       card.innerHTML =
         '<summary class="mod-card-top">' +
           '<div><h4>' + m.name + '</h4><div class="layer">' + m.id + '</div></div>' +
-          '<label class="switch" onclick="event.stopPropagation()"><input type="checkbox" ' + (m.enabled ? "checked" : "") + ' ' + (m.locked ? "disabled" : "") + ' data-mod="' + m.id + '" /><span class="track"></span></label>' +
         '</summary>' +
+        '<label class="switch mod-card-switch"><input type="checkbox" ' + (m.enabled ? "checked" : "") + ' ' + (m.locked ? "disabled" : "") + ' data-mod="' + m.id + '" /><span class="track"></span></label>' +
         '<div class="mod-card-foot"><span class="tc-count">' + m.technique_count + ' technique' + (m.technique_count === 1 ? "" : "s") + ' — click to show test cases</span></div>' +
         '<div class="mod-tc-list" data-tc-list></div>';
       grid.appendChild(card);

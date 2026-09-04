@@ -1,0 +1,46 @@
+{
+  "target": {
+    "base_url": "http://127.0.0.1:3001",
+    "login_url": "http://127.0.0.1:3001/#/login"
+  },
+  "browser": {
+    "headless": true,
+    "slowmo_ms": 0,
+    "proxy": null
+  },
+  "modules": {
+    "crawler": true,
+    "jwt_tests": true,
+    "auth_tests": true,
+    "idor_tests": true,
+    "business_logic_tests": false,
+    "file_upload_tests": false,
+    "cache_tests": true,
+    "configuration_tests": true,
+    "disclosure_tests": true,
+    "graphql_tests": false,
+    "deserialization_tests": true,
+    "sqli_tests": true,
+    "ssrf_tests": false,
+    "xss_tests": true,
+    "injection_variants_tests": true,
+    "oauth_tests": false,
+    "csrf_tests": true
+  },
+  "output": {
+    "reports_dir": "data/benchmarks/results/reports",
+    "evidence_dir": "data/benchmarks/results/evidence"
+  },
+  "burp": {
+    "enabled": false,
+    "run_active_scan": false,
+    "api_url": "http://127.0.0.1:1337",
+    "api_key": "",
+    "scan_timeout_s": 1800,
+    "poll_interval_s": 5,
+    "proxy_url": "http://127.0.0.1:8080"
+  },
+  "testing": {
+    "allow_state_changing_probes": false
+  }
+}

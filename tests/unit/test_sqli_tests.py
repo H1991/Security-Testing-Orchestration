@@ -77,6 +77,44 @@ def test_looks_authenticated_false_on_redirect_back_to_login():
     )
 
 
+# ---------------------------------------------------------------------------
+# looks_authenticated -- JSON API login responses (a modern SPA backend,
+# e.g. this project's own Juice Shop benchmark, never redirects or
+# returns HTML on login; it returns a JSON body carrying a token).
+# ---------------------------------------------------------------------------
+
+
+def test_looks_authenticated_true_on_json_body_carrying_a_token():
+    assert looks_authenticated(
+        200, {}, '{"authentication":{"token":"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.abc.def","bid":1}}',
+        200, {}, '{"error":{"message":"Invalid email or password."}}',
+    )
+
+
+def test_looks_authenticated_false_when_both_json_responses_are_errors():
+    assert not looks_authenticated(
+        200, {}, '{"error":{"message":"Invalid email or password."}}',
+        200, {}, '{"error":{"message":"Invalid email or password."}}',
+    )
+
+
+def test_looks_authenticated_false_on_json_body_with_no_token_shaped_field():
+    assert not looks_authenticated(
+        200, {}, '{"status":"ok","items":[]}',
+        200, {}, '{"error":"nope"}',
+    )
+
+
+def test_looks_authenticated_false_when_baseline_already_carries_a_token():
+    """A baseline response that itself carries a token-shaped field
+    (an endpoint that always issues some token regardless of validity)
+    must not make every later probe look like a false success."""
+    assert not looks_authenticated(
+        200, {}, '{"token":"same-token-value-both-times"}',
+        200, {}, '{"token":"same-token-value-both-times"}',
+    )
+
+
 def test_controllable_cookie_names_excludes_session_and_auth_shaped_cookies():
     cookies = {"JSESSIONID": "abc123", "cart_currency": "USD", "csrftoken": "xyz", "lang": "en"}
     assert sorted(controllable_cookie_names(cookies)) == ["cart_currency", "lang"]

@@ -1,0 +1,11 @@
+{
+  "users": [
+    {
+      "id": "admin-01",
+      "role": "admin",
+      "username": "admin@juice-sh.op",
+      "password": "{{env:JUICESHOP_ADMIN_PASSWORD}}",
+      "auth_type": "form_login"
+    }
+  ]
+}

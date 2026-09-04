@@ -36,6 +36,20 @@ def test_extracts_query_parameter_names():
     assert sniffer.endpoints[0].parameters == ["q", "page"]
 
 
+def test_extracts_query_parameter_names_with_empty_values():
+    """Regression: a search-as-you-type field captured before the user
+    types anything (e.g. Juice Shop's own `?q=`) has a real, named
+    parameter with an empty value -- `parse_qs`'s default
+    (`keep_blank_values=False`) silently dropped it entirely, meaning
+    the parameter was never even recorded as existing, let alone
+    tested by an injection module."""
+    sniffer = ApiSniffer()
+
+    sniffer._on_request(_request("GET", "https://x/rest/products/search?q=", "xhr"))
+
+    assert sniffer.endpoints[0].parameters == ["q"]
+
+
 def test_extracts_form_urlencoded_body_parameter_names():
     """Regression: the previous version only ever looked at the query
     string, so a real POST's actual parameters (in the body) were

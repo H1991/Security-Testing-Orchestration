@@ -36,7 +36,7 @@ from stof.core.logger import get_logger
 from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
 
-from ._injection_shared import placeholder_value, send_probe
+from ._injection_shared import looks_json_authenticated, placeholder_value, send_probe
 from ._probe_shared import control_fingerprint, sweep_paths
 from .base import _PASSWORD_FIELD_HINTS, _USERNAME_FIELD_HINTS, VulnModule, _is_transient_error, find_login_endpoint
 from .results import FAIL, NOT_IMPLEMENTED, PASS, SKIPPED, TestCaseResult, extract_findings
@@ -234,9 +234,12 @@ _FORM_AUTH_SUCCESS_MARKERS = ("logout", "log out", "sign out", "signout", "welco
 def _looks_form_authenticated(status: int, headers: dict, body: str, baseline_status: int, baseline_headers: dict, baseline_body: str) -> bool:
     """Same heuristic shape as `sqli_tests.py`'s own `looks_authenticated`
     (a login form commonly answers both a correct and an incorrect
-    submission with HTTP 200, re-rendering the same page) -- reimplemented
-    here rather than imported, since `auth_tests.py` and `sqli_tests.py`
-    are sibling modules and CLAUDE.md forbids importing between them."""
+    submission with HTTP 200, re-rendering the same page) -- the
+    HTML-page-shaped part is reimplemented here rather than imported,
+    since `auth_tests.py` and `sqli_tests.py` are sibling modules and
+    CLAUDE.md forbids importing between them; the JSON-API-shaped part
+    (`looks_json_authenticated`) is genuinely shared via `_injection_shared.py`,
+    the same established pattern `placeholder_value`/`send_probe` already use."""
     location = (headers or {}).get("location", "")
     baseline_location = (baseline_headers or {}).get("location", "")
     redirected_to_new_place = (
@@ -247,7 +250,7 @@ def _looks_form_authenticated(status: int, headers: dict, body: str, baseline_st
     )
     body_lower, baseline_lower = body.lower(), baseline_body.lower()
     new_success_marker = any(m in body_lower and m not in baseline_lower for m in _FORM_AUTH_SUCCESS_MARKERS)
-    return bool(redirected_to_new_place) or new_success_marker
+    return bool(redirected_to_new_place) or new_success_marker or looks_json_authenticated(body, baseline_body)
 
 
 async def _form_login_baseline(context, endpoint: Endpoint, username_param: str, password_param: str) -> tuple[int, str, dict] | None:

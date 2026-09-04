@@ -101,6 +101,7 @@ from ._injection_shared import (
     _second_order_verify_candidates,
     build_params,
     injectable_endpoints,
+    looks_json_authenticated,
     looks_like_sql_error,
     placeholder_value,
     response_similarity,
@@ -229,7 +230,7 @@ def looks_authenticated(
     )
     payload_lower, baseline_lower = payload_body.lower(), baseline_body.lower()
     new_success_marker = any(m in payload_lower and m not in baseline_lower for m in _AUTH_SUCCESS_MARKERS)
-    return bool(redirected_to_new_place) or new_success_marker
+    return bool(redirected_to_new_place) or new_success_marker or looks_json_authenticated(payload_body, baseline_body)
 
 
 @dataclass

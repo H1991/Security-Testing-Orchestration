@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Callable
 
 from stof.core.logger import get_logger
+from stof.core.module_registry import verify_registry_consistency
 from stof.core.test_orchestrator import build_test_plan
 
 from .base import VulnModule
@@ -69,6 +70,13 @@ MODULE_FACTORIES: dict[str, Callable[[], VulnModule]] = {
 # run separately, before this registry is ever consulted. Not a warning
 # case, just not a factory entry.
 _NOT_A_VULN_MODULE = {"crawler"}
+
+# Runs at import time -- both `main.py` and `ui/server.py` import this
+# module unconditionally, so this check is enforced everywhere without
+# either needing to remember to call it. See module_registry.py's own
+# docstring for the real, live bug this closes (5 modules silently
+# missing from every default scan for an unknown number of sessions).
+verify_registry_consistency(MODULE_FACTORIES)
 
 
 def build_modules(config: "Config") -> list[VulnModule]:

@@ -25,6 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from stof.core.logger import get_logger
+from stof.core.module_registry import VULN_MODULE_NAMES
 from stof.recorder import cdp
 
 _log = get_logger("ui.server")
@@ -54,17 +55,15 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 # Same module identifiers `stof/main.py::_KNOWN_MODULES` declares --
-# duplicated here (not imported) so the UI package stays import-light
-# and never pulls in Playwright/pydantic-config machinery just to know
-# module *names*; `_technique_counts()` below is the only place actual
-# counts come from, and it reads the same source of truth (testcases.json)
-# the CLI's own `--module` help text is generated from.
-_KNOWN_MODULES = (
-    "crawler", "jwt_tests", "auth_tests", "idor_tests", "configuration_tests",
-    "disclosure_tests", "graphql_tests", "deserialization_tests", "sqli_tests",
-    "ssrf_tests", "xss_tests", "csrf_tests", "injection_variants_tests", "cache_tests",
-    "business_logic_tests", "file_upload_tests",
-)
+# now imported from the one authoritative source (module_registry.py)
+# instead of hand-duplicated here. That used to be a real, live bug:
+# a hand-copied list like this one silently drifted out of sync with
+# ModulesConfig, dropping 5 real modules from every default scan.
+# `stof.config.schema` (what module_registry.py needs) is a pure
+# pydantic model with no Playwright dependency, so this stays cheap to
+# import; `_technique_counts()` below is still the only place actual
+# per-module technique *counts* come from, reading testcases.json.
+_KNOWN_MODULES = ("crawler", *VULN_MODULE_NAMES)
 
 _MODULE_LABELS: dict[str, str] = {
     "crawler": "Crawler & Endpoint Discovery",

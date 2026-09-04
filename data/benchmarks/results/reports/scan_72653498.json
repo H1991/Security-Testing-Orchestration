@@ -1,0 +1,647 @@
+{
+  "scan_id": "72653498",
+  "target": "http://127.0.0.1:3001",
+  "generated_at": "2026-09-03T14:58:32.633803+00:00",
+  "modules_run": [
+    "auth_tests",
+    "idor_tests",
+    "cache_tests",
+    "configuration_tests",
+    "disclosure_tests",
+    "deserialization_tests",
+    "sqli_tests",
+    "xss_tests",
+    "injection_variants_tests",
+    "csrf_tests"
+  ],
+  "module_notes": [
+    {
+      "module": "auth_tests",
+      "finding_count": 6,
+      "note": null
+    },
+    {
+      "module": "idor_tests",
+      "finding_count": 0,
+      "note": null
+    },
+    {
+      "module": "cache_tests",
+      "finding_count": 0,
+      "note": null
+    },
+    {
+      "module": "configuration_tests",
+      "finding_count": 2,
+      "note": null
+    },
+    {
+      "module": "disclosure_tests",
+      "finding_count": 2,
+      "note": null
+    },
+    {
+      "module": "deserialization_tests",
+      "finding_count": 0,
+      "note": null
+    },
+    {
+      "module": "sqli_tests",
+      "finding_count": 1,
+      "note": null
+    },
+    {
+      "module": "xss_tests",
+      "finding_count": 0,
+      "note": null
+    },
+    {
+      "module": "injection_variants_tests",
+      "finding_count": 0,
+      "note": null
+    },
+    {
+      "module": "csrf_tests",
+      "finding_count": 0,
+      "note": null
+    }
+  ],
+  "duration_seconds": 125.2,
+  "summary": {
+    "total_findings": 11,
+    "by_severity": {
+      "Critical": 2,
+      "High": 0,
+      "Medium": 6,
+      "Low": 3,
+      "Info": 0
+    },
+    "by_source": {
+      "STOF": 11
+    }
+  },
+  "findings": [
+    {
+      "finding_id": "c91b5cc9-12e5-4fde-ac1f-cd36e5cb9e2a",
+      "module_id": "auth_tests",
+      "vuln_type": "Session Cookie Missing Security Flags",
+      "severity": "Medium",
+      "cvss_score": 5.3,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:42.965218+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "GET http://127.0.0.1:3001/#/ (anonymous, pre-login) vs. a freshly-authenticated session for role 'admin'",
+      "response_raw": "cookie 'cookieconsent_status': httpOnly=False, secure=False, sameSite='Lax'",
+      "evidence_refs": [
+        "data/benchmarks/results/evidence/72653498/auth-c91b5cc9-12e5-4fde-ac1f-cd36e5cb9e2a/request.txt",
+        "data/benchmarks/results/evidence/72653498/auth-c91b5cc9-12e5-4fde-ac1f-cd36e5cb9e2a/response.txt",
+        "data/benchmarks/results/evidence/72653498/auth-c91b5cc9-12e5-4fde-ac1f-cd36e5cb9e2a/request_response.png"
+      ],
+      "description": "cookie 'cookieconsent_status' is missing the HttpOnly flag -- identified as a session/auth cookie because it was newly issued or changed value across the login boundary for role 'admin'.",
+      "recommendation": "Set HttpOnly and Secure on every session/auth cookie, and never set SameSite=None without also setting Secure.",
+      "discovered_at": "2026-09-03T14:56:42.965254+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "e0a12093-af10-4c83-b398-3b0c9d20aef6",
+      "module_id": "auth_tests",
+      "vuln_type": "Concurrent Session Not Revoked On Re-Login",
+      "severity": "Medium",
+      "cvss_score": 5.9,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:47.590250+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "GET http://127.0.0.1:3001/#/ using the FIRST of two independent logins' session cookie for role 'admin', after the second login completed",
+      "response_raw": "HTTP 200, 9393 bytes (post-second-login replay)",
+      "evidence_refs": [],
+      "description": "The session cookie captured from a first login for role 'admin' still authenticates against 'http://127.0.0.1:3001/#/' (HTTP 200) after a second, independent login for the same role has completed -- the server does not revoke prior sessions when a new one is established.",
+      "recommendation": "Either revoke prior sessions when a new authentication event occurs for the same account, or provide the user a way to view and remotely terminate concurrent sessions, per the OWASP Session Management Cheat Sheet.",
+      "discovered_at": "2026-09-03T14:56:47.590278+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "f27d4a8f-a624-4189-bbf1-c669eec0e409",
+      "module_id": "auth_tests",
+      "vuln_type": "Predictable / Low-Entropy Session Token",
+      "severity": "Medium",
+      "cvss_score": 6.5,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:52.257578+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "two independent fresh logins for role 'admin', comparing the 'token' cookie's value each time",
+      "response_raw": "cookie 'token': two independently-issued tokens for this cookie share an identical 543-character prefix, suggesting a predictable/non-random component",
+      "evidence_refs": [],
+      "description": "Cookie 'token' -- two independently-issued tokens for this cookie share an identical 543-character prefix, suggesting a predictable/non-random component.",
+      "recommendation": "Generate session identifiers with a cryptographically secure PRNG carrying at least 64 bits of entropy, with no fixed, sequential, or otherwise predictable component, per the OWASP Session Management Cheat Sheet.",
+      "discovered_at": "2026-09-03T14:56:52.257614+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "267fe462-f9c8-4e07-a2da-a3b3e094e6dc",
+      "module_id": "auth_tests",
+      "vuln_type": "Sensitive Content Cacheable After Logout (Back/Refresh Attack)",
+      "severity": "Low",
+      "cvss_score": 3.7,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:54.616123+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "GET http://127.0.0.1:3001/#/ (authenticated, role 'admin')",
+      "response_raw": "Content-Type: text/html; charset=UTF-8\nCache-Control: public, max-age=0",
+      "evidence_refs": [],
+      "description": "'http://127.0.0.1:3001/#/' authenticated response has no Cache-Control: no-store/no-cache directive -- a shared or public browser's back-button/disk cache can replay this authenticated page's content even after the user has logged out.",
+      "recommendation": "Set Cache-Control: no-store (and Pragma: no-cache for older HTTP/1.0 caches) on every authenticated response.",
+      "discovered_at": "2026-09-03T14:56:54.616148+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "77b935c7-dd8d-4055-91c9-724d8be29bf5",
+      "module_id": "auth_tests",
+      "vuln_type": "Missing Rate Limiting At The API/Token Level",
+      "severity": "Medium",
+      "cvss_score": 5.3,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling&t=Q1dn8ho",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "EIO",
+          "transport",
+          "t",
+          "sid"
+        ],
+        "param_locations": {
+          "EIO": "query",
+          "transport": "query",
+          "t": "query",
+          "sid": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:55:29.120086+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "6x GET http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling&t=Q1dn8ho (authenticated, role 'admin')",
+      "response_raw": "HTTP 200 on every attempt, no 429/throttling signal observed",
+      "evidence_refs": [],
+      "description": "6 consecutive authenticated requests to 'http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling&t=Q1dn8ho' produced no HTTP 429 or throttling-shaped response -- this API endpoint has no observable rate limiting at the authenticated/token level, beyond whatever login-only limiting TC-129.3 already checks.",
+      "recommendation": "Apply per-token/per-account rate limiting to authenticated API endpoints, not just the unauthenticated login endpoint.",
+      "discovered_at": "2026-09-03T14:56:54.709372+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "f15d578f-d053-42a7-beec-7f5cbc9fa476",
+      "module_id": "auth_tests",
+      "vuln_type": "Session Not Bound To Client Fingerprint (Hijacking Risk)",
+      "severity": "Low",
+      "cvss_score": 3.7,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/#/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:56.982876+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "GET http://127.0.0.1:3001/#/ using role 'admin''s session cookie, with a completely different User-Agent (desktop login vs. mobile replay)",
+      "response_raw": "HTTP 200, 9393 bytes",
+      "evidence_refs": [],
+      "description": "The session cookie for role 'admin' is accepted from a client presenting a completely different User-Agent than the one that logged in -- the session is not bound to any client fingerprint, so a stolen cookie alone (no other client secret) is sufficient to hijack the session from a different device/browser.",
+      "recommendation": "This is a defense-in-depth gap, not a standalone vulnerability (per-request client-binding is unusual and has real usability tradeoffs) -- consider it alongside session lifetime/rotation controls, not as a required fix on its own.",
+      "discovered_at": "2026-09-03T14:56:56.982902+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "0afb7833-acce-4502-8a8b-1b5fed092917",
+      "module_id": "configuration_tests",
+      "vuln_type": "Default Configuration -- Missing or Weak Content-Security-Policy",
+      "severity": "Medium",
+      "cvss_score": 5.4,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:57.980764+00:00"
+      },
+      "user_role": "unauthenticated",
+      "request_raw": "GET http://127.0.0.1:3001",
+      "response_raw": "Content-Type: text/html; charset=UTF-8\nContent-Security-Policy: None",
+      "evidence_refs": [
+        "data/benchmarks/results/evidence/72653498/config-csp-weakness/request.txt",
+        "data/benchmarks/results/evidence/72653498/config-csp-weakness/response.txt",
+        "data/benchmarks/results/evidence/72653498/config-csp-weakness/request_response.png"
+      ],
+      "description": "'http://127.0.0.1:3001' no CSP header present (Content-Type: text/html; charset=UTF-8). This is a defense-in-depth gap, not a confirmed exploit path on its own -- it only matters if the application also has an injection point (e.g. reflected/DOM XSS) for a CSP to have blocked, consistent with real disclosed reports of this class (HackerOne #225833) being low-severity precisely because they lacked an actual XSS to chain with.",
+      "recommendation": "Deploy a strict Content-Security-Policy on every HTML response (e.g. script-src 'self' plus nonces/hashes for any required inline scripts) with no unsafe-inline/unsafe-eval/wildcard sources.",
+      "discovered_at": "2026-09-03T14:56:57.980791+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "1719cfcc-6104-4437-bac5-6151d4f25b63",
+      "module_id": "configuration_tests",
+      "vuln_type": "Default Configuration -- Path-Relative StyleSheet Import",
+      "severity": "Low",
+      "cvss_score": 3.7,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:58.110685+00:00"
+      },
+      "user_role": "unauthenticated",
+      "request_raw": "GET http://127.0.0.1:3001",
+      "response_raw": "<link rel=stylesheet> with path-relative href(s): styles.css, styles.css",
+      "evidence_refs": [
+        "data/benchmarks/results/evidence/72653498/config-prssi/request.txt",
+        "data/benchmarks/results/evidence/72653498/config-prssi/response.txt",
+        "data/benchmarks/results/evidence/72653498/config-prssi/request_response.png"
+      ],
+      "description": "'http://127.0.0.1:3001' imports 2 stylesheet(s) using an href relative to the current page's own path rather than the site root: styles.css, styles.css. If this page can ever be rendered at an unexpected/attacker-influenced path (a path-based router, a reflected-path error page), the browser resolves that relative href against the wrong base and can be made to load an attacker-controlled stylesheet from a trusted origin -- a known technique for exfiltrating page content via CSS selectors/attribute readers.",
+      "recommendation": "Reference stylesheets with a root-relative ('/css/app.css') or absolute (https://...) href, never one relative to the current page's own path.",
+      "discovered_at": "2026-09-03T14:56:58.110714+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "693ee050-ca0a-4f30-aefc-c1f234e02466",
+      "module_id": "disclosure_tests",
+      "vuln_type": "PII Exposure via API Response",
+      "severity": "Critical",
+      "cvss_score": 6.5,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/api/Feedbacks/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:00.341712+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "GET http://127.0.0.1:3001/api/Feedbacks/",
+      "response_raw": "HTTP 200, 3 PII match(es): Email address",
+      "evidence_refs": [
+        "data/benchmarks/results/evidence/72653498/pii-api-/request.txt",
+        "data/benchmarks/results/evidence/72653498/pii-api-/response.txt",
+        "data/benchmarks/results/evidence/72653498/pii-api-/request_response.png"
+      ],
+      "description": "'http://127.0.0.1:3001/api/Feedbacks/' returned 3 apparent PII value(s) (Email address) in its raw API response.",
+      "recommendation": "Apply field-level output filtering server-side so an API response never includes more than the calling UI actually needs to render.",
+      "discovered_at": "2026-09-03T14:56:58.450115+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "0c86847b-eea6-4ffb-9933-5b831323ac99",
+      "module_id": "disclosure_tests",
+      "vuln_type": "Excessive Data Exposure",
+      "severity": "Medium",
+      "cvss_score": 5.9,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/rest/memories/",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [],
+        "param_locations": {},
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:56:08.237480+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "GET http://127.0.0.1:3001/rest/memories/",
+      "response_raw": "HTTP 200, sensitive field name(s) present in JSON: password",
+      "evidence_refs": [
+        "data/benchmarks/results/evidence/72653498/excessive-exposure-/request.txt",
+        "data/benchmarks/results/evidence/72653498/excessive-exposure-/response.txt",
+        "data/benchmarks/results/evidence/72653498/excessive-exposure-/request_response.png"
+      ],
+      "description": "'http://127.0.0.1:3001/rest/memories/' returns JSON containing internal/sensitive-shaped field name(s) (password) -- consistent with the API serializing an internal model directly rather than an explicit, minimized response shape.",
+      "recommendation": "Define an explicit response DTO/serializer per endpoint that only includes fields the client actually needs; never serialize an ORM/internal model directly.",
+      "discovered_at": "2026-09-03T14:57:00.127654+00:00",
+      "scanner_source": "stof"
+    },
+    {
+      "finding_id": "a9e8a0d1-222f-4218-94e6-697af8e49958",
+      "module_id": "sqli_tests",
+      "vuln_type": "SQL Injection (error-based)",
+      "severity": "Critical",
+      "cvss_score": 9.1,
+      "endpoint": {
+        "url": "http://127.0.0.1:3001/rest/products/search?q=",
+        "method": "GET",
+        "endpoint_type": "api",
+        "parameters": [
+          "q"
+        ],
+        "param_locations": {
+          "q": "query"
+        },
+        "parameter_values": {},
+        "auth_required": false,
+        "discovered_at": "2026-09-03T14:55:29.126759+00:00"
+      },
+      "user_role": "admin",
+      "request_raw": "GET http://127.0.0.1:3001/rest/products/search?q=\nq=\"'\"",
+      "response_raw": "<html>\n  <head>\n    <meta charset='utf-8'> \n    <title>Error: SQLITE_ERROR: near &quot;,&quot;: syntax error</title>\n    <style>* {\n  margin: 0;\n  padding: 0;\n  outline: 0;\n}\n\nbody {\n  padding: 80px 100px;\n  font: 13px \"Helvetica Neue\", \"Lucida Grande\", \"Arial\";\n  background: #ECE9E9 -webkit-gradien",
+      "evidence_refs": [
+        "data/benchmarks/results/evidence/72653498/sqli-error-q/request.txt",
+        "data/benchmarks/results/evidence/72653498/sqli-error-q/response.txt",
+        "data/benchmarks/results/evidence/72653498/sqli-error-q/request_response.png"
+      ],
+      "description": "Injecting \"'\" into parameter 'q' (query) on GET http://127.0.0.1:3001/rest/products/search?q= produced a database-error fingerprint ('sqlite_error') in the response (HTTP 500) -- the injected value reached the SQL layer unsanitized. This is a candidate signal only: no data was extracted or altered.",
+      "recommendation": "Use parameterized queries/prepared statements for every database call; never build SQL from unsanitized request input.",
+      "discovered_at": "2026-09-03T14:57:00.977417+00:00",
+      "scanner_source": "stof"
+    }
+  ],
+  "recon": {
+    "target": "http://127.0.0.1:3001",
+    "scanned_at": "2026-09-03T14:56:33.411535+00:00",
+    "pages_analyzed": 7,
+    "open_ports": [
+      {
+        "port": 22,
+        "service_guess": "ssh",
+        "banner": "SSH-2.0-OpenSSH_8.9p1 Ubuntu-3ubuntu0.13"
+      },
+      {
+        "port": 80,
+        "service_guess": "http",
+        "banner": null
+      },
+      {
+        "port": 3389,
+        "service_guess": "rdp",
+        "banner": null
+      },
+      {
+        "port": 5432,
+        "service_guess": "postgresql",
+        "banner": null
+      },
+      {
+        "port": 6379,
+        "service_guess": "redis",
+        "banner": null
+      },
+      {
+        "port": 8080,
+        "service_guess": "http-alt",
+        "banner": null
+      },
+      {
+        "port": 9000,
+        "service_guess": null,
+        "banner": null
+      },
+      {
+        "port": 9090,
+        "service_guess": null,
+        "banner": null
+      }
+    ],
+    "tech_stack": [
+      {
+        "url": "http://127.0.0.1:3001/#/",
+        "status_code": 200,
+        "title": "OWASP Juice Shop",
+        "content_type": "text/html; charset=UTF-8",
+        "tech": []
+      },
+      {
+        "url": "http://127.0.0.1:3001/#/contact",
+        "status_code": 200,
+        "title": "OWASP Juice Shop",
+        "content_type": "text/html; charset=UTF-8",
+        "tech": []
+      },
+      {
+        "url": "http://127.0.0.1:3001/#/complain",
+        "status_code": 200,
+        "title": "OWASP Juice Shop",
+        "content_type": "text/html; charset=UTF-8",
+        "tech": []
+      },
+      {
+        "url": "http://127.0.0.1:3001/#/chatbot",
+        "status_code": 200,
+        "title": "OWASP Juice Shop",
+        "content_type": "text/html; charset=UTF-8",
+        "tech": []
+      },
+      {
+        "url": "http://127.0.0.1:3001/#/about",
+        "status_code": 200,
+        "title": "OWASP Juice Shop",
+        "content_type": "text/html; charset=UTF-8",
+        "tech": []
+      },
+      {
+        "url": "http://127.0.0.1:3001/#/photo-wall",
+        "status_code": 200,
+        "title": "OWASP Juice Shop",
+        "content_type": "text/html; charset=UTF-8",
+        "tech": []
+      },
+      {
+        "url": "http://127.0.0.1:3001/#/deluxe-membership",
+        "status_code": 200,
+        "title": "OWASP Juice Shop",
+        "content_type": "text/html; charset=UTF-8",
+        "tech": []
+      }
+    ],
+    "missing_security_headers": {
+      "http://127.0.0.1:3001/#/": [
+        "content-security-policy",
+        "strict-transport-security",
+        "referrer-policy"
+      ],
+      "http://127.0.0.1:3001/#/contact": [
+        "content-security-policy",
+        "strict-transport-security",
+        "referrer-policy"
+      ],
+      "http://127.0.0.1:3001/#/complain": [
+        "content-security-policy",
+        "strict-transport-security",
+        "referrer-policy"
+      ],
+      "http://127.0.0.1:3001/#/chatbot": [
+        "content-security-policy",
+        "strict-transport-security",
+        "referrer-policy"
+      ],
+      "http://127.0.0.1:3001/#/about": [
+        "content-security-policy",
+        "strict-transport-security",
+        "referrer-policy"
+      ],
+      "http://127.0.0.1:3001/#/photo-wall": [
+        "content-security-policy",
+        "strict-transport-security",
+        "referrer-policy"
+      ],
+      "http://127.0.0.1:3001/#/deluxe-membership": [
+        "content-security-policy",
+        "strict-transport-security",
+        "referrer-policy"
+      ]
+    },
+    "exposed_paths": [
+      {
+        "url": "http://127.0.0.1:3001/.git/config",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/.env",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/.well-known/security.txt",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/server-status",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/actuator/health",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/swagger.json",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/swagger-ui.html",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/.aws/credentials",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/backup.zip",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/.DS_Store",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/web.config",
+        "status_code": 200
+      },
+      {
+        "url": "http://127.0.0.1:3001/WEB-INF/web.xml",
+        "status_code": 200
+      }
+    ],
+    "error_disclosures": [],
+    "secrets": [],
+    "parameters": {
+      "GET http://127.0.0.1:3001/#/photo-wall": [
+        {
+          "name": "file",
+          "guessed_type": "string"
+        }
+      ],
+      "GET http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling&t=Q1dn8ho": [
+        {
+          "name": "EIO",
+          "guessed_type": "string"
+        },
+        {
+          "name": "transport",
+          "guessed_type": "string"
+        },
+        {
+          "name": "t",
+          "guessed_type": "string"
+        },
+        {
+          "name": "sid",
+          "guessed_type": "id"
+        }
+      ],
+      "GET http://127.0.0.1:3001/api/Challenges/?name=Score%20Board": [
+        {
+          "name": "name",
+          "guessed_type": "string"
+        }
+      ],
+      "GET http://127.0.0.1:3001/rest/user/whoami?fields=email": [
+        {
+          "name": "fields",
+          "guessed_type": "string"
+        }
+      ],
+      "GET http://127.0.0.1:3001/rest/products/search?q=": [
+        {
+          "name": "q",
+          "guessed_type": "string"
+        }
+      ],
+      "POST http://127.0.0.1:3001/socket.io/?EIO=4&transport=polling&t=Q1dn8jm&sid=7VPbZQZjsjKLYR55AAK8": [
+        {
+          "name": "EIO",
+          "guessed_type": "string"
+        },
+        {
+          "name": "transport",
+          "guessed_type": "string"
+        },
+        {
+          "name": "t",
+          "guessed_type": "string"
+        },
+        {
+          "name": "sid",
+          "guessed_type": "id"
+        }
+      ]
+    }
+  }
+}

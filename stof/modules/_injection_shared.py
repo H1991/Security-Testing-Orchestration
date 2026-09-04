@@ -227,6 +227,53 @@ def looks_like_sql_error(body: str) -> "str | None":
     return next((sig for sig in _SQL_ERROR_FINGERPRINTS if sig in lowered), None)
 
 
+# Shared by `sqli_tests.py`'s and `auth_tests.py`'s own login-success
+# heuristics -- a login-bypass/default-credentials probe against a
+# modern SPA backend (Angular/React/Vue, this project's own Juice Shop
+# benchmark included) gets a JSON response carrying a bearer/session
+# token, never an HTML redirect or "welcome"/"dashboard" page text.
+# A success heuristic built only around those HTML-page shapes can
+# structurally never detect success against this whole class of
+# target -- confirmed live: STOF correctly found and probed Juice
+# Shop's real `POST /rest/user/login`, but every genuine bypass
+# attempt still reported "not vulnerable" because nothing was looking
+# at the JSON body's own success shape.
+_JSON_AUTH_TOKEN_KEYS = ("token", "access_token", "accesstoken", "jwt", "authentication", "sessionid", "session_id", "idtoken", "id_token")
+
+
+def _dict_has_auth_token_key(value: object, depth: int) -> bool:
+    if not isinstance(value, dict) or depth > 1:
+        return False
+    for key, val in value.items():
+        if isinstance(val, str) and len(val) >= 8 and key.lower() in _JSON_AUTH_TOKEN_KEYS:
+            return True
+        if isinstance(val, dict) and _dict_has_auth_token_key(val, depth + 1):
+            return True
+    return False
+
+
+def looks_json_authenticated(payload_body: str, baseline_body: str) -> bool:
+    """True when `payload_body` parses as JSON and carries a plausible
+    auth-token field (at the top level, or one level of nesting, e.g.
+    `{"authentication": {"token": "..."}}}`) that `baseline_body` (the
+    definitely-wrong-credentials reference response) lacks. Deliberately
+    requires an actual token-shaped field, not just "the two JSON bodies
+    differ" -- a login form very commonly returns a different (but still
+    failed) JSON error shape across attempts (a nonce, a timestamp),
+    which must never read as success on its own."""
+    try:
+        payload_json = json.loads(payload_body)
+    except (json.JSONDecodeError, TypeError):
+        return False
+    if not _dict_has_auth_token_key(payload_json, depth=0):
+        return False
+    try:
+        baseline_json = json.loads(baseline_body)
+    except (json.JSONDecodeError, TypeError):
+        return True
+    return not _dict_has_auth_token_key(baseline_json, depth=0)
+
+
 def response_similarity(a: str, b: str) -> float:
     """0..1 similarity ratio between two response bodies.
 

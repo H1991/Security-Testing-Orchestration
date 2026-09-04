@@ -1,0 +1,70 @@
+{
+  "target": "OWASP Juice Shop (bkimminich/juice-shop, v20.2.0)",
+  "note": "A curated SUBSET of Juice Shop's own well-documented vulnerability classes -- not its full 100+ challenge list. Chosen because each one maps cleanly to a technique category STOF actually implements; this manifest measures 'does STOF catch the things it claims to test for', not 'does STOF find every Juice Shop challenge'. Matching is deliberately approximate (vuln_type keyword + endpoint substring) -- a human should still eyeball the matched findings, this harness surfaces candidates, it doesn't replace triage.",
+  "cases": [
+    {
+      "id": "JS-01",
+      "category": "sqli",
+      "description": "Login bypass via SQL injection in the login form (the canonical Juice Shop 'Login Admin' challenge)",
+      "expects_vuln_type_keywords": ["sql injection"],
+      "expects_endpoint_keywords": ["login"],
+      "expected_severity_at_least": "High"
+    },
+    {
+      "id": "JS-02",
+      "category": "xss",
+      "description": "Reflected/DOM XSS via the search bar query parameter",
+      "expects_vuln_type_keywords": ["cross-site scripting", "xss"],
+      "expects_endpoint_keywords": ["search", "rest/products"],
+      "expected_severity_at_least": "Medium"
+    },
+    {
+      "id": "JS-03",
+      "category": "auth",
+      "description": "Default/weak admin credentials (admin@juice-sh.op / admin123 ships enabled)",
+      "expects_vuln_type_keywords": ["default credential", "weak credential", "vendor default"],
+      "expects_endpoint_keywords": ["login"],
+      "expected_severity_at_least": "Critical"
+    },
+    {
+      "id": "JS-04",
+      "category": "configuration",
+      "description": "Missing/weak security headers (CSP, X-Frame-Options, etc.) on the SPA's own responses",
+      "expects_vuln_type_keywords": ["security header", "content-security-policy", "clickjacking"],
+      "expects_endpoint_keywords": [],
+      "expected_severity_at_least": "Low"
+    },
+    {
+      "id": "JS-05",
+      "category": "disclosure",
+      "description": "Sensitive file exposure under /ftp (backup files, legacy docs) -- a long-standing, still-present Juice Shop challenge",
+      "expects_vuln_type_keywords": ["source map", "backup", "disclosure", "sensitive", "directory listing"],
+      "expects_endpoint_keywords": ["ftp"],
+      "expected_severity_at_least": "Medium"
+    },
+    {
+      "id": "JS-06",
+      "category": "idor",
+      "description": "Broken access control -- viewing/modifying another user's basket or order by changing a numeric ID",
+      "expects_vuln_type_keywords": ["insecure direct object reference", "idor", "broken object level authorization"],
+      "expects_endpoint_keywords": ["basket", "order"],
+      "expected_severity_at_least": "High"
+    },
+    {
+      "id": "JS-07",
+      "category": "jwt",
+      "description": "JWT-related weakness -- Juice Shop's own auth token is a JWT stored client-side (localStorage), a known target for alg-confusion/claim-tampering style challenges",
+      "expects_vuln_type_keywords": ["jwt", "json web token"],
+      "expects_endpoint_keywords": [],
+      "expected_severity_at_least": "Medium"
+    },
+    {
+      "id": "JS-08",
+      "category": "auth",
+      "description": "No login-attempt rate limiting / lockout -- Juice Shop ships without one by default",
+      "expects_vuln_type_keywords": ["rate limit", "lockout", "brute"],
+      "expects_endpoint_keywords": ["login"],
+      "expected_severity_at_least": "Medium"
+    }
+  ]
+}

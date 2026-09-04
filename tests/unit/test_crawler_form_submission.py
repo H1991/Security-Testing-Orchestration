@@ -340,6 +340,59 @@ async def test_crawl_submits_only_post_forms_when_enabled(monkeypatch):
     assert calls == [("https://x/", 1)]  # only the POST form (index 1)
 
 
+def test_looks_like_a_credentials_form_true_for_password_field():
+    assert crawler_module._looks_like_a_credentials_form(["email", "password"]) is True
+
+
+def test_looks_like_a_credentials_form_false_with_no_password_shaped_field():
+    assert crawler_module._looks_like_a_credentials_form(["q"]) is False
+
+
+def test_looks_like_a_credentials_form_is_case_insensitive():
+    assert crawler_module._looks_like_a_credentials_form(["Password"]) is True
+
+
+@pytest.mark.asyncio
+async def test_crawl_submits_a_credentials_shaped_form_even_when_declared_get(monkeypatch):
+    """Regression for the real Juice Shop finding: an Angular login form
+    carries no HTML `method` attribute at all (Angular submits through
+    `(ngSubmit)`, not the raw form protocol), so `detect_forms()`
+    defaults it to method="GET" -- which must not be reason enough to
+    skip submitting the single most security-relevant form on the
+    target. A password-shaped field name overrides that default."""
+    calls: list[tuple[str, int]] = []
+
+    async def fake_submit(probe_page, page_url, form_index, timeout_ms):
+        calls.append((page_url, form_index))
+
+    monkeypatch.setattr(crawler_module, "_submit_form_with_test_data", fake_submit)
+    site = {
+        "https://x/": {
+            "links": [],
+            "forms": [{"action": "", "method": "GET", "inputs": [{"name": "email"}, {"name": "password"}]}],
+        }
+    }
+
+    await crawl("https://x/", FakeContext(site))
+
+    assert calls == [("https://x/", 0)]
+
+
+@pytest.mark.asyncio
+async def test_crawl_still_skips_an_ordinary_get_form_without_a_password_field(monkeypatch):
+    calls: list[tuple[str, int]] = []
+
+    async def fake_submit(probe_page, page_url, form_index, timeout_ms):
+        calls.append((page_url, form_index))
+
+    monkeypatch.setattr(crawler_module, "_submit_form_with_test_data", fake_submit)
+    site = {"https://x/": {"links": [], "forms": [{"action": "search", "method": "GET", "inputs": [{"name": "q"}]}]}}
+
+    await crawl("https://x/", FakeContext(site))
+
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_crawl_does_not_resubmit_the_same_form_seen_on_multiple_pages(monkeypatch):
     calls: list[str] = []

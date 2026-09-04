@@ -51,16 +51,16 @@
     "generate_walkthrough": true
   },
   "burp": {
-    "enabled": false,
-    "api_url": "http://127.0.0.1:1337",
+    "enabled": true,
+    "api_url": "http://192.168.1.69:1337",
     "api_key": "2y3BosZg9Z8APj9pcJ2XRtx6ERXWHHer",
     "scan_timeout_s": 1800,
     "poll_interval_s": 5,
     "collaborator_url": "2tw3c9zy0lcf4vj0ceo1lvkh88e02p.burpcollaborator.net",
-    "proxy_url": "http://127.0.0.1:8080",
+    "proxy_url": "http://192.168.1.69:8080",
     "run_active_scan": false
   },
   "testing": {
-    "allow_state_changing_probes": false
+    "allow_state_changing_probes": true
   }
 }

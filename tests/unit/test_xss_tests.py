@@ -10,7 +10,14 @@ from stof.config.schema import UserConfig
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
 from stof.modules.results import FAIL, PASS, SKIPPED
-from stof.modules.xss_tests import XssTestConfig, XssTestsModule, reflects_unencoded
+from stof.modules.xss_tests import (
+    XssTestConfig,
+    XssTestsModule,
+    _dom_injection_points,
+    _is_hash_route_url,
+    _url_with_hash_query,
+    reflects_unencoded,
+)
 from stof.session.models import Session
 from stof.session.session_manager import SessionManager
 from stof.session.session_store import SessionStore
@@ -28,6 +35,58 @@ def test_reflects_unencoded_true_for_verbatim_reflection():
 
 def test_reflects_unencoded_false_when_not_present():
     assert reflects_unencoded("<html>no reflection here</html>", "<svg onload=confirm('marker')>") is False
+
+
+# ---------------------------------------------------------------------------
+# DOM-sink injection points -- hash-routed SPA support (TC-128.5/.6/.8)
+# ---------------------------------------------------------------------------
+
+
+def test_is_hash_route_url_true_for_route_shaped_fragment():
+    assert _is_hash_route_url("https://x/#/search") is True
+
+
+def test_is_hash_route_url_false_for_plain_anchor():
+    assert _is_hash_route_url("https://x/page#section") is False
+
+
+def test_is_hash_route_url_false_with_no_fragment():
+    assert _is_hash_route_url("https://x/page") is False
+
+
+def test_url_with_hash_query_preserves_route_path():
+    """Regression: the real bug found live against Juice Shop --
+    `_url_with_hash` alone replaces the ENTIRE fragment with the raw
+    payload, destroying the route path ('#/search' becomes just the
+    payload), so the app falls back to its default view and the real
+    vulnerable sink is never even reached. The query-only variant must
+    keep the route path intact."""
+    url = _url_with_hash_query("https://x/#/search", "q", "<svg onload=alert(1)>")
+    assert url.startswith("https://x/#/search?")
+    assert "q=%3Csvg" in url or "%3Csvg" in url  # url-encoded payload present as the q value
+
+
+def test_url_with_hash_query_preserves_other_existing_hash_params():
+    url = _url_with_hash_query("https://x/#/search?category=fruit", "q", "payload")
+    assert "category=fruit" in url
+    assert "q=payload" in url
+
+
+def test_dom_injection_points_includes_hash_route_query_variant_for_hash_routed_endpoint():
+    endpoint = Endpoint(url="https://x/#/search", method="GET", endpoint_type="page")
+    points = _dom_injection_points(endpoint, "q", "payload")
+    labels = [label for label, _ in points]
+    assert "location.hash route query" in labels
+    hash_query_url = next(url for label, url in points if label == "location.hash route query")
+    assert hash_query_url.startswith("https://x/#/search?")
+
+
+def test_dom_injection_points_omits_hash_route_query_variant_for_a_normal_endpoint():
+    endpoint = Endpoint(url="https://x/rest/products/search", method="GET", endpoint_type="api")
+    points = _dom_injection_points(endpoint, "q", "payload")
+    labels = [label for label, _ in points]
+    assert "location.hash route query" not in labels
+    assert labels == ["location.hash", "location.search"]
 
 
 def test_reflects_unencoded_false_when_html_entity_encoded():

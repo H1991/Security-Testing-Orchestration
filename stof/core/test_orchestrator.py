@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from stof.core.logger import get_logger
+from stof.core.module_registry import ALL_MODULE_NAMES
 
 if TYPE_CHECKING:
     from stof.config.schema import Config
@@ -27,20 +28,15 @@ _log = get_logger("core.test_orchestrator")
 # crawler (Layer 7) always runs first when enabled -- vulnerability
 # modules read endpoints.json, which only exists once it has. The rest
 # follow ModulesConfig's declared field order.
-MODULE_EXECUTION_ORDER = (
-    "crawler",
-    "jwt_tests",
-    "auth_tests",
-    "idor_tests",
-    "sqli_tests",
-    "xss_tests",
-    "configuration_tests",
-    "disclosure_tests",
-    "graphql_tests",
-    "deserialization_tests",
-    "oauth_tests",
-    "csrf_tests",
-)
+#
+# Derived directly from ModulesConfig's own Pydantic field order
+# (module_registry.py) rather than hand-copied here -- this used to be
+# its own hardcoded tuple that silently drifted out of sync with
+# ModulesConfig, dropping 5 real modules (ssrf_tests, injection_
+# variants_tests, cache_tests, business_logic_tests, file_upload_tests)
+# from every default scan run with no error at all. A derived value
+# cannot drift the same way a second hand-maintained list can.
+MODULE_EXECUTION_ORDER = ALL_MODULE_NAMES
 
 
 @dataclass

@@ -25,6 +25,8 @@ from stof.main import (
     _build_module_builders,
     _burp_scope_prefix,
     _burp_seed_urls,
+    _looks_like_driver_dead,
+    _module_hit_dead_driver,
     _module_note,
     _replay_workflows,
     _resolve_crawl_roles,
@@ -1010,3 +1012,64 @@ async def test_replay_workflows_prefers_admin_role_when_multiple_configured():
         await _replay_workflows(["wf-1"], {"normal": object(), "admin": object()}, object(), object(), object(), console)
 
     assert "role 'admin'" in console.infos[0]
+
+
+# ---------------------------------------------------------------------------
+# Driver-death detection (resilience) -- confirmed live: a dead Playwright
+# driver connection never raises up through vm.run_techniques() (per-
+# technique isolation already turns it into an ERROR result), so recovery
+# has to inspect the RESULTS a module returned, not catch an exception.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "detail,expected",
+    [
+        ("Browser.new_context: Connection closed while reading from the driver", True),
+        ("APIRequestContext.get: Connection closed while reading from the driver", True),
+        ("Target page, context or browser has been closed", True),
+        ("Target closed", True),
+        ("some ordinary probe failure: timeout", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_looks_like_driver_dead(detail, expected):
+    assert _looks_like_driver_dead(detail) is expected
+
+
+def _result(status: str, detail: str = ""):
+    from stof.modules.results import TestCaseResult
+
+    return TestCaseResult(
+        test_id="TC-X", technique_id="TC-X.1", technique="t", vuln_type="v",
+        module_id="x", severity="Info", status=status, detail=detail,
+    )
+
+
+def test_module_hit_dead_driver_true_when_an_error_result_has_the_signature():
+    from stof.modules.results import ERROR, PASS
+
+    results = [_result(PASS), _result(ERROR, "Connection closed while reading from the driver")]
+    assert _module_hit_dead_driver(results) is True
+
+
+def test_module_hit_dead_driver_false_for_an_ordinary_error():
+    from stof.modules.results import ERROR, PASS
+
+    results = [_result(PASS), _result(ERROR, "unexpected: division by zero")]
+    assert _module_hit_dead_driver(results) is False
+
+
+def test_module_hit_dead_driver_false_when_no_results():
+    assert _module_hit_dead_driver([]) is False
+
+
+def test_module_hit_dead_driver_ignores_non_error_status_with_matching_text():
+    # A PASS/SKIPPED result whose detail happens to mention the phrase
+    # (e.g. quoting it back in a description) must not trigger a browser
+    # restart -- only a real ERROR status counts.
+    from stof.modules.results import SKIPPED
+
+    results = [_result(SKIPPED, "unrelated to Connection closed while reading from the driver")]
+    assert _module_hit_dead_driver(results) is False

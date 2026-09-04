@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlsplit
 
 from stof.core.logger import get_logger
+from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
 
 from ._injection_shared import build_params, send_probe
@@ -49,7 +50,6 @@ from .base import VulnModule
 from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
-    from stof.crawler.endpoint_store import Endpoint
     from stof.engine.multi_session import SessionPool
     from stof.evidence.collector import EvidenceCollector
     from stof.session.session_manager import SessionManager
@@ -238,6 +238,89 @@ def _internal_looking_paths(body: str) -> "list[str]":
         if any(hint in lowered for hint in _INTERNAL_PATH_HINTS):
             hits.append(path)
     return hits
+
+
+# -- TC-105.11: directory listing enabled (WSTG-CONF-06) ----------------
+#
+# Generic, framework-agnostic signature check -- not this project's own
+# benchmark target's markup specifically. Confirmed live against a real
+# Express `serve-index` listing (this project's own Juice Shop benchmark
+# target's `/ftp/` directory): a directory listing hands over every
+# filename in it for free, no guessing/brute-forcing required, which is
+# exactly what made several of that target's own file-disclosure issues
+# trivially discoverable in the first place.
+_DIRECTORY_LISTING_SIGNATURES = ("index of /", "listing directory", "directory listing for")
+_LISTING_HREF_RE = re.compile(r'href="([^"?#]+)"', re.IGNORECASE)
+
+
+def _looks_like_directory_listing(body: str) -> bool:
+    lowered = body.lower()
+    return any(sig in lowered for sig in _DIRECTORY_LISTING_SIGNATURES)
+
+
+def _listing_file_names(body: str, directory_url: str) -> "list[str]":
+    """Extracts same-directory file names linked from a directory-listing
+    page's own markup -- deliberately simple href scraping rather than a
+    full HTML parser, since a listing page is machine-generated with
+    uniform structure (Apache autoindex, Express serve-index, IIS all
+    emit one `<a href="...">` per entry)."""
+    base_path = urlsplit(directory_url).path.rstrip("/")
+    names: list[str] = []
+    for href in _LISTING_HREF_RE.findall(body):
+        if not href or href in ("..", "../", "/") or href.startswith(("http://", "https://", "?")):
+            continue
+        candidate_path = href if href.startswith("/") else f"{base_path}/{href}"
+        candidate_path = candidate_path.rstrip("/")
+        if candidate_path == base_path or not candidate_path.startswith(base_path + "/"):
+            continue
+        name = candidate_path.rsplit("/", 1)[-1]
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def _candidate_listing_directories(endpoints: "list[Endpoint]") -> "list[str]":
+    """One candidate per unique parent directory of every discovered
+    endpoint whose path looks like a real file (a dotted last segment --
+    `/ftp/legal.md`, not `/rest/languages` or a bare SPA route), since a
+    listable directory is only interesting to probe if something real
+    was actually found inside it. Order-preserving de-dup, same
+    reasoning `ApiSniffer`'s own dedup-by-key follows."""
+    seen: set[str] = set()
+    directories: list[str] = []
+    for endpoint in endpoints:
+        parts = urlsplit(endpoint.url)
+        if not parts.path or "." not in parts.path.rsplit("/", 1)[-1]:
+            continue
+        parent_path = parts.path.rsplit("/", 1)[0] + "/"
+        if parent_path == "/":
+            continue
+        directory_url = f"{parts.scheme}://{parts.netloc}{parent_path}"
+        if directory_url in seen:
+            continue
+        seen.add(directory_url)
+        directories.append(directory_url)
+    return directories
+
+
+# -- TC-105.12: blocked file accessible via null-byte extension bypass --
+#
+# CWE-626 (poison null byte) -- an old but still real bug class in
+# extension-filtering middleware built on languages/runtimes whose
+# native string handling truncates at `\0`. Deliberately generic: this
+# only ever fires against a URL this scan already observed returning
+# 403/401 (a real, target-discovered "something is filtering this",
+# not a guessed path), and only reports a bypass when a genuinely
+# different, non-empty response comes back -- never assumes a null-byte
+# variant "worked" from status code alone, since a catch-all SPA route
+# can 200 on anything.
+_NULL_BYTE_BYPASS_SUFFIXES = ("%2500.pdf", "%2500.png", "%2500.jpg")
+
+
+def _looks_like_a_real_bypass(blocked_body: str, bypass_status: int, bypass_body: str) -> bool:
+    if bypass_status != 200 or not bypass_body.strip():
+        return False
+    return bypass_body.strip() != blocked_body.strip()
 
 
 def _looks_like_source_map(body: str) -> bool:
@@ -527,7 +610,7 @@ class DisclosureTestsModule(VulnModule):
     def _make_backup_finding(self, vuln_type: str, url: str, status: int, evidence_desc: str) -> Finding:
         return Finding(
             module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
-            endpoint=None, user_role=self.config.high_priv_role,
+            endpoint=Endpoint(url=url, method="GET", endpoint_type="page"), user_role=self.config.high_priv_role,
             request_raw=f"GET {url}",
             response_raw=f"HTTP {status}: {evidence_desc}",
             description=f"'{url}' is publicly accessible and {evidence_desc}.",
@@ -818,7 +901,7 @@ class DisclosureTestsModule(VulnModule):
                 continue
             finding = Finding(
                 module_id=self.module_id, vuln_type=vuln_type, severity="Low", cvss_score=3.1,
-                endpoint=None, user_role=self.config.high_priv_role,
+                endpoint=Endpoint(url=origin + filename, method="GET", endpoint_type="page"), user_role=self.config.high_priv_role,
                 request_raw=f"GET {origin}{filename}",
                 response_raw=f"HTTP {status}, internal-looking path(s): {', '.join(hits[:5])}",
                 description=(
@@ -831,6 +914,95 @@ class DisclosureTestsModule(VulnModule):
             )
             return self._result(tid, technique, vuln_type, FAIL, finding.description, finding=finding)
         return self._result(tid, technique, vuln_type, PASS, f"{checked} well-known file(s) checked, no internal-looking path disclosed")
+
+    async def _technique_directory_listing(self, endpoints, session_manager, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-105.11", "Directory listing enabled (WSTG-CONF-06)"
+        vuln_type = "Directory Listing Enabled"
+        candidate_dirs = _candidate_listing_directories(endpoints)
+        if not candidate_dirs:
+            return self._result(tid, technique, vuln_type, SKIPPED, "no discovered endpoint has a file-shaped path to derive a parent directory from")
+
+        target_url = self.config.target_url or endpoints[0].url
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
+        except KeyError as exc:
+            return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        checked = 0
+        for directory_url in candidate_dirs[: self.config.max_endpoints_scanned]:
+            checked += 1
+            probe = await self._probe_get(context, directory_url)
+            if probe is None:
+                continue
+            status, body = probe
+            if status != 200 or not _looks_like_directory_listing(body):
+                continue
+            file_names = _listing_file_names(body, directory_url)
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
+                endpoint=Endpoint(url=directory_url, method="GET", endpoint_type="page"), user_role=self.config.high_priv_role,
+                request_raw=f"GET {directory_url}",
+                response_raw=f"HTTP {status}, {len(file_names)} file(s) listed: {', '.join(file_names[:10])}",
+                description=(
+                    f"'{directory_url}' returns a directory listing exposing {len(file_names)} "
+                    f"file(s) ({', '.join(file_names[:10])}{'...' if len(file_names) > 10 else ''}) -- "
+                    "an attacker gets the exact filenames of everything served from this directory for "
+                    "free, without guessing or brute-forcing, including files nothing on the site links to."
+                ),
+                recommendation="Disable directory-listing/autoindexing on the webserver (or the static-file middleware serving this path) so only explicitly-linked files are reachable.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="directory-listing") if evidence else []
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+        return self._result(tid, technique, vuln_type, PASS, f"no directory listing observed across {checked} candidate director(y/ies) checked")
+
+    async def _technique_null_byte_extension_bypass(self, endpoints, session_manager, session_pool, evidence) -> TestCaseResult:
+        tid, technique = "TC-105.12", "Blocked file accessible via null-byte extension-filter bypass (CWE-626)"
+        vuln_type = "Null-Byte Extension Filter Bypass"
+        candidates = [e for e in endpoints if e.endpoint_type in ("page", "api")][: self.config.max_endpoints_scanned]
+        if not candidates:
+            return self._result(tid, technique, vuln_type, SKIPPED, "no discovered endpoint to check")
+
+        target_url = self.config.target_url or endpoints[0].url
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
+        except KeyError as exc:
+            return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        checked = 0
+        for endpoint in candidates:
+            baseline = await self._probe_get(context, endpoint.url)
+            if baseline is None:
+                continue
+            baseline_status, baseline_body = baseline
+            if baseline_status not in (401, 403):
+                continue
+            checked += 1
+            for suffix in _NULL_BYTE_BYPASS_SUFFIXES:
+                bypass_probe = await self._probe_get(context, endpoint.url + suffix)
+                if bypass_probe is None:
+                    continue
+                bypass_status, bypass_body = bypass_probe
+                if not _looks_like_a_real_bypass(baseline_body, bypass_status, bypass_body):
+                    continue
+                finding = Finding(
+                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
+                    endpoint=endpoint, user_role=self.config.high_priv_role,
+                    request_raw=f"GET {endpoint.url} -> HTTP {baseline_status}\nGET {endpoint.url}{suffix} -> HTTP {bypass_status}",
+                    response_raw=bypass_body[:500],
+                    description=(
+                        f"'{endpoint.url}' is blocked (HTTP {baseline_status}), but appending {suffix!r} "
+                        f"(a URL-encoded null byte followed by an allowed extension) returns a different, "
+                        f"non-empty HTTP {bypass_status} response -- the extension filter is bypassed via "
+                        "the classic poison-null-byte trick (CWE-626), exposing whatever content the "
+                        "filter was meant to block."
+                    ),
+                    recommendation="Reject request paths containing a literal or encoded null byte outright, and don't rely on filename-extension checks alone to gate access to sensitive files.",
+                )
+                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="null-byte-bypass") if evidence else []
+                return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        if checked == 0:
+            return self._result(tid, technique, vuln_type, SKIPPED, "no discovered endpoint returned 401/403 to probe a bypass against")
+        return self._result(tid, technique, vuln_type, PASS, f"{checked} blocked endpoint(s) checked, no null-byte extension bypass succeeded")
 
     async def run_techniques(
         self,
@@ -882,4 +1054,14 @@ class DisclosureTestsModule(VulnModule):
         except Exception as exc:
             _log.warning(f"disclosure_tests TC-105.10 failed unexpectedly: {exc}")
             results.append(self._result("TC-105.10", "robots.txt / sitemap.xml discloses internal-looking paths", "Information Disclosure via robots.txt/sitemap.xml", "ERROR", str(exc)))
+        try:
+            results.append(await self._technique_directory_listing(endpoints, session_manager, session_pool, evidence))
+        except Exception as exc:
+            _log.warning(f"disclosure_tests TC-105.11 failed unexpectedly: {exc}")
+            results.append(self._result("TC-105.11", "Directory listing enabled (WSTG-CONF-06)", "Directory Listing Enabled", "ERROR", str(exc)))
+        try:
+            results.append(await self._technique_null_byte_extension_bypass(endpoints, session_manager, session_pool, evidence))
+        except Exception as exc:
+            _log.warning(f"disclosure_tests TC-105.12 failed unexpectedly: {exc}")
+            results.append(self._result("TC-105.12", "Blocked file accessible via null-byte extension-filter bypass (CWE-626)", "Null-Byte Extension Filter Bypass", "ERROR", str(exc)))
         return results

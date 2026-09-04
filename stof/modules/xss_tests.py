@@ -168,6 +168,52 @@ def _url_with_search(url: str, param: str, payload: str) -> str:
     return urlunsplit((scheme, netloc, path, urlencode(params), fragment))
 
 
+def _is_hash_route_url(url: str) -> bool:
+    """True when `url`'s fragment looks like a client-side route
+    (`#/...`, or Angular's older `#!/...` hashbang form) rather than a
+    plain in-page anchor -- same "#/"/"#!/" convention
+    `stof.crawler.crawler` already established for exactly this signal,
+    reimplemented locally rather than imported (`modules` doesn't
+    import from `crawler`; see CLAUDE.md's layering rules)."""
+    _, _, fragment = url.partition("#")
+    return fragment.startswith(("/", "!/"))
+
+
+def _url_with_hash_query(url: str, param: str, payload: str) -> str:
+    """`url` with `payload` set as query parameter `param` INSIDE the
+    hash fragment, route path left intact -- what a hash-routed SPA's
+    own client-side router actually reads (Angular's classic
+    `HashLocationStrategy`: `#/search?q=...`), which is neither of the
+    other two DOM injection points: outright replacing the fragment
+    (`_url_with_hash`) destroys the route path so the app never even
+    renders the vulnerable view, and the real `location.search` (`_url_
+    with_search`) is never populated by the browser during a pure
+    hash-route navigation in the first place -- confirmed live against
+    this project's own Juice Shop benchmark target, whose real,
+    documented DOM XSS in its search view was completely unreachable by
+    either of the other two variants."""
+    scheme, netloc, path, query, fragment = urlsplit(url)
+    frag_path, _, frag_query = fragment.partition("?")
+    params = dict(parse_qsl(frag_query, keep_blank_values=True))
+    params[param] = payload
+    return urlunsplit((scheme, netloc, path, query, f"{frag_path}?{urlencode(params)}"))
+
+
+def _dom_injection_points(endpoint: "Endpoint", param: str, payload: str) -> "list[tuple[str, str]]":
+    """Every place a DOM-sink technique (TC-128.5/.6/.8) should try
+    planting `payload` for this endpoint -- shared so the three
+    techniques stay in sync on what "every reasonable DOM injection
+    point" means, rather than drifting via three independently-edited
+    copies of the same tuple list."""
+    points = [
+        ("location.hash", _url_with_hash(endpoint.url, payload)),
+        ("location.search", _url_with_search(endpoint.url, param, payload)),
+    ]
+    if _is_hash_route_url(endpoint.url):
+        points.append(("location.hash route query", _url_with_hash_query(endpoint.url, param, payload)))
+    return points
+
+
 def reflects_unencoded(body: str, payload: str) -> bool:
     """True if `payload` appears in `body` byte-for-byte.
 
@@ -534,21 +580,15 @@ class XssTestsModule(VulnModule):
         probes_run = 0
         try:
             for endpoint in candidates:
-                for injection_point, probe_url, location_detail in (
-                    ("location.hash", _url_with_hash(endpoint.url, payload), "the URL fragment (location.hash) -- never sent to the server at all"),
-                    (
-                        "location.search",
-                        _url_with_search(endpoint.url, endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM, payload),
-                        f"the query string parameter '{endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM}' (location.search)",
-                    ),
-                ):
+                param = endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM
+                for injection_point, probe_url in _dom_injection_points(endpoint, param, payload):
                     probes_run += 1
                     message = await self._navigate_and_check_dialog(page, probe_url)
                     if message is None or self._marker not in message:
                         continue
                     description = (
                         f"Navigating a real browser to {probe_url} with the marker payload placed in "
-                        f"{location_detail} triggered a real confirm() dialog whose message "
+                        f"{injection_point} triggered a real confirm() dialog whose message "
                         f"({message!r}) contains this run's own unique marker -- genuine, confirmed "
                         "in-browser script execution, not a response-inspection signal. The dialog "
                         "was auto-dismissed immediately and had no other effect."
@@ -624,13 +664,8 @@ class XssTestsModule(VulnModule):
             for endpoint in candidates:
                 marker_host = f"stof-dom-redirect-{secrets.token_hex(5)}.invalid"
                 marker_url = f"https://{marker_host}/"
-                for injection_point, probe_url in (
-                    ("location.hash", _url_with_hash(endpoint.url, marker_url)),
-                    (
-                        "location.search",
-                        _url_with_search(endpoint.url, endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM, marker_url),
-                    ),
-                ):
+                param = endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM
+                for injection_point, probe_url in _dom_injection_points(endpoint, param, marker_url):
                     probes_run += 1
                     if await self._navigate_and_check_redirect(page, probe_url, marker_host):
                         description = (
@@ -696,13 +731,8 @@ class XssTestsModule(VulnModule):
         try:
             for endpoint in candidates:
                 marker = f"stof-dom-sink-{secrets.token_hex(5)}"
-                for injection_point, probe_url in (
-                    ("location.hash", _url_with_hash(endpoint.url, marker)),
-                    (
-                        "location.search",
-                        _url_with_search(endpoint.url, endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM, marker),
-                    ),
-                ):
+                param = endpoint.parameters[0] if endpoint.parameters else _DOM_XSS_DEFAULT_PARAM
+                for injection_point, probe_url in _dom_injection_points(endpoint, param, marker):
                     probes_run += 1
                     try:
                         await asyncio.wait_for(page.goto(probe_url, timeout=10000), timeout=15)

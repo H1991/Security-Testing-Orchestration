@@ -10,7 +10,11 @@ from stof.engine.multi_session import SessionPool
 from stof.modules.disclosure_tests import (
     DisclosureTestConfig,
     DisclosureTestsModule,
+    _candidate_listing_directories,
     _internal_looking_paths,
+    _listing_file_names,
+    _looks_like_a_real_bypass,
+    _looks_like_directory_listing,
     _looks_like_env_file,
     _looks_like_git_config,
     _looks_like_source_map,
@@ -317,6 +321,7 @@ async def test_source_map_and_backup_exposure_fails_on_exposed_git_config(tmp_pa
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-105.5"].status == FAIL
     assert by_id["TC-105.5"].finding is not None
+    assert by_id["TC-105.5"].finding.endpoint is not None  # regression: walkthrough_runner crashes on a None endpoint
 
 
 @pytest.mark.asyncio
@@ -802,6 +807,7 @@ async def test_robots_sitemap_disclosure_fails_on_internal_path(tmp_path):
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-105.10"].status == FAIL
     assert by_id["TC-105.10"].finding is not None
+    assert by_id["TC-105.10"].finding.endpoint is not None  # regression: walkthrough_runner crashes on a None endpoint
 
 
 @pytest.mark.asyncio
@@ -821,3 +827,172 @@ async def test_robots_sitemap_disclosure_passes_when_nothing_internal(tmp_path):
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-105.10"].status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-105.11 — directory listing enabled (WSTG-CONF-06)
+# ---------------------------------------------------------------------------
+
+
+def test_looks_like_directory_listing_true_on_express_serve_index():
+    assert _looks_like_directory_listing("<title>listing directory /ftp/</title>") is True
+
+
+def test_looks_like_directory_listing_true_on_apache_autoindex():
+    assert _looks_like_directory_listing("<h1>Index of /backup/</h1>") is True
+
+
+def test_looks_like_directory_listing_false_on_an_ordinary_page():
+    assert _looks_like_directory_listing("<h1>Welcome to our store</h1>") is False
+
+
+def test_listing_file_names_extracts_relative_hrefs():
+    body = '<ul><li><a href="legal.md">legal.md</a></li><li><a href="acquisitions.md">acquisitions.md</a></li></ul>'
+    names = _listing_file_names(body, "https://x/ftp/")
+    assert names == ["legal.md", "acquisitions.md"]
+
+
+def test_listing_file_names_ignores_parent_directory_and_external_links():
+    body = '<a href="../">../</a><a href="https://cdn.example.com/x.js">ext</a><a href="notes.txt">notes.txt</a>'
+    names = _listing_file_names(body, "https://x/ftp/")
+    assert names == ["notes.txt"]
+
+
+def test_candidate_listing_directories_derives_parent_of_file_shaped_endpoints():
+    endpoints = [
+        Endpoint(url="https://x/ftp/legal.md", method="GET", endpoint_type="page"),
+        Endpoint(url="https://x/ftp/acquisitions.md", method="GET", endpoint_type="page"),
+        Endpoint(url="https://x/rest/languages", method="GET", endpoint_type="api"),
+    ]
+    assert _candidate_listing_directories(endpoints) == ["https://x/ftp/"]
+
+
+@pytest.mark.asyncio
+async def test_directory_listing_fails_when_listing_is_exposed(tmp_path):
+    endpoint = Endpoint(url="https://x/ftp/legal.md", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, max_redirects=0):
+        if url == "https://x/ftp/":
+            return _response(200, '<title>listing directory /ftp/</title><a href="legal.md">legal.md</a><a href="coupons_2013.md.bak">coupons_2013.md.bak</a>')
+        return _response(404, "not found")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.11"].status == FAIL
+    assert by_id["TC-105.11"].finding is not None
+    assert by_id["TC-105.11"].finding.endpoint is not None  # regression: walkthrough_runner crashes on a None endpoint
+
+
+@pytest.mark.asyncio
+async def test_directory_listing_passes_when_not_exposed(tmp_path):
+    endpoint = Endpoint(url="https://x/ftp/legal.md", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, max_redirects=0):
+        return _response(403, "Forbidden")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.11"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_directory_listing_skipped_with_no_file_shaped_endpoint(tmp_path):
+    endpoint = Endpoint(url="https://x/rest/languages", method="GET", endpoint_type="api")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context(AsyncMock()))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.11"].status == SKIPPED
+
+
+# ---------------------------------------------------------------------------
+# TC-105.12 — null-byte extension-filter bypass (CWE-626)
+# ---------------------------------------------------------------------------
+
+
+def test_looks_like_a_real_bypass_true_on_different_non_empty_200():
+    assert _looks_like_a_real_bypass("Forbidden", 200, "backup file contents here") is True
+
+
+def test_looks_like_a_real_bypass_false_when_status_is_not_200():
+    assert _looks_like_a_real_bypass("Forbidden", 403, "still forbidden") is False
+
+
+def test_looks_like_a_real_bypass_false_on_empty_body():
+    assert _looks_like_a_real_bypass("Forbidden", 200, "   ") is False
+
+
+def test_looks_like_a_real_bypass_false_when_body_is_identical_to_blocked_response():
+    """A catch-all SPA route that 200s on literally anything must not
+    read as a bypass just because the status changed to 200 -- the
+    body itself has to actually differ."""
+    assert _looks_like_a_real_bypass("same content", 200, "same content") is False
+
+
+@pytest.mark.asyncio
+async def test_null_byte_extension_bypass_fails_when_a_suffix_reveals_content(tmp_path):
+    endpoint = Endpoint(url="https://x/ftp/coupons_2013.md.bak", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, max_redirects=0):
+        if url == "https://x/ftp/coupons_2013.md.bak":
+            return _response(403, "Forbidden")
+        if url == "https://x/ftp/coupons_2013.md.bak%2500.pdf":
+            return _response(200, "NOV2013-20\nJAN2014-15\n")
+        return _response(404, "not found")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.12"].status == FAIL
+    assert by_id["TC-105.12"].finding is not None
+
+
+@pytest.mark.asyncio
+async def test_null_byte_extension_bypass_passes_when_no_suffix_reveals_anything(tmp_path):
+    endpoint = Endpoint(url="https://x/ftp/coupons_2013.md.bak", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, max_redirects=0):
+        return _response(403, "Forbidden")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.12"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_null_byte_extension_bypass_skipped_when_nothing_is_blocked(tmp_path):
+    endpoint = Endpoint(url="https://x/ftp/legal.md", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
+
+    async def fake_get(url, max_redirects=0):
+        return _response(200, "public content")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    module = DisclosureTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results}
+    assert by_id["TC-105.12"].status == SKIPPED

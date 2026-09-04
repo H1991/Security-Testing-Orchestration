@@ -89,7 +89,16 @@ class ApiSniffer:
 
         parsed = urlparse(request.url)
         key = (method, parsed.path)
-        query_params = list(parse_qs(parsed.query).keys())
+        # `keep_blank_values=True` -- a query param with an empty value
+        # right now (a typeahead search box captured before the user
+        # typed anything, e.g. Juice Shop's own `?q=`) still names a
+        # real parameter the endpoint accepts values through.
+        # `parse_qs`'s default drops blank-valued keys entirely, which
+        # silently meant this parameter was never even recorded as
+        # existing, let alone tested by any injection module -- not a
+        # target-specific quirk, any search-as-you-type field on any
+        # site starts out this way.
+        query_params = list(parse_qs(parsed.query, keep_blank_values=True).keys())
         body_params = _body_param_names(request) if method in _BODY_BEARING_METHODS else []
         parameters = list(dict.fromkeys(query_params + body_params))
         # Body params are tagged last so a name appearing in both (rare)
