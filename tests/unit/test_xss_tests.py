@@ -174,9 +174,9 @@ def _by_id(results):
 
 @pytest.mark.asyncio
 async def test_run_techniques_skipped_when_no_injectable_endpoints(tmp_path):
-    """No query/body parameter (TC-128.1-.3/.7), no free-text POST field
-    (TC-128.4), and no GET endpoint at all for TC-128.5/TC-128.6 to
-    navigate to (`method="POST"` here, deliberately, so their shared
+    """No query/body parameter (TC-128.1-.3/.7/.9), no free-text POST
+    field (TC-128.4), and no GET endpoint at all for TC-128.5/TC-128.6
+    to navigate to (`method="POST"` here, deliberately, so their shared
     GET-endpoint requirement also has nothing to work with) -- every
     technique should SKIP."""
     endpoints = [Endpoint(url="https://x/", method="POST", endpoint_type="page")]
@@ -187,7 +187,7 @@ async def test_run_techniques_skipped_when_no_injectable_endpoints(tmp_path):
     results = await module.run_techniques(endpoints, session_manager, pool)
 
     by_id = _by_id(results)
-    assert len(by_id) == 8
+    assert len(by_id) == 9
     assert all(r.status == SKIPPED for r in by_id.values())
 
 
@@ -293,6 +293,39 @@ async def test_css_injection_technique_fails_when_marker_reflects_unencoded(tmp_
     assert by_id["TC-128.1"].status == PASS
     assert by_id["TC-128.2"].status == PASS
     assert by_id["TC-128.3"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_html_injection_technique_fails_when_marker_reflects_unencoded_with_no_script_content(tmp_path):
+    """TC-128.9 is deliberately payload-free of script/event-handler
+    content -- a target that specifically strips `<script>` tags but
+    still fails to HTML-encode output at all should FAIL this
+    technique as a Medium "HTML Injection" finding, independent of
+    (and with a lower severity than) the script-execution-shaped
+    techniques."""
+    endpoint = Endpoint(url="https://x/comment", method="GET", endpoint_type="page", parameters=["text"])
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    module = XssTestsModule()
+    html_payload = module._payload_for("TC-128.9")
+
+    def fake_get(url, params=None, max_redirects=0):
+        text = (params or {}).get("text", "")
+        if text == html_payload:
+            return _response(200, f"<html><body><p>{text}</p></body></html>")
+        return _response(200, "<html><body><p>clean</p></body></html>")
+
+    pool = _pool_with_context(_fake_context(get_side_effect=fake_get))
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = _by_id(results)
+    assert by_id["TC-128.9"].status == FAIL
+    assert by_id["TC-128.9"].finding is not None
+    assert by_id["TC-128.9"].finding.vuln_type == "HTML Injection"
+    assert by_id["TC-128.9"].finding.severity == "Medium"
+    assert by_id["TC-128.9"].finding.cvss_score == 4.1
+    assert "confirm()" not in by_id["TC-128.9"].finding.description
+    assert by_id["TC-128.1"].status == PASS
 
 
 @pytest.mark.asyncio

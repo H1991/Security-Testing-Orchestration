@@ -26,6 +26,7 @@ from stof.main import (
     _burp_scope_prefix,
     _burp_seed_urls,
     _coverage_funnel,
+    _endpoints_from_discovered_routes,
     _findings_from_recon_secrets,
     _looks_like_driver_dead,
     _module_hit_dead_driver,
@@ -348,8 +349,9 @@ def test_module_note_no_explanation_for_zero_idor_findings():
 
 
 class _FakeReconReport:
-    def __init__(self, secrets):
+    def __init__(self, secrets, discovered_routes=None):
         self.secrets = secrets
+        self.discovered_routes = discovered_routes or []
 
 
 def test_findings_from_recon_secrets_returns_empty_for_no_recon():
@@ -392,6 +394,45 @@ def test_findings_from_recon_secrets_handles_multiple_secrets_independently():
 
     assert len(findings) == 2
     assert findings[1].endpoint.endpoint_type == "page"  # non-.js source stays a "page" endpoint
+
+
+# ---------------------------------------------------------------------------
+# _endpoints_from_discovered_routes
+# ---------------------------------------------------------------------------
+
+
+def test_endpoints_from_discovered_routes_returns_empty_for_no_recon():
+    assert _endpoints_from_discovered_routes(None, "https://x/") == []
+
+
+def test_endpoints_from_discovered_routes_returns_empty_when_none_found():
+    assert _endpoints_from_discovered_routes(_FakeReconReport([], []), "https://x/") == []
+
+
+def test_endpoints_from_discovered_routes_resolves_a_route_string_into_a_real_endpoint():
+    """Regression: `secrets_scanner.find_routes()` mines route strings
+    (a Vue/React router config's own `path:"/..."` entries) out of JS
+    bundles, but a route string found this run used to sit in a recon
+    report file only, never actually queued for THIS scan's vuln
+    modules to test -- exactly the sidebar-driven admin screens the
+    crawler's own click-exploration still can't fully reach on a
+    single pass."""
+    route = {"path": "/kauthor/categories", "source_url": "https://x/assets/router.js"}
+
+    endpoints = _endpoints_from_discovered_routes(_FakeReconReport([], [route]), "https://x/")
+
+    assert len(endpoints) == 1
+    assert endpoints[0].url == "https://x/kauthor/categories"
+    assert endpoints[0].method == "GET"
+    assert endpoints[0].endpoint_type == "page"
+
+
+def test_endpoints_from_discovered_routes_resolves_against_base_url_origin():
+    route = {"path": "/admin/users"}
+
+    endpoints = _endpoints_from_discovered_routes(_FakeReconReport([], [route]), "https://test.example.com/app/login")
+
+    assert endpoints[0].url == "https://test.example.com/admin/users"
 
 
 # ---------------------------------------------------------------------------

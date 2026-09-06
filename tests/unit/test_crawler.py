@@ -38,6 +38,7 @@ class _FakeCandidate:
     async def click(self, timeout: int | None = None, force: bool = False) -> None:
         if self._spec.get("click_error") and not (force and self._spec.get("force_click_succeeds")):
             raise RuntimeError("click failed")
+        self._spec["click_count"] = self._spec.get("click_count", 0) + 1
         for handler in list(self._page._dialog_listeners):
             message = self._spec.get("dialog_message")
             if message:
@@ -1042,6 +1043,67 @@ async def test_crawl_click_exploration_follows_a_menu_trigger_to_a_revealed_logi
 
     page_urls = {e.url for e in endpoints if e.endpoint_type == "page"}
     assert "https://x/#/login" in page_urls
+
+
+@pytest.mark.asyncio
+async def test_crawl_click_exploration_follows_a_sidebar_menu_trigger_to_an_admin_screen():
+    """Regression for a real target: a CMS admin console's entire
+    attack surface (category management, workflow management, user
+    management) sat behind a collapsible sidebar menu -- clicking the
+    parent ("Configuration") produces no URL change (an in-place
+    accordion expand), revealing a "Category Management" child item.
+    Before `_HIGH_VALUE_CLICK_HINTS` gained generic admin/CMS
+    vocabulary, this revealed item never matched (the vocabulary was
+    commerce/auth-only), so this whole class of app -- any sidebar-
+    driven admin console, not just this one target -- was structurally
+    unreachable no matter how well link-following worked."""
+    clickable = [
+        {"text": "Category Management", "visible": False, "leads_to": "https://x/categories"},
+        {"text": "Configuration", "reveals": [0]},
+    ]
+    site = {"https://x/": {"links": [], "clickable": clickable}, "https://x/categories": {"links": []}}
+    context = FakeContext(site)
+
+    endpoints = await crawl("https://x/", context)
+
+    page_urls = {e.url for e in endpoints if e.endpoint_type == "page"}
+    assert "https://x/categories" in page_urls
+
+
+@pytest.mark.asyncio
+async def test_crawl_click_exploration_clicks_a_next_page_pagination_control():
+    """Regression for a real target: a 335-row Category Management
+    table only ever rendered its first ~10 rows -- the paginated data-
+    fetch API's own `pageNumber` request-parameter shape (needed for
+    IDOR/data-boundary testing against it) was invisible past page 1,
+    since nothing in the crawler ever clicked "Next"."""
+    next_button = {"text": "Next"}
+    site = {"https://x/": {"links": [], "clickable": [next_button]}}
+    context = FakeContext(site)
+
+    await crawl("https://x/", context)
+
+    assert next_button.get("click_count", 0) >= 1
+
+
+@pytest.mark.asyncio
+async def test_crawl_click_exploration_pagination_clicks_are_bounded():
+    """`_MAX_PAGINATION_CLICKS` must actually cap the dedicated
+    pagination-exploration loop -- an always-present "Next" control (a
+    real, common shape: some tables never disable/hide it, even past
+    the last page) must not turn this into an unbounded click loop.
+    "Next" is also a valid primary-loop candidate in its own right (it
+    produces no URL change, same as any other in-place UI action), so
+    one extra click from that pass is expected and legitimate --
+    only `_explore_pagination`'s own loop needs bounding here."""
+    next_button = {"text": "Next"}
+    site = {"https://x/": {"links": [], "clickable": [next_button]}}
+    context = FakeContext(site)
+
+    await crawl("https://x/", context)
+
+    from stof.crawler.crawler import _MAX_PAGINATION_CLICKS
+    assert next_button.get("click_count", 0) <= _MAX_PAGINATION_CLICKS + 1
 
 
 @pytest.mark.asyncio

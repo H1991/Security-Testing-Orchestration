@@ -323,6 +323,19 @@ class XssTestsModule(VulnModule):
             # underlying gap (unencoded reflection allowing a context
             # breakout) is identical, only the injected content differs.
             "TC-128.7": f"';}}*{{background:url(https://stof-css-{marker}.invalid/)}}/*",
+            # TC-128.9 HTML Injection -- deliberately no script/event-
+            # handler content at all, unlike every other payload in this
+            # module: a target that specifically strips `<script>` tags
+            # and `on*=` attributes (a common, narrow WAF/filter
+            # pattern) can still fail to HTML-encode output at all,
+            # letting plain markup like this render -- content
+            # spoofing/defacement/phishing via injected links or forms,
+            # a real, separately-tracked finding class distinct from
+            # script execution. Reuses the exact same byte-for-byte-
+            # unencoded-reflection oracle as every other TC-128.x
+            # technique; only the payload shape (and resulting
+            # vuln_type) differs.
+            "TC-128.9": f"<b>stof-html-injection-{marker}</b>",
         }
 
     def _register_payloads(self) -> None:
@@ -360,6 +373,10 @@ class XssTestsModule(VulnModule):
         self, technique_id: str, technique_name: str, context_label: str,
         candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
         vuln_type: str = "Reflected Cross-Site Scripting",
+        severity: str = "High", cvss_score: float = 6.1,
+        side_effect_note: str = (
+            "and its only side effect is a harmless confirm() dialog tagged with this run's own random marker"
+        ),
     ) -> TestCaseResult:
         """Shared body for all three context-variant techniques --
         each `_technique_*` wrapper below just supplies its own
@@ -383,11 +400,10 @@ class XssTestsModule(VulnModule):
                 f"response (HTTP {status}), in a position consistent with {context_label} -- the "
                 "application did not HTML-encode this input before reflecting it. This is a "
                 "response-inspection signal only: the payload was never rendered in a real browser "
-                "to confirm actual script execution, and its only side effect is a harmless "
-                "confirm() dialog tagged with this run's own random marker."
+                f"to confirm actual script execution, {side_effect_note}."
             )
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.1,
+                module_id=self.module_id, vuln_type=vuln_type, severity=severity, cvss_score=cvss_score,
                 endpoint=endpoint, user_role=self.config.low_priv_role,
                 request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
                 response_raw=body[:300],
@@ -782,6 +798,7 @@ class XssTestsModule(VulnModule):
             ("TC-128.2", "Reflected XSS via HTML attribute breakout", "an HTML attribute breakout"),
             ("TC-128.3", "Reflected XSS via inline script/event-handler breakout", "an inline script/event-handler breakout"),
             ("TC-128.7", "CSS Injection via attribute-context breakout", "a CSS injection / attribute-context breakout"),
+            ("TC-128.9", "HTML Injection via unencoded markup reflection", "an unescaped HTML body position (no script/event-handler content)"),
         )
         candidates = self._param_candidates(endpoints)
         stored_tid, stored_technique = "TC-128.4", "Stored Cross-Site Scripting (planted marker, cross-endpoint/role verification)"
@@ -798,9 +815,26 @@ class XssTestsModule(VulnModule):
             else:
                 results = []
                 for tid, name, label in technique_defs:
-                    vt = "CSS Injection" if tid == "TC-128.7" else "Reflected Cross-Site Scripting"
+                    extra_kwargs = {}
+                    if tid == "TC-128.7":
+                        vt = "CSS Injection"
+                    elif tid == "TC-128.9":
+                        # Medium, not the High every script-executing
+                        # technique in this module uses: content
+                        # spoofing/defacement via injected markup is a
+                        # real but categorically lower-impact finding
+                        # than confirmed script execution, and there's
+                        # no confirm() dialog to mention since this
+                        # payload deliberately carries none.
+                        vt = "HTML Injection"
+                        extra_kwargs = {
+                            "severity": "Medium", "cvss_score": 4.1,
+                            "side_effect_note": "this payload deliberately carries no script or event-handler content at all",
+                        }
+                    else:
+                        vt = "Reflected Cross-Site Scripting"
                     results.append(await self._safe_result(
-                        self._technique_reflection(tid, name, label, candidates, context, evidence, vuln_type=vt),
+                        self._technique_reflection(tid, name, label, candidates, context, evidence, vuln_type=vt, **extra_kwargs),
                         "TC-128", tid, name, vt, role=self.config.low_priv_role,
                     ))
 

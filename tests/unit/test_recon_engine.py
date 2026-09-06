@@ -7,7 +7,7 @@ import pytest
 
 import stof.recon.recon_engine as recon_engine_module
 from stof.crawler.endpoint_store import Endpoint
-from stof.recon.recon_engine import ReconReport, run_recon, write_recon_report
+from stof.recon.recon_engine import ReconReport, _scan_known_js_assets, run_recon, write_recon_report
 from stof.recon.tech_detector import TechProfile
 
 
@@ -62,13 +62,13 @@ async def test_run_recon_assembles_a_complete_report(monkeypatch):
     async def fake_probe_error_disclosure(context, url, timeout_ms=8000):
         return None
 
-    async def fake_scan_page_for_secrets(page, timeout_ms=8000):
-        return []
+    async def fake_scan_page_for_secrets_and_routes(page, timeout_ms=8000):
+        return [], []
 
     monkeypatch.setattr(recon_engine_module.tech_detector, "analyze_url", fake_analyze_url)
     monkeypatch.setattr(recon_engine_module.misconfig_scanner, "scan_exposed_paths", fake_scan_exposed_paths)
     monkeypatch.setattr(recon_engine_module.misconfig_scanner, "probe_error_disclosure", fake_probe_error_disclosure)
-    monkeypatch.setattr(recon_engine_module.secrets_scanner, "scan_page_for_secrets", fake_scan_page_for_secrets)
+    monkeypatch.setattr(recon_engine_module.secrets_scanner, "scan_page_for_secrets_and_routes", fake_scan_page_for_secrets_and_routes)
 
     endpoints = [
         Endpoint(url="https://x/", method="GET", endpoint_type="page"),
@@ -97,13 +97,13 @@ async def test_run_recon_respects_max_tech_pages_limit(monkeypatch):
     async def fake_probe_error_disclosure(context, url, timeout_ms=8000):
         return None
 
-    async def fake_scan_page_for_secrets(page, timeout_ms=8000):
-        return []
+    async def fake_scan_page_for_secrets_and_routes(page, timeout_ms=8000):
+        return [], []
 
     monkeypatch.setattr(recon_engine_module.tech_detector, "analyze_url", fake_analyze_url)
     monkeypatch.setattr(recon_engine_module.misconfig_scanner, "scan_exposed_paths", fake_scan_exposed_paths)
     monkeypatch.setattr(recon_engine_module.misconfig_scanner, "probe_error_disclosure", fake_probe_error_disclosure)
-    monkeypatch.setattr(recon_engine_module.secrets_scanner, "scan_page_for_secrets", fake_scan_page_for_secrets)
+    monkeypatch.setattr(recon_engine_module.secrets_scanner, "scan_page_for_secrets_and_routes", fake_scan_page_for_secrets_and_routes)
 
     endpoints = [Endpoint(url=f"https://x/{i}", method="GET", endpoint_type="page") for i in range(5)]
 
@@ -123,13 +123,13 @@ async def test_run_recon_records_missing_security_headers(monkeypatch):
     async def fake_probe_error_disclosure(context, url, timeout_ms=8000):
         return None
 
-    async def fake_scan_page_for_secrets(page, timeout_ms=8000):
-        return []
+    async def fake_scan_page_for_secrets_and_routes(page, timeout_ms=8000):
+        return [], []
 
     monkeypatch.setattr(recon_engine_module.tech_detector, "analyze_url", fake_analyze_url)
     monkeypatch.setattr(recon_engine_module.misconfig_scanner, "scan_exposed_paths", fake_scan_exposed_paths)
     monkeypatch.setattr(recon_engine_module.misconfig_scanner, "probe_error_disclosure", fake_probe_error_disclosure)
-    monkeypatch.setattr(recon_engine_module.secrets_scanner, "scan_page_for_secrets", fake_scan_page_for_secrets)
+    monkeypatch.setattr(recon_engine_module.secrets_scanner, "scan_page_for_secrets_and_routes", fake_scan_page_for_secrets_and_routes)
 
     endpoints = [Endpoint(url="https://x/", method="GET", endpoint_type="page")]
 
@@ -156,13 +156,13 @@ async def test_run_recon_secrets_scan_watchdog_recovers_from_a_page_that_never_r
     async def fake_probe_error_disclosure(context, url, timeout_ms=8000):
         return None
 
-    async def fake_scan_page_for_secrets(page, timeout_ms=8000):
-        return []
+    async def fake_scan_page_for_secrets_and_routes(page, timeout_ms=8000):
+        return [], []
 
     monkeypatch.setattr(recon_engine_module.tech_detector, "analyze_url", fake_analyze_url)
     monkeypatch.setattr(recon_engine_module.misconfig_scanner, "scan_exposed_paths", fake_scan_exposed_paths)
     monkeypatch.setattr(recon_engine_module.misconfig_scanner, "probe_error_disclosure", fake_probe_error_disclosure)
-    monkeypatch.setattr(recon_engine_module.secrets_scanner, "scan_page_for_secrets", fake_scan_page_for_secrets)
+    monkeypatch.setattr(recon_engine_module.secrets_scanner, "scan_page_for_secrets_and_routes", fake_scan_page_for_secrets_and_routes)
 
     context = _fake_context()
     probe_page = await context.new_page()
@@ -184,3 +184,51 @@ async def test_run_recon_secrets_scan_watchdog_recovers_from_a_page_that_never_r
     )
 
     assert report.pages_analyzed == 2  # tech_detector still saw both -- only the secrets-scan goto hung
+
+
+# ---------------------------------------------------------------------------
+# _scan_known_js_assets
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scan_known_js_assets_finds_a_secret_in_a_directly_fetched_bundle():
+    """Regression: a route-mining pass can discover a `.js` asset URL
+    that's never linked as a `<script src>` from any page this scan's
+    sampled pages happen to visit (a lazy-loaded, feature-specific
+    bundle -- confirmed live, this is exactly how a real target's
+    hardcoded API token sat unscanned in the endpoint list the whole
+    time). `_scan_known_js_assets` must fetch and scan it directly,
+    not rely on the page-navigation loop finding it."""
+    probe_page = AsyncMock()
+    response = AsyncMock()
+    response.text = AsyncMock(return_value='token:"ATATT3xFfGF0zZMx2kByXQTC9c88AEprM6BnMflVUUVYGdddDuFHq3";path:"/hidden/route"')
+    probe_page.context.request.get = AsyncMock(return_value=response)
+
+    secret_findings: list[dict] = []
+    route_findings: dict[str, dict] = {}
+
+    await _scan_known_js_assets(
+        probe_page, ["https://x/assets/WorkFlowStepApprove-100acd8e.js"], 5.0, secret_findings, route_findings,
+    )
+
+    probe_page.context.request.get.assert_awaited_once_with(
+        "https://x/assets/WorkFlowStepApprove-100acd8e.js", timeout=20000
+    )
+    assert len(secret_findings) == 1
+    assert secret_findings[0]["source_url"] == "https://x/assets/WorkFlowStepApprove-100acd8e.js"
+    assert "/hidden/route" in route_findings
+
+
+@pytest.mark.asyncio
+async def test_scan_known_js_assets_continues_past_a_failed_fetch():
+    probe_page = AsyncMock()
+    probe_page.context.request.get = AsyncMock(side_effect=RuntimeError("network error"))
+
+    secret_findings: list[dict] = []
+    route_findings: dict[str, dict] = {}
+
+    await _scan_known_js_assets(probe_page, ["https://x/broken.js"], 5.0, secret_findings, route_findings)
+
+    assert secret_findings == []
+    assert route_findings == {}

@@ -61,6 +61,6 @@
     "run_active_scan": false
   },
   "testing": {
-    "allow_state_changing_probes": true
+    "allow_state_changing_probes": false
   }
 }

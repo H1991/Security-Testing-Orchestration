@@ -31,7 +31,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import click
 from playwright.async_api import Error as PlaywrightError
@@ -729,6 +729,28 @@ async def _run_burp_scan(pw, config, endpoint_list, evidence, click_echo=click.e
             await controller.close()
 
 
+def _endpoints_from_discovered_routes(recon_report, base_url: str) -> list[Endpoint]:
+    """Resolves `ReconReport.discovered_routes` (raw path strings mined
+    from JS bundles, see `secrets_scanner.find_routes()`) against
+    `base_url` into real `Endpoint`s the SAME scan's vuln modules can
+    test -- a route string alone found this run but only written to a
+    recon report file would sit unused until some future re-crawl
+    happened to pick it up, if ever. Same-origin only, same rule every
+    other discovered URL in this codebase follows (see `crawler.py`'s
+    own `_same_origin` check) -- a route string is just a path, so it's
+    always resolved against `base_url`'s own origin, never able to
+    point anywhere else."""
+    if recon_report is None or not recon_report.discovered_routes:
+        return []
+    endpoints = []
+    for route in recon_report.discovered_routes:
+        path = route.get("path")
+        if not path:
+            continue
+        endpoints.append(Endpoint(url=urljoin(base_url, path), method="GET", endpoint_type="page"))
+    return endpoints
+
+
 def _findings_from_recon_secrets(recon_report) -> list[Finding]:
     """Recon (`stof/recon/secrets_scanner.py`) already scans every
     inline/external script and HTML comment for secret-shaped strings
@@ -1168,6 +1190,16 @@ async def _run_test(
                             f"{len(recon_report.missing_security_headers)} with missing security headers, "
                             f"{len(recon_report.exposed_paths)} exposed path(s), {len(recon_report.secrets)} secret(s)"
                         )
+                        new_route_endpoints = _endpoints_from_discovered_routes(recon_report, config.target.base_url)
+                        if new_route_endpoints:
+                            before_count = len(endpoint_list)
+                            endpoint_list = merge_endpoints(endpoint_list, new_route_endpoints)
+                            write_endpoints(endpoint_list, path=endpoints_path)
+                            console.info(
+                                f"{len(endpoint_list) - before_count} new endpoint(s) queued from route "
+                                f"strings mined out of JS bundles -- testing this scan, same as any other "
+                                f"discovered endpoint"
+                            )
                     except KeyError as exc:
                         console.info(f"Recon skipped: {exc}")
 

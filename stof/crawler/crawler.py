@@ -107,7 +107,45 @@ _AUTH_WALL_URL_HINTS = ("login", "signin", "sign-in", "auth")
 # a target this project has never seen before, not just the one that
 # motivated it (Juice Shop's own login/search icons render exactly
 # this way -- neither has a plain anchor tag anywhere in the DOM).
-_CLICKABLE_SELECTOR = "button, [role='button'], [routerlink], [ng-click], [onclick]"
+_CURSOR_POINTER_MARKER_ATTR = "data-stof-cursor-click"
+_CLICKABLE_SELECTOR = f"button, [role='button'], [routerlink], [ng-click], [onclick], [{_CURSOR_POINTER_MARKER_ATTR}]"
+# `_mark_cursor_pointer_elements()` stamps this attribute onto any
+# element whose COMPUTED cursor style is 'pointer' but that matches
+# none of the structural attribute selectors above -- confirmed live
+# against a real target whose entire sidebar-expand toggle was a plain
+# `<div><img></div>` with a JS-bound click listener and zero matching
+# HTML attribute (no `onclick`, no `role="button"`, nothing): every
+# screen behind that collapsed sidebar (Category Management, Workflow
+# Management, User Management, ...) was structurally unreachable, not
+# because of any keyword-matching gap, but because the very first
+# click needed to reveal the labels never had a selector that could
+# find it. `cursor: pointer` is the same framework-agnostic signal the
+# `browse` dev-tooling in this project's own toolchain already uses
+# for exactly this class of problem.
+_CURSOR_POINTER_MARKER_JS = """
+(markerAttr) => {
+  const els = document.querySelectorAll('*');
+  let marked = 0;
+  const cap = 60;
+  for (const el of els) {
+    if (marked >= cap) break;
+    if (el.hasAttribute(markerAttr)) continue;
+    const tag = el.tagName;
+    if (tag === 'HTML' || tag === 'BODY' || tag === 'SCRIPT' || tag === 'STYLE') continue;
+    if (el.matches("button, [role='button'], [routerlink], [ng-click], [onclick]")) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) continue;
+    // Skip large containers -- a whole-page wrapper occasionally
+    // inherits `cursor: pointer` from an ancestor's CSS; this isn't a
+    // real, individually-clickable UI control.
+    if (rect.width > 400 || rect.height > 400) continue;
+    if (getComputedStyle(el).cursor !== 'pointer') continue;
+    el.setAttribute(markerAttr, '1');
+    marked += 1;
+  }
+  return marked;
+}
+"""
 # Clicking is active exploration (see module docstring's existing form-
 # submission deviation) -- these candidates are skipped outright rather
 # than clicked, since "prove this route exists" is not worth "maybe
@@ -138,11 +176,45 @@ _CLICK_FORCE_TIMEOUT_MS = 2000
 _HIGH_VALUE_CLICK_HINTS = (
     "add to cart", "add to basket", "add to bag", "add to wishlist",
     "account", "sign in", "log in", "login", "register", "sign up",
+    # Generic enterprise/admin/CMS-console vocabulary -- confirmed live
+    # against a real target (a CMS admin console) whose entire attack
+    # surface (category management, workflow management, user
+    # management, content types) sat behind a collapsible sidebar menu:
+    # clicking the parent menu item produces no URL change (an
+    # in-place accordion expand, not a navigation), so it always fell
+    # into this exact "revealed item" follow-up path -- but none of the
+    # revealed sub-items ("Category Management", "Workflow Management",
+    # ...) matched the commerce/auth-only vocabulary above, so the
+    # entire admin surface was structurally unreachable no matter how
+    # well everything else worked. This vocabulary names the SHAPE of
+    # sidebar nav common to admin/CMS/back-office apps generically, not
+    # any one target's specific labels.
+    "settings", "configuration", "management", "admin", "manage",
+    "dashboard", "workflow", "category", "categories", "content type",
+    "users", "user management", "roles", "permissions",
 )
 # How much wider than the actual click budget the cheap scan phase
 # looks -- bounded so a page with hundreds of clickable elements still
 # can't make one page's exploration arbitrarily expensive.
 _CLICK_SCAN_MULTIPLIER = 3
+# Generic pagination-control shapes -- a bare page number ("2", "10"),
+# a "Next"/">>"/"chevron-right" style advance control, or a common ARIA/rel
+# convention. Deliberately framework-agnostic (no target-specific
+# selector): confirmed live against a real target's Category
+# Management table (335 rows, ~10 per page, numbered "1 2 3 ... 10 >
+# L" pagination) where every row past page 1 -- and the paginated
+# API's own `pageNumber` request-parameter shape, which vulnerability
+# modules need to test for IDOR/data-boundary issues -- was completely
+# invisible: the crawler only ever saw whatever page 1 happened to
+# render.
+_PAGINATION_NEXT_HINTS = ("next", "next page", ">>", "»")
+_PAGINATION_ARIA_HINTS = ("next page", "go to next page", "pagination")
+# Bounded -- this exists to capture the SHAPE of a paginated API (its
+# request parameters), not to exhaustively page through potentially
+# hundreds of rows. 2 additional pages is enough to confirm the
+# pattern and get a second, real `pageNumber=1`-shaped request the
+# sniffer can record.
+_MAX_PAGINATION_CLICKS = 2
 
 
 @dataclass
@@ -410,6 +482,17 @@ async def _extract_and_queue_links(
         _queue_if_new(absolute, depth + 1, start_url, visited, queue)
 
 
+async def _mark_cursor_pointer_elements(page: "Page") -> None:
+    """Best-effort: stamps `_CURSOR_POINTER_MARKER_ATTR` onto elements
+    whose computed `cursor` style is `pointer` and that don't already
+    match `_CLICKABLE_SELECTOR`'s structural attributes -- see that
+    constant's own comment for the real gap this closes. Never raises:
+    a page that blocks style computation (rare) just means no extra
+    candidates are found, not a crawl failure."""
+    with contextlib.suppress(Exception):
+        await page.evaluate(_CURSOR_POINTER_MARKER_JS, _CURSOR_POINTER_MARKER_ATTR)
+
+
 async def _click_first_newly_revealed_high_value_item(
     click_probe_page: "Page", page_url: str, timeout_ms: int,
 ) -> "str | None":
@@ -433,6 +516,7 @@ async def _click_first_newly_revealed_high_value_item(
     nothing matched or nothing navigated). Cheap: only runs after a
     click that produced no URL change, and a freshly-opened menu is a
     handful of items, not a full second page scan."""
+    await _mark_cursor_pointer_elements(click_probe_page)
     try:
         count = await click_probe_page.locator(_CLICKABLE_SELECTOR).count()
     except Exception:
@@ -499,6 +583,7 @@ async def _discover_clickable_routes(
             _log.warning(f"click-exploration probe couldn't load '{page_url}': {exc}")
             return discovered
         await _settle_after_navigation(click_probe_page, page_url)
+        await _mark_cursor_pointer_elements(click_probe_page)
 
         try:
             count = await click_probe_page.locator(_CLICKABLE_SELECTOR).count()
@@ -599,12 +684,73 @@ async def _discover_clickable_routes(
                     except Exception:
                         break  # page_url itself stopped loading -- no point continuing this page
                     await _settle_after_navigation(click_probe_page, page_url)
+                    # A fresh navigation means a fresh DOM -- the marker
+                    # attribute from the pre-loop scan doesn't survive
+                    # it, and without re-marking, `_CLICKABLE_SELECTOR`'s
+                    # cursor-pointer branch would match zero elements
+                    # here, shifting every subsequent `.nth(index)` off
+                    # the position `ranked` actually recorded.
+                    await _mark_cursor_pointer_elements(click_probe_page)
+
+        # Runs last, on whatever state `click_probe_page` is left in
+        # (page_url's own baseline if `ranked` was empty, or wherever
+        # the final candidate's own reset navigation landed) -- a
+        # separate, bounded concern from the candidate loop above:
+        # capturing a paginated table's real API shape, not discovering
+        # a new page URL.
+        await _explore_pagination(click_probe_page, page_url, timeout_ms)
     finally:
         click_probe_page.remove_listener("dialog", _on_dialog)
 
     if dialog_messages:
         _log.info(f"click-exploration on '{page_url}' dismissed {len(dialog_messages)} dialog(s): {dialog_messages[:3]}")
     return discovered
+
+
+async def _explore_pagination(click_probe_page: "Page", page_url: str, timeout_ms: int) -> None:
+    """Best-effort: clicks a "next page" style control up to
+    `_MAX_PAGINATION_CLICKS` times so whatever paginated data-fetch API
+    call it triggers gets captured by the shared `ApiSniffer` already
+    attached to `click_probe_page` -- see `_PAGINATION_NEXT_HINTS`'s own
+    comment for the real gap this closes.
+
+    Deliberately returns nothing: unlike `_discover_clickable_routes`,
+    there's no new page URL to report here -- pagination is client-
+    state-only in every real SPA this was built against (the URL never
+    changes), so the only observable effect worth capturing is the
+    sniffer seeing a new, differently-paginated request. Never raises:
+    a page with no pagination control at all is the overwhelmingly
+    common case, not a failure."""
+    for _ in range(_MAX_PAGINATION_CLICKS):
+        try:
+            count = await click_probe_page.locator(_CLICKABLE_SELECTOR).count()
+        except Exception:
+            return
+        candidate = None
+        for index in range(min(count, 40)):
+            loc = click_probe_page.locator(_CLICKABLE_SELECTOR).nth(index)
+            try:
+                if not await loc.is_visible(timeout=200):
+                    continue
+                text = ((await loc.inner_text(timeout=200)) or "").strip().lower()
+                aria = ((await loc.get_attribute("aria-label")) or "").strip().lower()
+            except Exception:
+                continue
+            if text in _PAGINATION_NEXT_HINTS or any(hint in aria for hint in _PAGINATION_ARIA_HINTS):
+                candidate = loc
+                break
+        if candidate is None:
+            return
+        try:
+            try:
+                await candidate.click(timeout=_CLICK_ACTIONABLE_TIMEOUT_MS)
+            except Exception:
+                await candidate.click(timeout=_CLICK_FORCE_TIMEOUT_MS, force=True)
+            with contextlib.suppress(Exception):
+                await click_probe_page.wait_for_load_state("networkidle", timeout=2000)
+        except Exception as exc:
+            _log.info(f"pagination exploration on '{page_url}' stopped: {exc}")
+            return
 
 
 async def _settle_after_navigation(page: "Page", url: str, timeout_ms: int = 3000) -> None:
