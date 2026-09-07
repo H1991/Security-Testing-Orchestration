@@ -28,10 +28,12 @@ direct status-code check for that reason, not an oversight.
 """
 from __future__ import annotations
 
+import asyncio
 from urllib.parse import urlsplit
 
 from stof.authorization.decision import AuthorizationDecision, classify_response
 from stof.core.logger import get_logger
+from stof.engine.interceptor import RequestInterceptor
 from stof.findings.models import Finding
 
 from ._idor_shared import _HIDDEN_ENDPOINT_WORDLIST, _content_fingerprint, _looks_privileged, _method_request_fn, _synthetic_endpoint
@@ -39,6 +41,45 @@ from ._probe_shared import control_fingerprint, sweep_paths
 from .results import FAIL, PASS, SKIPPED, TestCaseResult
 
 _log = get_logger("modules.bfla_tests")
+
+# TC-055.6's own "does this look like a phrase a real denial page would
+# show" wordlist. Deliberately phrase-based, not a content/byte diff --
+# confirmed live against a real target that a plain length/hash
+# comparison of the same authorized page loaded twice false-positives
+# constantly (a relative timestamp like "13 days ago" changes between
+# two loads of the IDENTICAL, correctly-authorized page). Presence/
+# absence of an explicit denial phrase, plus whether the SPA's own
+# client-side router redirected away from the requested URL, is a far
+# more precise signal.
+_DENIAL_TEXT_MARKERS = (
+    "access denied", "unauthorized", "you do not have permission", "you don't have permission",
+    "forbidden", "not authorized", "permission denied", "you don't have access", "you do not have access",
+)
+
+# Narrow, precise field-name heuristic for TC-055.6's JSON response
+# rewriting -- deliberately a short, specific list (not a guess at
+# every possible boolean field) to keep the false-positive rate near
+# zero: these are the field names an authorization-check response
+# realistically uses, not generic app data.
+_AUTHZ_BOOLEAN_FIELD_NAMES = (
+    "authorized", "isauthorized", "canedit", "canview", "candelete", "canapprove",
+    "hasaccess", "haspermission", "allowed", "isallowed", "isadmin",
+)
+
+
+def _looks_denied(final_url: str, requested_url: str, body_text: str) -> bool:
+    """TC-055.6's pure denial-detection signal: either the SPA's own
+    client-side router redirected away from the URL that was actually
+    requested, or the rendered text contains an explicit denial phrase.
+    Deliberately NOT a content-length/hash diff against a baseline --
+    confirmed live against a real target that natural per-load noise
+    (a relative timestamp like "13 days ago", a notification counter)
+    changes between two loads of the exact same, correctly-authorized
+    page, which would make any raw diff false-positive constantly."""
+    if final_url.rstrip("/") != requested_url.rstrip("/"):
+        return True
+    lowered = body_text.lower()
+    return any(marker in lowered for marker in _DENIAL_TEXT_MARKERS)
 
 
 class BFLATechniquesMixin:
@@ -346,6 +387,139 @@ class BFLATechniquesMixin:
             label=f"role-diff-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)
         return finding
 
+    async def _load_and_read(self, page, url: str, timeout_ms: int = 15000) -> tuple[str, str] | tuple[None, None]:
+        """Navigate a real page to `url` and read back what actually
+        rendered -- the shared "load, then look" half of TC-055.6's two
+        loads (baseline and response-rewritten). Returns `(None, None)`
+        on a failed navigation so the caller can report ERROR instead of
+        misreading an empty page as "denied". The settle delay after
+        `goto()` gives a client-side router time to actually perform a
+        redirect-away-if-unauthorized before `page.url`/`inner_text` are
+        read -- reading immediately after `goto()` resolves would only
+        ever see the pre-redirect state."""
+        try:
+            await asyncio.wait_for(page.goto(url, timeout=timeout_ms), timeout=(timeout_ms / 1000) + 5)
+        except Exception as exc:
+            _log.warning(f"response-manipulation probe navigation failed for {url}: {exc}")
+            return None, None
+        await asyncio.sleep(0.5)
+        try:
+            text = await page.inner_text("body")
+        except Exception:
+            text = ""
+        return text, page.url
+
+    async def _probe_response_manipulation(self, context, endpoint, evidence) -> TestCaseResult:
+        """Per-endpoint body of TC-055.6, extracted so
+        `_technique_response_manipulation_bypass` stays setup +
+        orchestration only. Two real page loads: a BASELINE (untouched)
+        and a REWRITTEN one where every response that was actually
+        401/403 during the load gets flipped to 200, and any JSON
+        response carrying a recognised authorization-boolean field gets
+        that field flipped from false to true. If the baseline wasn't
+        denied in the first place, there's nothing this technique can
+        add over TC-055.1/.5's own direct probing, so it's a clean
+        PASS-with-no-finding rather than a fabricated result."""
+        test_id, tid, technique = "TC-055", "TC-055.6", "Client-side access-control bypass via response manipulation"
+        vuln_type = "Missing Function-Level Authorization (BFLA) via response manipulation"
+
+        baseline_page = await context.new_page()
+        try:
+            baseline_text, baseline_final_url = await self._load_and_read(baseline_page, endpoint.url)
+        finally:
+            await baseline_page.close()
+        if baseline_text is None:
+            return self._result(test_id, tid, technique, vuln_type, "ERROR", f"navigation to '{endpoint.url}' failed", role=self.low_priv_role, endpoint=endpoint)
+        if not _looks_denied(baseline_final_url, endpoint.url, baseline_text):
+            return self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': already reachable without any manipulation for this role -- nothing for this technique to test", role=self.low_priv_role, endpoint=endpoint)
+
+        rewritten_page = await context.new_page()
+        interceptor = RequestInterceptor(rewritten_page)
+        interceptor.inject_response(r".*", {"only_if_status": (401, 403), "status": 200})
+        interceptor.inject_response(r".*", {"flip_false_fields": _AUTHZ_BOOLEAN_FIELD_NAMES})
+        await interceptor.start()
+        try:
+            rewritten_text, rewritten_final_url = await self._load_and_read(rewritten_page, endpoint.url)
+        finally:
+            await interceptor.stop()
+            await rewritten_page.close()
+        if rewritten_text is None:
+            return self._result(test_id, tid, technique, vuln_type, "ERROR", f"re-navigation to '{endpoint.url}' failed", role=self.low_priv_role, endpoint=endpoint)
+
+        if _looks_denied(rewritten_final_url, endpoint.url, rewritten_text):
+            return self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': still denied after flipping every 401/403 sub-response to 200 and every authorization-boolean field to true -- enforcement doesn't rely on client-trusted response data", role=self.low_priv_role, endpoint=endpoint)
+
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.1,
+            endpoint=endpoint, user_role=self.low_priv_role,
+            request_raw=f"GET {endpoint.url}",
+            response_raw=(
+                f"baseline load: denied (final URL {baseline_final_url!r}); "
+                f"after rewriting this load's own 401/403 sub-responses to 200 and any "
+                f"authorization-boolean field to true: fully rendered at {rewritten_final_url!r} "
+                "with no denial indicator"
+            ),
+            description=(
+                f"'{endpoint.url}' denies a low-privileged session (role '{self.low_priv_role}') on a "
+                "normal load, but rewriting only the CLIENT-VISIBLE responses this same page's own "
+                "JavaScript received during that load -- never the actual server round-trip for the "
+                "page's own top-level request, and never any request STOF made on the low-priv "
+                "session's behalf -- was enough for the page to render as if the request had been "
+                "authorized. This means the access-control decision for this page depends on data the "
+                "client itself can be shown a manipulated version of, not on the server independently "
+                "re-verifying the session's actual privileges."
+            ),
+            recommendation=(
+                "Never let client-side routing/rendering decisions substitute for server-side "
+                "authorization. Every privileged action the manipulated page then allows the user to "
+                "attempt must still be independently authorized by the server on that action's own "
+                "request -- verify this manually for whatever action(s) this page now exposes."
+            ),
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"response-manip-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
+        return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding)
+
+    async def _technique_response_manipulation_bypass(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
+        """TC-055.6 -- WSTG-ATHZ-02 adjacent. Distinct from every other
+        TC-055.x technique in this file: those all probe a discovered
+        endpoint directly via `context.request` and never render a real
+        page, so none of them can see a purely CLIENT-SIDE authorization
+        gate (an SPA route guard that redirects away, or hides content,
+        based on a response its own JS received) -- an endpoint gated
+        that way returns the identical HTTP 200/full-body page-shell
+        response to every role (client-side routing), so
+        `classify_response()`'s ALLOWED/DENIED comparison sees no
+        difference at all and would never flag it. This technique
+        drives a real browser instead, so it can observe (and defeat)
+        exactly that gate.
+
+        Gated behind `allow_state_changing_probes` even though STOF
+        itself only ever issues GETs here: once the page believes it's
+        authorized, its own JS runs uncontrolled (auto-save timers,
+        analytics beacons, ...) and could fire a real write as a side
+        effect -- the same "can't guarantee this stays read-only"
+        reasoning `_technique_bfla_state_changing` above documents for
+        actual write-verb probing.
+        """
+        test_id, tid, technique = "TC-055", "TC-055.6", "Client-side access-control bypass via response manipulation"
+        vuln_type = "Missing Function-Level Authorization (BFLA) via response manipulation"
+        if not self.config.allow_state_changing_probes:
+            return [self._gated_skip(test_id, tid, technique, vuln_type, "response-manipulation probing renders a real page whose own JS could trigger a write as a side effect, and is disabled by default")]
+
+        candidates = list({
+            e.url: e for e in endpoints
+            if e.endpoint_type == "page" and e.method.upper() == "GET" and _looks_privileged(e.url, self.config.privileged_path_hints)
+        }.values())[: self.config.max_response_manipulation_endpoints]
+        if not candidates:
+            return [self._result(test_id, tid, technique, vuln_type, SKIPPED, "no privileged-looking page endpoint discovered")]
+
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.low_priv_role, target_url)
+        except KeyError as exc:
+            return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
+
+        return [await self._probe_response_manipulation(context, endpoint, evidence) for endpoint in candidates]
+
     async def _techniques_tc055(self, endpoints, session_manager, session_pool, target_url, evidence, base_findings: list[Finding]) -> list[TestCaseResult]:
         results: list[TestCaseResult] = []
         privesc_findings = [f for f in base_findings if "Privilege Escalation" in f.vuln_type]
@@ -360,4 +534,5 @@ class BFLATechniquesMixin:
         results.extend(await self._safe(self._technique_bfla_verb_tampering(endpoints, session_manager, session_pool, target_url, evidence)))
         results.extend(await self._safe(self._technique_hidden_endpoint_discovery(endpoints, session_manager, session_pool, target_url, evidence)))
         results.extend(await self._safe(self._technique_role_differential_access(endpoints, session_manager, session_pool, target_url, evidence)))
+        results.extend(await self._safe(self._technique_response_manipulation_bypass(endpoints, session_manager, session_pool, target_url, evidence)))
         return results

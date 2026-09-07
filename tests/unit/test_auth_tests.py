@@ -788,3 +788,207 @@ async def test_022_5_falls_back_to_discovered_html_form_and_fails_on_status_diff
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-022.5"].status == FAIL
     assert "HTTP status differs" in by_id["TC-022.5"].finding.description
+
+
+# ---------------------------------------------------------------------------
+# TC-027.7 -- horizontal account takeover via password-change target-user id
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_horizontal_password_change_skipped_by_default(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(AsyncMock())
+    config = AuthTestConfig(
+        change_password_url="https://x/rest/user/change-password", test_role="normal",
+        test_current_password="oldpw", victim_email="victim@x.com", victim_current_password="victimoldpw",
+    )  # allow_state_changing_probes defaults False
+    module = AuthTestsModule(config=config)
+
+    result = await module._technique_horizontal_password_change(session_manager, pool, None)
+
+    assert result.status == SKIPPED
+    assert "disabled by default" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_horizontal_password_change_skipped_without_victim_config(tmp_path):
+    """Requires a SECOND, fully STOF-controlled test account (its own
+    known current password) before running at all -- otherwise a
+    successful bypass could not be safely reverted."""
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(AsyncMock())
+    config = AuthTestConfig(
+        change_password_url="https://x/rest/user/change-password", test_role="normal",
+        test_current_password="oldpw", allow_state_changing_probes=True,
+        # victim_email / victim_current_password deliberately NOT set
+    )
+    module = AuthTestsModule(config=config)
+
+    result = await module._technique_horizontal_password_change(session_manager, pool, None)
+
+    assert result.status == SKIPPED
+    assert "victim_email" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_horizontal_password_change_fails_and_reverts_when_a_target_field_redirects_the_change(tmp_path):
+    """The core positive case: a session authenticated as 'normal'
+    supplies its OWN valid current password, plus a 'userId' field
+    naming a different account -- the server applies the change to
+    THAT account instead. Must revert the victim account's password
+    back to its original value afterward."""
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    context = AsyncMock()
+    calls: list[dict] = []
+
+    async def fake_get(url, params=None, max_redirects=0):
+        calls.append(dict(params or {}))
+        # Only the "userId" candidate (first field tried) actually works.
+        if params and params.get("userId") == "victim@x.com":
+            return _response(200, "ok")
+        return _response(400, "rejected")
+
+    context.request.get = AsyncMock(side_effect=fake_get)
+    context.request.post = AsyncMock(return_value=_response(400, "rejected"))
+    pool = _pool_with_context(context)
+    config = AuthTestConfig(
+        change_password_url="https://x/rest/user/change-password", test_role="normal",
+        test_current_password="oldpw", allow_state_changing_probes=True,
+        victim_email="victim@x.com", victim_current_password="victimoldpw",
+    )
+    module = AuthTestsModule(config=config)
+
+    result = await module._technique_horizontal_password_change(session_manager, pool, None)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.severity == "Critical"
+    assert result.finding.vuln_type == "Account Takeover via Unauthorized Password Modification"
+    assert "userId" in result.finding.description
+    assert "victim@x.com" in result.finding.description
+
+    userid_calls = [c for c in calls if c.get("userId") == "victim@x.com"]
+    assert len(userid_calls) == 2  # set to the probe password, then reverted
+    assert userid_calls[0]["new"] == "TargetProbe!3579"
+    assert userid_calls[0]["current"] == "oldpw"  # the ATTACKER's own current password, held constant
+    assert userid_calls[1]["new"] == "victimoldpw"  # reverted to the victim's real original password
+
+
+@pytest.mark.asyncio
+async def test_horizontal_password_change_confirmed_via_relogin_as_the_victim_account(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    context = AsyncMock()
+
+    async def fake_get(url, params=None, max_redirects=0):
+        if params and params.get("userId") == "victim@x.com":
+            return _response(200, "ok")
+        return _response(400, "rejected")
+
+    async def fake_post(url, data=None, headers=None, max_redirects=0):
+        payload = json.loads(data)
+        if url == "https://x/rest/user/login":
+            if payload.get("email") == "victim@x.com" and payload.get("password") == "TargetProbe!3579":
+                return _response(200, json.dumps({"token": "eyFakeJWT"}))
+            return _response(200, json.dumps({"error": "invalid credentials"}))
+        return _response(400, "rejected")  # targeted change-password POST fallback for other candidate fields
+
+    context.request.get = AsyncMock(side_effect=fake_get)
+    context.request.post = AsyncMock(side_effect=fake_post)
+    pool = _pool_with_context(context)
+    config = AuthTestConfig(
+        change_password_url="https://x/rest/user/change-password", test_role="normal",
+        test_current_password="oldpw", allow_state_changing_probes=True,
+        victim_email="victim@x.com", victim_current_password="victimoldpw",
+        login_json_endpoint="https://x/rest/user/login",
+    )
+    module = AuthTestsModule(config=config)
+
+    result = await module._technique_horizontal_password_change(session_manager, pool, None)
+
+    assert result.status == FAIL
+    assert "CONFIRMED" in result.finding.description
+
+
+@pytest.mark.asyncio
+async def test_horizontal_password_change_downgrades_to_continue_trying_when_relogin_as_victim_fails(tmp_path):
+    """HTTP-layer acceptance alone isn't trusted -- if re-login as the
+    victim with the probe password fails, that candidate field didn't
+    really redirect the change, so the technique must move on to the
+    next candidate instead of reporting a false-positive FAIL."""
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    context = AsyncMock()
+
+    async def fake_get(url, params=None, max_redirects=0):
+        return _response(200, "ok")  # every candidate field "looks" accepted...
+
+    async def fake_post(url, data=None, headers=None, max_redirects=0):
+        return _response(200, json.dumps({"error": "invalid credentials"}))  # ...but re-login as victim always fails
+
+    context.request.get = AsyncMock(side_effect=fake_get)
+    context.request.post = AsyncMock(side_effect=fake_post)
+    pool = _pool_with_context(context)
+    config = AuthTestConfig(
+        change_password_url="https://x/rest/user/change-password", test_role="normal",
+        test_current_password="oldpw", allow_state_changing_probes=True,
+        victim_email="victim@x.com", victim_current_password="victimoldpw",
+        login_json_endpoint="https://x/rest/user/login",
+    )
+    module = AuthTestsModule(config=config)
+
+    result = await module._technique_horizontal_password_change(session_manager, pool, None)
+
+    assert result.status == PASS
+    assert result.finding is None
+
+
+@pytest.mark.asyncio
+async def test_horizontal_password_change_passes_when_server_rejects_every_candidate(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    context = AsyncMock()
+    context.request.get = AsyncMock(return_value=_response(400, "rejected"))
+    context.request.post = AsyncMock(return_value=_response(400, "rejected"))
+    pool = _pool_with_context(context)
+    config = AuthTestConfig(
+        change_password_url="https://x/rest/user/change-password", test_role="normal",
+        test_current_password="oldpw", allow_state_changing_probes=True,
+        victim_email="victim@x.com", victim_current_password="victimoldpw",
+    )
+    module = AuthTestsModule(config=config)
+
+    result = await module._technique_horizontal_password_change(session_manager, pool, None)
+
+    assert result.status == PASS
+    assert result.finding is None
+    assert "userId" in result.detail  # names the candidates it actually tried
+
+
+@pytest.mark.asyncio
+async def test_horizontal_password_change_revert_failure_is_logged_as_error(tmp_path, caplog):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    context = AsyncMock()
+    call_count = {"n": 0}
+
+    async def fake_get(url, params=None, max_redirects=0):
+        if params and params.get("userId") == "victim@x.com":
+            call_count["n"] += 1
+            # First call (set the probe password) succeeds; the revert call fails.
+            return _response(200 if call_count["n"] == 1 else 500, "x")
+        return _response(400, "rejected")
+
+    context.request.get = AsyncMock(side_effect=fake_get)
+    context.request.post = AsyncMock(return_value=_response(500, "x"))
+    pool = _pool_with_context(context)
+    config = AuthTestConfig(
+        change_password_url="https://x/rest/user/change-password", test_role="normal",
+        test_current_password="oldpw", allow_state_changing_probes=True,
+        victim_email="victim@x.com", victim_current_password="victimoldpw",
+    )
+    module = AuthTestsModule(config=config)
+
+    import logging
+    with caplog.at_level(logging.ERROR):
+        result = await module._technique_horizontal_password_change(session_manager, pool, None)
+
+    assert result.status == FAIL
+    assert any("COULD NOT REVERT" in rec.message for rec in caplog.records)

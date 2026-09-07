@@ -43,7 +43,8 @@
     "csrf_tests": true,
     "injection_variants_tests": true,
     "cache_tests": true,
-    "business_logic_tests": true
+    "business_logic_tests": true,
+    "file_upload_tests": true
   },
   "output": {
     "reports_dir": "data/reports",
@@ -61,6 +62,6 @@
     "run_active_scan": false
   },
   "testing": {
-    "allow_state_changing_probes": false
+    "allow_state_changing_probes": true
   }
 }

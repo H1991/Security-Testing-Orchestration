@@ -25,6 +25,18 @@ automatable, and says so explicitly rather than padding out fake
   explicit step/stage-shaped query param or path segment), check
   whether a later step is reachable directly, skipping the earlier
   step(s) it should depend on.
+- TC-135.6 -- the same workflow-integrity question as TC-135.3, for a
+  DIFFERENT shape of flow: most real content-management/approval
+  workflows (draft -> review -> published) don't encode their state in
+  the URL at all, they carry it as a `status`/`state`/`workflowStep`
+  field inside a JSON create/update request -- structurally invisible
+  to TC-135.3's URL-shape detection. IF the crawler discovered a CREATE
+  (POST) endpoint whose own declared parameters include a workflow-
+  state-shaped field name, check whether submitting a late-stage value
+  for it directly (e.g. "published"/"approved") is accepted/echoed back
+  by a single, freshly-authenticated request -- never touches an
+  EXISTING object (CREATE only, never PUT/PATCH an object that might
+  already be real production data).
 
 Deliberately NOT built here, and why: price manipulation, quantity/
 negative-value tampering, discount/coupon-code abuse, and shopping-cart
@@ -61,6 +73,7 @@ from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
 
 from ._idor_shared import _PRIVILEGE_FIELD_NAMES, _method_request_fn
+from ._injection_shared import build_params, send_probe
 from .base import _PASSWORD_FIELD_HINTS, _USERNAME_FIELD_HINTS, VulnModule
 from .results import FAIL, PASS, SKIPPED, TestCaseResult
 
@@ -238,11 +251,65 @@ def _find_multistep_flow(endpoints: list[Endpoint]) -> tuple[Endpoint, Endpoint]
     return None
 
 
+# TC-135.6 -- field-name hints for a JSON create/update request's own
+# workflow-state field. Deliberately a short, curated list (same
+# convention as `_STEP_PARAM_NAMES` above and `_role_like_param`'s
+# reuse of `_PRIVILEGE_FIELD_NAMES`): a param merely CONTAINING "state"
+# would also match unrelated fields ("state" as in a US state, a
+# `stateProvince` address field), so this matches the FULL declared
+# param name, lowercased -- not a substring.
+_WORKFLOW_STATE_FIELD_NAMES: tuple[str, ...] = (
+    "status", "state", "workflowstate", "workflowstatus", "workflowstep", "stage", "articlestate", "documentstatus",
+)
+
+# Late-stage/terminal-looking values to try -- the ones a real
+# multi-step approval workflow would never let an initial create
+# request set directly, since they mean "this already went through
+# review/approval."
+_LATE_STAGE_VALUE_CANDIDATES: tuple[str, ...] = ("published", "approved", "completed", "active", "live", "final")
+
+
+def _find_workflow_state_create_endpoint(endpoints: list[Endpoint]) -> tuple[Endpoint, str] | None:
+    """A discovered CREATE (POST) endpoint whose own declared parameters
+    include a workflow-state-shaped field -- returns `(endpoint,
+    field_name)`, or `None` if no such endpoint exists (the honest,
+    expected outcome for most targets, matching every other discovery-
+    first technique in this file). CREATE only, deliberately: a PUT/
+    PATCH candidate would target an EXISTING object this probe has no
+    way to know isn't real production data."""
+    for endpoint in endpoints:
+        if endpoint.method.upper() != "POST":
+            continue
+        for param in endpoint.parameters:
+            if param.lower() in _WORKFLOW_STATE_FIELD_NAMES:
+                return endpoint, param
+    return None
+
+
+def _echoes_field_value(body: str, field: str, value: str) -> bool:
+    """Same echoed-back-in-the-response confirmation shape as
+    `mass_assignment_tests.py`'s TC-052.4 (`'"role":"admin"' in
+    body.replace(" ", "").lower()`) -- an HTTP 200/201 alone doesn't
+    prove the submitted value was actually STORED as given; a server
+    that silently overrides it to a default value would otherwise look
+    identical to one that honored it."""
+    compact = body.replace(" ", "").replace("'", '"').lower()
+    return f'"{field.lower()}":"{value.lower()}"' in compact
+
+
 @dataclass
 class BusinessLogicTestConfig:
     allow_state_changing_probes: bool = False
     reserved_usernames: tuple[str, ...] = field(default_factory=lambda: _RESERVED_USERNAMES)
     min_content_length: int = 50
+    # TC-135.6 needs an AUTHENTICATED session (a real create/update
+    # request against an authenticated content flow) -- every other
+    # technique in this file deliberately stays unauthenticated
+    # (`session_pool.new_anonymous_context()`), since TC-135.1/.2/.3/.4/
+    # .5 all test surfaces that are, by definition, reachable before or
+    # without login (registration, a wizard flow, a public redeem/vote
+    # endpoint).
+    test_role: str | None = None
 
 
 class BusinessLogicTestsModule(VulnModule):
@@ -391,6 +458,77 @@ class BusinessLogicTestsModule(VulnModule):
             return self._result(tid, technique, FAIL, finding.description, endpoint=latest, finding=finding)
         return self._result(tid, technique, PASS, f"'{latest.url}' was not reachable directly ahead of '{earliest.url}' (HTTP {resp.status})")
 
+    async def _technique_workflow_state_field_skip(self, endpoints, session_manager, session_pool, evidence) -> TestCaseResult:
+        """TC-135.6 -- see this module's own docstring for how this
+        complements (not duplicates) TC-135.3: URL-shaped step/stage
+        state vs. a JSON body's own workflow-state field, the shape a
+        real content-approval flow (draft -> review -> published)
+        actually uses. Holds "submitted with a valid, freshly-
+        authenticated session" constant and varies ONLY the workflow-
+        state field's value, so a FAIL here is unambiguously "this field
+        is honored with no approval-step enforcement," not a confusion
+        with plain missing authentication."""
+        tid, technique = "TC-135.6", "Workflow-state field accepted at late-stage value on a create request, unenforced (WSTG-BUSL)"
+        vuln_type = "Business Logic -- Workflow State Field Accepted Out of Sequence"
+        candidate = _find_workflow_state_create_endpoint(endpoints)
+        if candidate is None:
+            return self._result(tid, technique, SKIPPED, "no discovered create (POST) endpoint declares a workflow-state-shaped field (status/state/workflowStep/stage/...)")
+        endpoint, field = candidate
+        if not self.config.allow_state_changing_probes:
+            return self._gated_skip(tid, technique, "creates a real object with a client-chosen workflow-state value and is disabled by default")
+        if not self.config.test_role:
+            return self._result(tid, technique, SKIPPED, "no test_role configured -- this technique needs an authenticated session, unlike this module's other techniques")
+
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.test_role, endpoint.url)
+        except KeyError as exc:
+            return self._result(tid, technique, SKIPPED, f"role '{self.config.test_role}' not configured: {exc}")
+
+        for late_value in _LATE_STAGE_VALUE_CANDIDATES:
+            result = await self._probe_workflow_state_candidate(context, evidence, tid, technique, vuln_type, endpoint, field, late_value)
+            if result is not None:
+                return result
+        return self._result(tid, technique, PASS,
+                             f"'{endpoint.url}': {len(_LATE_STAGE_VALUE_CANDIDATES)} late-stage value(s) tried for '{field}'; none were accepted/echoed back")
+
+    async def _probe_workflow_state_candidate(
+        self, context, evidence, tid: str, technique: str, vuln_type: str, endpoint: Endpoint, field: str, late_value: str,
+    ) -> TestCaseResult | None:
+        """One candidate value's worth of TC-135.6's loop, extracted so
+        that method drops to setup + orchestration only. Returns `None`
+        to keep trying the next value; returns a FAIL result the moment
+        one candidate is actually accepted and echoed back."""
+        params = build_params(endpoint, field, late_value)
+        try:
+            probe = await send_probe(context, endpoint, params, endpoint.location_for(field), json_body=True)
+        except Exception as exc:
+            _log.warning(f"workflow-state probe failed for {endpoint.url} ({field}={late_value!r}): {exc}")
+            return None
+        if probe is None:
+            return None
+        status, body, _elapsed, _headers = probe
+        if status not in (200, 201) or len(body) < self.config.min_content_length or not _echoes_field_value(body, field, late_value):
+            return None
+
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.5,
+            endpoint=endpoint, user_role=self.config.test_role,
+            request_raw=f"POST {endpoint.url}\n{params}",
+            response_raw=f"HTTP {status}, {len(body)} bytes, '{field}':'{late_value}' echoed back",
+            description=(
+                f"A single, freshly-authenticated create request to '{endpoint.url}' set '{field}' directly to "
+                f"'{late_value}' -- a late-stage/terminal-looking value -- and the server accepted and echoed it "
+                "back, with no evidence of an intermediate review/approval step being enforced first."
+            ),
+            recommendation=(
+                "Never let a create/update request set a workflow-state field to an arbitrary client-chosen value. "
+                "Initialize new objects to the flow's own starting state server-side, and only advance state through "
+                "dedicated transition actions that independently verify the caller is authorized for that specific transition."
+            ),
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"buslogic-workflow-state-{field}") if evidence else []
+        return self._result(tid, technique, FAIL, finding.description, endpoint=endpoint, finding=finding)
+
     async def _technique_race_condition(self, endpoints, session_pool, evidence) -> TestCaseResult:
         """TC-135.4 (tracker TC-096) -- fires two structurally identical
         requests at a discovered limited-use-shaped endpoint
@@ -528,6 +666,7 @@ class BusinessLogicTestsModule(VulnModule):
             ("TC-135.1", "Reserved/privileged username accepted at self-service registration (WSTG-IDNT-02)", self._technique_reserved_username(endpoints, session_pool, evidence)),
             ("TC-135.2", "Self-assigned elevated privilege honored at registration (WSTG-IDNT-01)", self._technique_self_assigned_privilege(endpoints, session_pool, evidence)),
             ("TC-135.3", "Business-logic authorization bypass via workflow step skipping (WSTG-BUSL)", self._technique_workflow_step_skipping(endpoints, session_pool, evidence)),
+            ("TC-135.6", "Workflow-state field accepted at late-stage value on a create request, unenforced (WSTG-BUSL)", self._technique_workflow_state_field_skip(endpoints, session_manager, session_pool, evidence)),
             ("TC-135.4", "Concurrent duplicate submission to a limited-use endpoint (race condition)", self._technique_race_condition(endpoints, session_pool, evidence)),
             ("TC-135.5", "Sequential over-limit calls to a limited-use endpoint are not rejected (WSTG-BUSL-05)", self._technique_function_usage_limit(endpoints, session_pool, evidence)),
         ):

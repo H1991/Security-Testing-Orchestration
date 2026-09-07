@@ -3,19 +3,26 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from stof.auth.base import AuthProvider
+from stof.config.schema import UserConfig
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
 from stof.modules.business_logic_tests import (
     BusinessLogicTestConfig,
     BusinessLogicTestsModule,
+    _echoes_field_value,
     _find_limited_use_endpoint,
     _find_multistep_flow,
     _find_registration_endpoint,
+    _find_workflow_state_create_endpoint,
     _looks_like_signup_success,
     _role_like_param,
     _step_value,
 )
 from stof.modules.results import FAIL, PASS, SKIPPED
+from stof.session.models import Session
+from stof.session.session_manager import SessionManager
+from stof.session.session_store import SessionStore
 
 # ---------------------------------------------------------------------------
 # Pure functions
@@ -102,10 +109,11 @@ def test_find_multistep_flow_none_when_single_step_only():
 # ---------------------------------------------------------------------------
 
 
-def _response(status: int, body: str):
+def _response(status: int, body: str, headers: dict | None = None):
     resp = AsyncMock()
     resp.status = status
     resp.text = AsyncMock(return_value=body)
+    resp.headers = headers or {}
     return resp
 
 
@@ -128,6 +136,26 @@ def _by_id(results):
     return {r.technique_id: r for r in results}
 
 
+class _RoutingProvider(AuthProvider):
+    def __init__(self, sessions: dict[str, Session]) -> None:
+        self._sessions = sessions
+
+    async def authenticate(self, user, page) -> Session:
+        return self._sessions[user.role]
+
+    async def refresh(self, session, page) -> Session:
+        raise NotImplementedError
+
+    async def is_authenticated(self, session, page) -> bool:
+        return True
+
+
+def _session_manager(tmp_path, sessions: dict[str, Session]) -> SessionManager:
+    store = SessionStore(db_path=tmp_path / "stof.db")
+    users = {role: UserConfig(id=f"{role}-01", role=role, username=role, password="pw", auth_type="form_login") for role in sessions}
+    return SessionManager(users=users, providers={"form_login": _RoutingProvider(sessions)}, store=store)
+
+
 @pytest.mark.asyncio
 async def test_run_techniques_skipped_when_no_registration_or_flow_discovered():
     module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
@@ -136,7 +164,7 @@ async def test_run_techniques_skipped_when_no_registration_or_flow_discovered():
     results = await module.run_techniques([], None, pool)
 
     by_id = _by_id(results)
-    assert len(by_id) == 5
+    assert len(by_id) == 6
     assert all(r.status == SKIPPED for r in by_id.values())
 
 
@@ -441,3 +469,134 @@ async def test_function_usage_limit_sends_exactly_three_sequential_requests():
     await module._technique_function_usage_limit(endpoints, pool, evidence=None)
 
     assert len(calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# TC-135.6 -- workflow-state field accepted at a late-stage value
+# ---------------------------------------------------------------------------
+
+
+def _workflow_endpoint(**kwargs):
+    defaults = dict(
+        url="https://x/api/articles", method="POST", endpoint_type="api",
+        parameters=["title", "status"], param_locations={"status": "body"},
+    )
+    defaults.update(kwargs)
+    return Endpoint(**defaults)
+
+
+def test_find_workflow_state_create_endpoint_matches_status_field():
+    endpoints = [
+        Endpoint(url="https://x/api/comments", method="POST", endpoint_type="api", parameters=["body"]),
+        _workflow_endpoint(),
+    ]
+    found = _find_workflow_state_create_endpoint(endpoints)
+    assert found is not None
+    endpoint, field = found
+    assert endpoint.url == "https://x/api/articles"
+    assert field == "status"
+
+
+def test_find_workflow_state_create_endpoint_ignores_put_and_unrelated_fields():
+    endpoints = [
+        Endpoint(url="https://x/api/articles/1", method="PUT", endpoint_type="api", parameters=["title", "status"]),
+        Endpoint(url="https://x/api/users", method="POST", endpoint_type="api", parameters=["state"]),  # US state, not workflow
+    ]
+    # "state" is in the curated list regardless of semantic meaning --
+    # this documents the known, accepted limitation (same "detect a
+    # plausible candidate, never assume" tradeoff as every other
+    # hint-list technique in this file) rather than silently matching
+    # something the pure function's own contract doesn't promise to
+    # exclude.
+    found = _find_workflow_state_create_endpoint(endpoints)
+    assert found is not None
+    assert found[0].url == "https://x/api/users"
+
+
+def test_find_workflow_state_create_endpoint_none_when_no_candidate():
+    endpoints = [Endpoint(url="https://x/api/comments", method="POST", endpoint_type="api", parameters=["body"])]
+    assert _find_workflow_state_create_endpoint(endpoints) is None
+
+
+def test_echoes_field_value_matches_regardless_of_spacing_and_quote_style():
+    assert _echoes_field_value('{"status": "published", "title": "x"}', "status", "published")
+    assert _echoes_field_value("{'status':'PUBLISHED'}", "status", "published")
+
+
+def test_echoes_field_value_false_when_not_present():
+    assert not _echoes_field_value('{"status":"draft"}', "status", "published")
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_skip_skipped_when_no_candidate_endpoint(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True, test_role="normal"))
+
+    result = await module._technique_workflow_state_field_skip([], session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "workflow-state-shaped field" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_skip_gated_when_probes_disabled(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = BusinessLogicTestsModule()  # allow_state_changing_probes defaults False
+
+    result = await module._technique_workflow_state_field_skip([_workflow_endpoint()], session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "disabled by default" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_skip_skipped_when_no_test_role_configured(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))  # no test_role
+
+    result = await module._technique_workflow_state_field_skip([_workflow_endpoint()], session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "test_role" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_skip_fails_when_late_stage_value_is_accepted_and_echoed(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    async def fake_post(url, data=None, headers=None, max_redirects=0):
+        import json as json_module
+        payload = json_module.loads(data)
+        return _response(201, json_module.dumps(payload))  # server honors and echoes back whatever was submitted
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True, test_role="normal", min_content_length=10))
+
+    result = await module._technique_workflow_state_field_skip([_workflow_endpoint()], session_manager, pool, evidence=None)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.severity == "High"
+    assert result.finding.vuln_type == "Business Logic -- Workflow State Field Accepted Out of Sequence"
+    assert "published" in result.finding.description  # the first late-stage candidate tried
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_skip_passes_when_server_rejects_every_candidate(tmp_path):
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    async def fake_post(url, data=None, headers=None, max_redirects=0):
+        return _response(201, '{"status":"draft"}')  # server always resets to its own default, never honors the submitted value
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True, test_role="normal"))
+
+    result = await module._technique_workflow_state_field_skip([_workflow_endpoint()], session_manager, pool, evidence=None)
+
+    assert result.status == PASS
+    assert result.finding is None

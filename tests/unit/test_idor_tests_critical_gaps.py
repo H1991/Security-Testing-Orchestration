@@ -769,3 +769,165 @@ async def test_bfla_state_changing_still_finds_nothing_when_server_denies(tmp_pa
 
     by_id = {r.technique_id: r for r in results if r.technique_id == "TC-055.2"}
     assert by_id["TC-055.2"].status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-055.6 -- Client-side access-control bypass via response manipulation
+# ---------------------------------------------------------------------------
+
+
+def _fake_manip_page(final_url: str, text: str) -> AsyncMock:
+    page = AsyncMock()
+    page.goto = AsyncMock(return_value=None)
+    page.inner_text = AsyncMock(return_value=text)
+    page.url = final_url
+    return page
+
+
+class TestLooksDenied:
+    def test_redirected_away_counts_as_denied(self):
+        from stof.modules.bfla_tests import _looks_denied
+
+        assert _looks_denied("https://x/inbox", "https://x/admin/settings", "Home") is True
+
+    def test_denial_phrase_counts_as_denied(self):
+        from stof.modules.bfla_tests import _looks_denied
+
+        assert _looks_denied("https://x/admin/settings", "https://x/admin/settings", "You do not have permission to view this page") is True
+
+    def test_same_url_and_no_denial_phrase_is_not_denied(self):
+        from stof.modules.bfla_tests import _looks_denied
+
+        assert _looks_denied("https://x/admin/settings", "https://x/admin/settings", "Settings\nUser: admin\n13 days ago") is False
+
+
+@pytest.mark.asyncio
+async def test_response_manipulation_skipped_by_default(tmp_path):
+    endpoint = Endpoint(url="https://x/admin/settings", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = IdorTestsModule()
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results if r.technique_id == "TC-055.6"}
+    assert by_id["TC-055.6"].status == SKIPPED
+    assert "disabled by default" in by_id["TC-055.6"].detail
+
+
+@pytest.mark.asyncio
+async def test_response_manipulation_skipped_when_no_privileged_page_endpoint(tmp_path):
+    endpoint = Endpoint(url="https://x/api/orders", method="GET", endpoint_type="api")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = IdorTestsModule(config=IdorTestConfig(allow_state_changing_probes=True))
+
+    results = await module.run_techniques([endpoint], session_manager, pool)
+
+    by_id = {r.technique_id: r for r in results if r.technique_id == "TC-055.6"}
+    assert by_id["TC-055.6"].status == SKIPPED
+    assert "no privileged-looking page endpoint" in by_id["TC-055.6"].detail
+
+
+# The remaining tests below call `_technique_response_manipulation_
+# bypass()` directly instead of going through `run_techniques()`.
+# Reason: `_authenticated_context()` calls `context.new_page()` once
+# per technique invocation regardless of session caching (the page is
+# needed to pass into `get_session()` even on its cache-hit fast
+# path), and `run_techniques()` runs a couple dozen OTHER TC-05x
+# techniques for the same role/context first -- their own throwaway
+# auth-page calls would consume any fixed-length `side_effect` list
+# before TC-055.6 even got its own turn. Calling the technique
+# directly keeps this test about TC-055.6's own logic, not the
+# call-count of every sibling technique.
+
+
+@pytest.mark.asyncio
+async def test_response_manipulation_passes_when_baseline_already_not_denied(tmp_path):
+    """If the low-priv role could already reach this page without any
+    manipulation, TC-055.1/.5 already cover it -- TC-055.6 must not
+    fabricate a second finding for the exact same non-gap."""
+    endpoint = Endpoint(url="https://x/admin/settings", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    baseline_page = _fake_manip_page("https://x/admin/settings", "Settings page, fully visible")
+    context = AsyncMock()
+    # First call is `_authenticated_context()`'s own throwaway auth
+    # page; second is TC-055.6's baseline load. No third call should
+    # happen at all (nothing to rewrite/re-check).
+    context.new_page = AsyncMock(side_effect=[AsyncMock(), baseline_page])
+    pool = _pool_with_context(context)
+    module = IdorTestsModule(config=IdorTestConfig(allow_state_changing_probes=True))
+
+    results = await module._technique_response_manipulation_bypass([endpoint], session_manager, pool, endpoint.url, None)
+
+    assert len(results) == 1
+    assert results[0].status == PASS
+    assert results[0].finding is None
+    assert "nothing for this technique to test" in results[0].detail
+    assert context.new_page.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_response_manipulation_passes_when_still_denied_after_rewrite(tmp_path):
+    """Real enforcement doesn't rely on client-trusted response data --
+    still denied even after every 401/403 in the load is flipped to 200."""
+    endpoint = Endpoint(url="https://x/admin/settings", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    baseline_page = _fake_manip_page("https://x/inbox", "Home")
+    rewritten_page = _fake_manip_page("https://x/inbox", "Home")
+    context = AsyncMock()
+    context.new_page = AsyncMock(side_effect=[AsyncMock(), baseline_page, rewritten_page])
+    pool = _pool_with_context(context)
+    module = IdorTestsModule(config=IdorTestConfig(allow_state_changing_probes=True))
+
+    results = await module._technique_response_manipulation_bypass([endpoint], session_manager, pool, endpoint.url, None)
+
+    assert len(results) == 1
+    assert results[0].status == PASS
+    assert results[0].finding is None
+
+
+@pytest.mark.asyncio
+async def test_response_manipulation_fails_when_rewrite_defeats_a_client_side_gate(tmp_path):
+    """The core positive case: denied on a normal load, but rendering
+    fully once the page's own 401/403 sub-responses are shown as 200 --
+    a purely client-side access-control gate."""
+    endpoint = Endpoint(url="https://x/admin/settings", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    baseline_page = _fake_manip_page("https://x/inbox", "You do not have permission to view this page")
+    rewritten_page = _fake_manip_page("https://x/admin/settings", "Settings\nDelete User\nApprove Workflow")
+    context = AsyncMock()
+    context.new_page = AsyncMock(side_effect=[AsyncMock(), baseline_page, rewritten_page])
+    pool = _pool_with_context(context)
+    module = IdorTestsModule(config=IdorTestConfig(allow_state_changing_probes=True))
+
+    results = await module._technique_response_manipulation_bypass([endpoint], session_manager, pool, endpoint.url, None)
+
+    assert len(results) == 1
+    assert results[0].status == FAIL
+    finding = results[0].finding
+    assert finding is not None
+    assert finding.severity == "High"
+    assert finding.vuln_type == "Missing Function-Level Authorization (BFLA) via response manipulation"
+    assert "admin/settings" in finding.description
+
+
+@pytest.mark.asyncio
+async def test_response_manipulation_reports_error_on_failed_navigation(tmp_path):
+    endpoint = Endpoint(url="https://x/admin/settings", method="GET", endpoint_type="page")
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    baseline_page = AsyncMock()
+    baseline_page.goto = AsyncMock(side_effect=RuntimeError("net::ERR_CONNECTION_RESET"))
+    context = AsyncMock()
+    context.new_page = AsyncMock(side_effect=[AsyncMock(), baseline_page])
+    pool = _pool_with_context(context)
+    module = IdorTestsModule(config=IdorTestConfig(allow_state_changing_probes=True))
+
+    results = await module._technique_response_manipulation_bypass([endpoint], session_manager, pool, endpoint.url, None)
+
+    assert len(results) == 1
+    assert results[0].status == "ERROR"

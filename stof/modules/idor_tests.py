@@ -134,6 +134,12 @@ class IdorTestConfig:
     # against a target with a large discovered write surface, same
     # rationale as max_role_differential_endpoints above.
     max_bfla_write_endpoints: int = 30
+    # TC-055.6 (response manipulation) loads each candidate page TWICE
+    # with a real browser (baseline + response-rewritten) -- much more
+    # expensive per-endpoint than a raw HTTP probe, so this cap is
+    # deliberately smaller than max_role_differential_endpoints/
+    # max_bfla_write_endpoints above.
+    max_response_manipulation_endpoints: int = 6
     # Off by default: PUT/PATCH/DELETE-based technique probes (TC-054.2/
     # .3, TC-055.2, TC-056.2) actually write or destroy data on the
     # target if they succeed -- per this project's own safety rule for

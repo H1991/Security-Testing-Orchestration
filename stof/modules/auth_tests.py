@@ -106,6 +106,15 @@ _CONFIG_EXPOSURE_PATHS: tuple[str, ...] = ("/.env", "/config.json", "/api/config
 # correctly reports SKIPPED rather than guessing.
 _TOKEN_FIELD_NAMES: tuple[str, ...] = ("token", "resetToken", "code", "otp", "resetCode")
 
+# TC-027.7's own small, curated guess-list for a client-supplied
+# target-user identifier field on a password-change endpoint -- same
+# "try a short, plausible list of real-world field names, harmless if
+# the target ignores the extra field" philosophy as `_change_password`'s
+# two request-shape attempts above.
+_TARGET_USER_FIELD_CANDIDATES: tuple[str, ...] = (
+    "userId", "user_id", "accountId", "account_id", "id", "targetUserId", "email", "username",
+)
+
 # TC-132.1 (WSTG-AUTHN-09, "Testing for Weak Security Question/Answer):
 # field-name hints a discovered form/page uses for a security-question
 # account-recovery flow. Small and high-signal, same philosophy as
@@ -382,7 +391,15 @@ class AuthTestConfig:
     test_role: str | None = None
     test_username: str | None = None
     test_current_password: str | None = None
-    victim_email: str | None = None  # a second, different user's email/username, for TC-027.5
+    victim_email: str | None = None  # a second, different user's email/username, for TC-027.5 / TC-027.7
+    # TC-027.7 needs this SECOND account's own ORIGINAL password too --
+    # unlike every other gated technique in this file (which changes
+    # only the attacker's OWN, already-known password and can always
+    # revert it), a successful TC-027.7 bypass changes a DIFFERENT
+    # account's password. Without this, STOF cannot safely revert that
+    # change, so TC-027.7 SKIPs cleanly rather than run at all -- see
+    # its own docstring.
+    victim_current_password: str | None = None
     allow_state_changing_probes: bool = False
     # TC-129.2 (session valid after logout): optional target-specific
     # logout URL, same "explicit override, generic fallback" philosophy
@@ -833,10 +850,45 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
         when confirmation isn't possible at all -- no login endpoint or
         test username configured -- so callers can tell "confirmed the
         change didn't really happen" apart from "couldn't check"."""
-        if not (self.config.login_json_endpoint and self.config.test_username):
+        if not self.config.test_username:
             return None
-        succeeded, _status, _preview = await _try_json_login(context, self.config.login_json_endpoint, self.config.test_username, password)
+        return await self._confirm_password_works_for(context, self.config.test_username, password)
+
+    async def _confirm_password_works_for(self, context, username: str, password: str) -> bool | None:
+        """Same confirmation as `_confirm_password_works`, generalised to
+        an explicit `username` -- TC-027.7 needs to confirm a change
+        against the VICTIM account, not `self.config.test_username`."""
+        if not self.config.login_json_endpoint:
+            return None
+        succeeded, _status, _preview = await _try_json_login(context, self.config.login_json_endpoint, username, password)
         return succeeded
+
+    async def _change_password_for_target(self, context, new_password: str, current_password: str, target_field: str, target_value: str) -> tuple[bool, int]:
+        """Same two request shapes as `_change_password` (GET query-param
+        and JSON POST), with one extra field naming WHOSE account the
+        change applies to -- TC-027.7's probe for whether the endpoint
+        honors a client-supplied target-user identifier instead of
+        always applying the change to the session's own account."""
+        url = self.config.change_password_url
+        try:
+            resp = await context.request.get(
+                url, params={"current": current_password, "new": new_password, "repeat": new_password, target_field: target_value},
+                max_redirects=0,
+            )
+            if resp.status < 400:
+                return True, resp.status
+        except Exception as exc:
+            _log.warning(f"GET-style targeted change-password probe failed: {exc}")
+
+        try:
+            resp = await context.request.post(
+                url, data=json_module.dumps({"currentPassword": current_password, "newPassword": new_password, target_field: target_value}),
+                headers={"Content-Type": "application/json"}, max_redirects=0,
+            )
+            return resp.status < 400, resp.status
+        except Exception as exc:
+            _log.warning(f"POST-style targeted change-password probe failed: {exc}")
+            return False, 0
 
     async def _technique_no_previous_password_check(self, session_manager, session_pool, evidence) -> TestCaseResult:
         test_id, tid = "TC-025", "TC-025.5"
@@ -1169,6 +1221,113 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
         return self._result("TC-027", tid, technique, vuln_type, PASS,
                              f"HTTP {resp_status} response doesn't reflect an injected Host header -- note this only checks the API response itself, not the eventual emailed link, which this framework can't observe")
 
+    async def _technique_horizontal_password_change(self, session_manager, session_pool, evidence) -> TestCaseResult:
+        """TC-027.7 -- distinct from both TC-027.4 (does changing MY OWN
+        password require MY OWN current password?) and TC-027.5 (does
+        the UNAUTHENTICATED reset-REQUEST step leak whether an email is
+        registered?): this asks whether an AUTHENTICATED session can
+        redirect a password change onto a DIFFERENT account by supplying
+        a target-user identifier the endpoint shouldn't honor at all --
+        the real, reported vulnerability shape ("Account Takeover via
+        Unauthorized Password Modification") this project's own
+        cross-referenced pentest report flagged that neither existing
+        TC-027 technique covers.
+
+        The attacker's own `current` field is always filled with
+        `test_current_password` (a real, valid value) -- this technique
+        deliberately holds "does the endpoint require a valid current
+        password" CONSTANT and varies ONLY the target-identifier field,
+        so a FAIL here is unambiguously the IDOR-via-target-field class,
+        never a re-detection of TC-027.4's separate gap.
+
+        Requires a SECOND, fully STOF-controlled test account (`victim_
+        email` + `victim_current_password`, its own real, known
+        password) before running at all -- a successful bypass changes
+        THAT account's real password, and unlike every other technique
+        in this file, STOF cannot revert a change on an account it
+        wasn't already authenticated as, unless it already knows that
+        account's own original password to log in and change it back."""
+        test_id, tid = "TC-027", "TC-027.7"
+        technique = "Password-change endpoint honors a client-supplied target-user identifier (horizontal account takeover)"
+        vuln_type = "Account Takeover via Unauthorized Password Modification"
+        if not self.config.allow_state_changing_probes:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED,
+                                 "changes a second, victim test account's real password and is disabled by default -- "
+                                 "set AuthTestConfig.allow_state_changing_probes=True for an authorized engagement window")
+        if not (self.config.change_password_url and self.config.test_role and self.config.test_current_password):
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED,
+                                 "no change_password_url / test_role / test_current_password configured for this target")
+        if not (self.config.victim_email and self.config.victim_current_password):
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED,
+                                 "no victim_email / victim_current_password configured -- this technique needs a second, fully "
+                                 "STOF-controlled test account whose own original password is known, so a successful bypass "
+                                 "can be safely reverted")
+
+        try:
+            _session, context = await self._authenticated_context(session_manager, session_pool, self.config.test_role, self.config.change_password_url)
+        except KeyError as exc:
+            return self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
+
+        probe_password = "TargetProbe!3579"
+        tried: list[str] = []
+        for target_field in _TARGET_USER_FIELD_CANDIDATES:
+            tried.append(target_field)
+            result = await self._probe_horizontal_password_change_candidate(
+                context, evidence, test_id, tid, technique, vuln_type, target_field, probe_password)
+            if result is not None:
+                return result
+        return self._result(test_id, tid, technique, vuln_type, PASS,
+                             f"tried {len(tried)} candidate target-identifier field name(s) ({', '.join(tried)}) on the "
+                             "password-change endpoint; none redirected the change onto the victim account")
+
+    async def _probe_horizontal_password_change_candidate(
+        self, context, evidence, test_id: str, tid: str, technique: str, vuln_type: str, target_field: str, probe_password: str,
+    ) -> TestCaseResult | None:
+        """One candidate field name's worth of TC-027.7's loop, extracted
+        so that method drops to setup + orchestration only. Returns
+        `None` to keep trying the next candidate; returns a FAIL result
+        (after reverting) the moment one candidate actually redirects
+        the change onto the victim account."""
+        accepted, status = await self._change_password_for_target(
+            context, probe_password, self.config.test_current_password, target_field, self.config.victim_email)
+        if not accepted:
+            return None
+        confirmed = await self._confirm_password_works_for(context, self.config.victim_email, probe_password)
+        if confirmed is False:
+            return None  # accepted at the HTTP layer but didn't actually take effect on the victim account
+
+        try:
+            confirmation_note = (
+                "CONFIRMED: logging in as the victim account with the new password succeeded. " if confirmed is True else
+                "Unconfirmed via re-login (no login_json_endpoint configured): "
+            )
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.8,
+                endpoint=_synthetic_endpoint(self.config.change_password_url, "GET"), user_role=self.config.test_role,
+                request_raw=f"GET/POST {self.config.change_password_url} with current=*** (attacker's own), new=***, {target_field}={self.config.victim_email!r}",
+                response_raw=f"HTTP {status} -- accepted",
+                description=(
+                    f"{confirmation_note}Authenticated as '{self.config.test_role}', supplying a '{target_field}' parameter "
+                    f"identifying a different account ({self.config.victim_email}) on the password-change endpoint changed "
+                    "that other account's password -- a horizontal-to-account-takeover IDOR on the password-change flow."
+                ),
+                recommendation=(
+                    "Never accept a client-supplied target-user identifier on a password/credential-change endpoint. Derive "
+                    "the account being changed exclusively from the authenticated session/token; ignore any request body or "
+                    "query parameter naming a different user."
+                ),
+            )
+            finding.evidence_refs = await self._capture(evidence, finding)
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+        finally:
+            reverted, revert_status = await self._change_password_for_target(
+                context, self.config.victim_current_password, self.config.test_current_password, target_field, self.config.victim_email)
+            if not reverted:
+                _log.error(
+                    f"COULD NOT REVERT victim test account '{self.config.victim_email}' password after the "
+                    f"horizontal-password-change probe (HTTP {revert_status}) -- it may now be '{probe_password}'. Manual intervention required."
+                )
+
     # --- TC-132 Weak Security Question/Answer (WSTG-AUTHN-09) -----------
 
     async def _technique_weak_security_question(self, endpoints, session_pool, evidence) -> TestCaseResult:
@@ -1376,6 +1535,10 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
         results.append(await self._safe_result(
             self._technique_host_header_injection(session_pool),
             "TC-027", "TC-027.6", "Host-header injection poisons the generated reset link",
+            "Authentication Weakness Tests", role=self.config.test_role))
+        results.append(await self._safe_result(
+            self._technique_horizontal_password_change(session_manager, session_pool, evidence),
+            "TC-027", "TC-027.7", "Password-change endpoint honors a client-supplied target-user identifier (horizontal account takeover)",
             "Authentication Weakness Tests", role=self.config.test_role))
 
         results.extend(await self._techniques_tc129(endpoints, session_manager, session_pool, evidence))

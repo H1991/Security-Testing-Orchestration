@@ -230,7 +230,7 @@ def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict, ta
             allow_state_changing_probes=allow_state_changing_probes,
         )),
         "business_logic_tests": lambda: BusinessLogicTestsModule(config=BusinessLogicTestConfig(
-            allow_state_changing_probes=allow_state_changing_probes,
+            allow_state_changing_probes=allow_state_changing_probes, test_role=low_priv_role or "normal",
         )),
         "file_upload_tests": lambda: FileUploadTestsModule(config=FileUploadTestConfig(
             allow_state_changing_probes=allow_state_changing_probes,
