@@ -72,7 +72,7 @@ from stof.authorization.decision import AuthorizationDecision, classify_response
 from stof.authorization.matrix import AuthorizationMatrix
 from stof.core.logger import get_logger
 from stof.crawler.endpoint_store import Endpoint
-from stof.findings.models import Finding
+from stof.findings.models import Finding, severity_for_score
 from stof.payloads.generators import StaticValueGenerator
 from stof.payloads.models import PayloadContext, ProbeContext
 from stof.payloads.registry import PayloadRegistry
@@ -82,12 +82,17 @@ from ._idor_shared import (
     _PRIVILEGE_FIELD_NAMES,
     _collect_observed_ids,
     _content_fingerprint,
+    _control_candidate_value,
+    _endpoint_candidate_ids,
+    _exclude_control_fingerprint,
     _extract_leaked_ids,
     _id_shape,
     _looks_like_object_reference,  # noqa: F401 -- re-exported: tests/unit/test_idor_tests.py imports it from here
     _method_request_fn,
     _numeric_path_segment_indexes,
     _object_ref_endpoints,
+    _observed_path_segment_value,
+    _observed_query_value,
     _set_path_segment,
     _set_query_param,
     _synthetic_endpoint,
@@ -270,32 +275,45 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
             if page is not None:
                 await page.close()
 
-    async def _confirm_cross_session(self, confirm_context, url: str, param: str, candidate_ids: list[str]) -> list[str]:
-        """Replays `candidate_ids` against `url` using a second,
+    async def _confirm_cross_session(self, confirm_context, url_for, candidate_ids: list[str], control_fp: str | None = None) -> list[str]:
+        """Replays `candidate_ids` through `url_for` using a second,
         already-authenticated context (a genuinely different identity
-        than whichever session discovered them) -- the candidate IDs
-        it can also retrieve are the cross-identity-confirmed ones.
+        than whichever session discovered them) -- the candidate IDs it
+        can also retrieve are the cross-identity-confirmed ones.
+        `url_for` (not `url, param`) so this is reusable for both the
+        query-parameter and path-segment substitution shapes. `control_fp`
+        (from `_control_fingerprint`) excludes a "confirmation" that's
+        really just this target's generic invalid-id response also
+        being retrievable by the second identity -- the same false-
+        positive class `_probe_candidates` guards against, which would
+        otherwise apply equally to BOTH identities on a target with a
+        catch-all response and look like a genuine cross-session match.
         Returns `[]` (not an error) when `confirm_context` is `None`,
         the caller's signal that no second identity was available."""
         if confirm_context is None:
             return []
         confirmed: list[str] = []
         for cid in candidate_ids:
-            probe_url = _set_query_param(url, param, cid)
-            probe = await self._probe_get(confirm_context, probe_url)
+            probe = await self._probe_get(confirm_context, url_for(cid))
             if probe is None:
                 continue
             status, body = probe
-            if status == 200 and len(body) >= self.config.min_content_length:
+            if status == 200 and len(body) >= self.config.min_content_length and (control_fp is None or _content_fingerprint(body) != control_fp):
                 confirmed.append(cid)
         return confirmed
 
-    def _idor_description(self, url: str, param: str, response_count: int, sample_ids: list[str], confirmed_ids: list[str]) -> str:
+    def _idor_description(self, url: str, location_label: str, response_count: int, sample_ids: list[str], confirmed_ids: list[str]) -> str:
+        """`location_label` names where the id was substituted -- e.g.
+        `"the 'listAccounts' parameter"` for a query-param technique, or
+        `"its trailing path segment"` for a path-segment one -- so this
+        one description covers both TC-053.1 and TC-053.2 instead of
+        each hand-writing its own near-identical CONFIRMED/unconfirmed
+        wording."""
         if confirmed_ids:
             return (
                 f"CONFIRMED via a second identity: a session authenticated as role "
                 f"'{self.high_priv_role}' retrieved {response_count} distinct objects from "
-                f"'{url}' by varying the '{param}' parameter across {sample_ids}; "
+                f"'{url}' by varying {location_label} across {sample_ids}; "
                 f"a completely different session, authenticated as role "
                 f"'{self.low_priv_role}', was ALSO able to retrieve "
                 f"{'object' if len(confirmed_ids) == 1 else 'objects'} {confirmed_ids} with no "
@@ -305,7 +323,7 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         return (
             f"A single authenticated session (role '{self.high_priv_role}') retrieved "
             f"{response_count} distinct, substantially different objects from "
-            f"'{url}' by varying the '{param}' parameter across "
+            f"'{url}' by varying {location_label} across "
             f"{sample_ids}, with no apparent server-side check that the requested "
             f"object belongs to the requesting user. Unconfirmed with a second "
             f"identity: no distinct low-privilege role was configured/reachable for "
@@ -313,13 +331,34 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
             f"cross-identity-confirmed authorization bypass."
         )
 
+    async def _open_confirm_context(self, session_manager, session_pool, target_url):
+        """Opens a second, already-authenticated context under
+        `self.low_priv_role` -- the genuinely different identity every
+        cross-session IDOR confirmation needs. Returns `None` when
+        `low_priv_role == high_priv_role` (no distinct second identity
+        to open at all) or when that role isn't configured/reachable --
+        both graceful "no cross-session confirmation available"
+        outcomes, not errors, so a target with only one usable test
+        account still gets the (weaker, honestly-labeled) single-
+        session evidence below instead of losing this technique's
+        coverage entirely. Shared by `_test_horizontal_idor` (TC-053.2)
+        and `_technique_idor_path_param` (TC-053.1) -- the latter used
+        to have no cross-session confirmation at all."""
+        if self.low_priv_role == self.high_priv_role:
+            return None
+        try:
+            _, confirm_context = await self._authenticated_context(session_manager, session_pool, self.low_priv_role, target_url)
+            return confirm_context
+        except KeyError as exc:
+            _log.warning(f"cross-session IDOR confirmation unavailable: {exc}")
+            return None
+
     async def _test_horizontal_idor(self, endpoints, session_manager, session_pool, target_url, evidence=None) -> list[Finding]:
         candidate_endpoints = _object_ref_endpoints(endpoints)
         if not candidate_endpoints:
             return []
 
         session, context = await self._authenticated_context(session_manager, session_pool, self.high_priv_role, target_url)
-
         # A second, genuinely different identity used to replay whatever
         # the first identity finds -- single-session ID enumeration alone
         # only proves "role X can see multiple objects," which a
@@ -329,17 +368,8 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         # enumerating /bank/showAccount found 3 distinct real accounts,
         # and a completely different 'normal' session could ALSO pull
         # every one of them by ID -- that cross-identity replay is the
-        # actual proof, not the enumeration step by itself. `None` when
-        # no distinct low-priv role is configured/reachable -- graceful
-        # fallback to the single-identity signal below, not a hard
-        # requirement that would silently lose coverage for a target
-        # with only one usable test account.
-        confirm_context = None
-        if self.low_priv_role != self.high_priv_role:
-            try:
-                _, confirm_context = await self._authenticated_context(session_manager, session_pool, self.low_priv_role, target_url)
-            except KeyError as exc:
-                _log.warning(f"cross-session IDOR confirmation unavailable: {exc}")
+        # actual proof, not the enumeration step by itself.
+        confirm_context = await self._open_confirm_context(session_manager, session_pool, target_url)
 
         findings: list[Finding] = []
         for endpoint, param in candidate_endpoints:
@@ -354,9 +384,11 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         only -- same branches, same order, just named and separated."""
         responses: dict[str, str] = {}
         statuses: dict[str, int] = {}
-        for candidate in self._candidate_ids("TC-053.2", "query"):
-            probe_url = _set_query_param(endpoint.url, param, candidate)
-            probe = await self._probe_get(context, probe_url)
+        observed = _observed_query_value(endpoint.url, param)
+        candidates = _endpoint_candidate_ids(observed, self._candidate_ids("TC-053.2", "query"))
+        url_for = lambda cid, e=endpoint, p=param: _set_query_param(e.url, p, cid)
+        for candidate in candidates:
+            probe = await self._probe_get(context, url_for(candidate))
             if probe is None:
                 continue
             status, body = probe
@@ -364,26 +396,42 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
             if status == 200 and len(body) >= self.config.min_content_length:
                 responses[candidate] = body
 
+        control_fp = await self._control_fingerprint(context, url_for)
+        responses = _exclude_control_fingerprint(responses, control_fp)
         distinct_fingerprints = {_content_fingerprint(b) for b in responses.values()}
         if not (len(responses) >= 2 and len(distinct_fingerprints) >= 2):
             return None
 
         sample_ids = list(responses.keys())[:3]
-        confirmed_ids = await self._confirm_cross_session(confirm_context, endpoint.url, param, sample_ids)
+        confirmed_ids = await self._confirm_cross_session(confirm_context, url_for, sample_ids, control_fp)
         if confirm_context is not None and not confirmed_ids:
             _log.info(f"IDOR candidate at '{endpoint.url}' ({param}) not confirmed: role '{self.low_priv_role}' was denied every object role '{self.high_priv_role}' could see")
             return None
-        description = self._idor_description(endpoint.url, param, len(responses), sample_ids, confirmed_ids)
+        description = self._idor_description(endpoint.url, f"the '{param}' parameter", len(responses), sample_ids, confirmed_ids)
         finding = Finding(
             module_id=self.module_id,
             vuln_type="Insecure Direct Object Reference (IDOR) / Broken Object Level Authorization",
-            severity="Critical",
+            severity="High",
             cvss_score=8.1,
             endpoint=endpoint,
             user_role=self.high_priv_role,
             request_raw="\n".join(f"GET {_set_query_param(endpoint.url, param, cid)}" for cid in sample_ids),
             response_raw="\n".join(f"[{param}={cid}] HTTP {statuses.get(cid)}, {len(responses[cid])} bytes" for cid in sample_ids),
             description=description,
+            # "confirmed" only when a second, genuinely different
+            # identity independently reached the same objects -- a real
+            # bug this project's own code audit caught: the description
+            # text already said "Unconfirmed... single-session
+            # enumeration evidence only" in this branch, but the
+            # structured confidence field was never set to match, so
+            # the report's own "Needs Manual Confirmation" badge never
+            # fired for exactly the findings that most need it.
+            confidence="confirmed" if confirmed_ids else "likely",
+            # The genuinely different identity that independently reached
+            # the same objects -- set only when confirmation actually ran
+            # and succeeded, so evidence capture knows there's a real
+            # second session worth replaying for a side-by-side check.
+            confirmed_role=self.low_priv_role if confirmed_ids else None,
             recommendation=(
                 "Enforce object-level authorization on every request that takes an object "
                 "id from the client: verify the authenticated user actually owns/may access "
@@ -424,11 +472,42 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         return self._result(test_id, technique_id, technique, vuln_type, SKIPPED,
                              f"{reason} -- set IdorTestConfig.allow_state_changing_probes=True for an authorized engagement window")
 
-    async def _probe_candidates(self, context, candidates, url_for) -> tuple[dict[str, str], dict[str, int]]:
+    async def _control_fingerprint(self, context, url_for) -> str | None:
+        """Probes a random, definitely-nonexistent candidate value
+        through `url_for` and returns its response's content
+        fingerprint -- the same baseline/control-probe principle
+        `stof/modules/_probe_shared.py`'s `control_fingerprint()`
+        already uses for wordlist sweeps, applied here so a candidate
+        whose response merely matches this endpoint's generic "invalid
+        id" response (a soft-404 that echoes the requested value back,
+        a SPA shell that returns 200 for anything) is never mistaken
+        for a second, real, distinct object. Returns `None` when the
+        control probe itself didn't return a usable 200 body -- callers
+        treat that as "nothing to baseline against" and skip filtering,
+        not discard every real candidate because the control probe
+        happened to fail."""
+        probe = await self._probe_get(context, url_for(_control_candidate_value()))
+        if probe is None:
+            return None
+        status, body = probe
+        if status == 200 and len(body) >= self.config.min_content_length:
+            return _content_fingerprint(body)
+        return None
+
+    async def _probe_candidates(self, context, candidates, url_for) -> tuple[dict[str, str], dict[str, int], str | None]:
         """Shared by every technique below that substitutes a set of
         candidate ids into a URL-transform and compares the resulting
         bodies -- the same primitive `_test_horizontal_idor` above
-        hand-codes for the query-parameter case specifically."""
+        hand-codes for the query-parameter case specifically. Filters
+        out any candidate whose response is indistinguishable from the
+        control/baseline probe (`_control_fingerprint` above) before
+        returning -- a real false positive this project confirmed via
+        code audit: a soft-404 that echoes the requested id back
+        produces a genuinely distinct body per candidate, which the
+        plain "are these bodies different from each other" check alone
+        cannot tell apart from a real distinct object. Also returns the
+        control fingerprint itself so a caller that goes on to run
+        cross-session confirmation can reuse it instead of re-probing."""
         responses: dict[str, str] = {}
         statuses: dict[str, int] = {}
         for candidate in candidates:
@@ -440,16 +519,17 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
             statuses[candidate] = status
             if status == 200 and len(body) >= self.config.min_content_length:
                 responses[candidate] = body
-        return responses, statuses
+        control_fp = await self._control_fingerprint(context, url_for)
+        return _exclude_control_fingerprint(responses, control_fp), statuses, control_fp
 
-    def _object_ref_finding(self, endpoint, role, label, url_for, statuses, responses, vuln_type, cvss, description, recommendation) -> Finding:
+    def _object_ref_finding(self, endpoint, role, label, url_for, statuses, responses, vuln_type, cvss, description, recommendation, confidence="confirmed", confirmed_role=None) -> Finding:
         sample_ids = list(responses.keys())[:3]
         return Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=cvss,
+            module_id=self.module_id, vuln_type=vuln_type, severity=severity_for_score(cvss), cvss_score=cvss,
             endpoint=endpoint, user_role=role,
             request_raw="\n".join(f"GET {url_for(cid)}" for cid in sample_ids),
             response_raw="\n".join(f"[{label}={cid}] HTTP {statuses.get(cid)}, {len(responses[cid])} bytes" for cid in sample_ids),
-            description=description, recommendation=recommendation,
+            description=description, recommendation=recommendation, confidence=confidence, confirmed_role=confirmed_role,
         )
 
     async def _technique_idor_path_param(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
@@ -463,38 +543,63 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
             session, context = await self._authenticated_context(session_manager, session_pool, self.high_priv_role, target_url)
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
+        # Cross-session confirmation -- this technique used to have NONE
+        # at all (unlike TC-053.2's query-parameter sibling), reporting
+        # FAIL on single-session content-differential alone. Same
+        # `_open_confirm_context` a second, genuinely different identity
+        # replays candidates through, now shared by both techniques.
+        confirm_context = await self._open_confirm_context(session_manager, session_pool, target_url)
 
         results: list[TestCaseResult] = []
         for endpoint in candidates:
-            seg_index = _numeric_path_segment_indexes(endpoint.url)[-1]
-            url_for = lambda cid, e=endpoint, i=seg_index: _set_path_segment(e.url, i, cid)
-            responses, statuses = await self._probe_candidates(context, self._candidate_ids("TC-053.1", "path"), url_for)
-            distinct = {_content_fingerprint(b) for b in responses.values()}
-            if len(responses) >= 2 and len(distinct) >= 2:
-                finding = self._object_ref_finding(
-                    endpoint, self.high_priv_role, "path segment", url_for, statuses, responses, vuln_type, 8.1,
-                    description=(
-                        f"A single authenticated session (role '{self.high_priv_role}') retrieved "
-                        f"{len(responses)} distinct objects from '{endpoint.url}' by varying its "
-                        f"trailing path segment across {list(responses.keys())[:3]}, with no apparent "
-                        "server-side ownership check."
-                    ),
-                    recommendation=(
-                        "Enforce object-level authorization on every request that takes an object id "
-                        "from the URL path, not just from query parameters."
-                    ),
-                )
-                sample_id = next(iter(responses.keys()))
-                finding.evidence_refs = await self._capture_evidence(evidence, context, session, url_for(sample_id), label=f"idor-path-{sample_id}", finding=finding)
-                results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description,
-                                             role=self.high_priv_role, endpoint=endpoint, finding=finding))
-            else:
-                results.append(self._result(
-                    test_id, tid, technique, vuln_type, PASS,
-                    f"'{endpoint.url}': path-segment candidates {self.config.candidate_ids} returned no distinct objects",
-                    role=self.high_priv_role, endpoint=endpoint,
-                ))
+            results.append(await self._check_path_param_idor_candidate(
+                context, session, confirm_context, evidence, endpoint, test_id, tid, technique, vuln_type))
         return results
+
+    async def _check_path_param_idor_candidate(
+        self, context, session, confirm_context, evidence, endpoint, test_id: str, tid: str, technique: str, vuln_type: str,
+    ) -> TestCaseResult:
+        """Per-endpoint probe-and-check body of
+        `_technique_idor_path_param`'s loop, extracted so that method
+        drops to setup + orchestration only -- same shape as
+        `_check_horizontal_idor_candidate` (TC-053.2)."""
+        seg_index = _numeric_path_segment_indexes(endpoint.url)[-1]
+        url_for = lambda cid, e=endpoint, i=seg_index: _set_path_segment(e.url, i, cid)
+        observed = _observed_path_segment_value(endpoint.url, seg_index)
+        endpoint_candidates = _endpoint_candidate_ids(observed, self._candidate_ids("TC-053.1", "path"))
+        responses, statuses, control_fp = await self._probe_candidates(context, endpoint_candidates, url_for)
+        distinct = {_content_fingerprint(b) for b in responses.values()}
+        if not (len(responses) >= 2 and len(distinct) >= 2):
+            return self._result(
+                test_id, tid, technique, vuln_type, PASS,
+                f"'{endpoint.url}': path-segment candidates {endpoint_candidates} returned no distinct objects",
+                role=self.high_priv_role, endpoint=endpoint,
+            )
+
+        sample_ids = list(responses.keys())[:3]
+        confirmed_ids = await self._confirm_cross_session(confirm_context, url_for, sample_ids, control_fp)
+        if confirm_context is not None and not confirmed_ids:
+            _log.info(f"IDOR candidate at '{endpoint.url}' (path segment {seg_index}) not confirmed: role '{self.low_priv_role}' was denied every object role '{self.high_priv_role}' could see")
+            return self._result(
+                test_id, tid, technique, vuln_type, PASS,
+                f"'{endpoint.url}': path-segment candidates returned distinct content for role '{self.high_priv_role}', but role '{self.low_priv_role}' could not access any of the same objects -- not confirmed as a cross-identity authorization gap",
+                role=self.high_priv_role, endpoint=endpoint,
+            )
+        description = self._idor_description(endpoint.url, "its trailing path segment", len(responses), sample_ids, confirmed_ids)
+        finding = self._object_ref_finding(
+            endpoint, self.high_priv_role, "path segment", url_for, statuses, responses, vuln_type, 8.1,
+            description=description,
+            recommendation=(
+                "Enforce object-level authorization on every request that takes an object id "
+                "from the URL path, not just from query parameters."
+            ),
+            confidence="confirmed" if confirmed_ids else "likely",
+            confirmed_role=self.low_priv_role if confirmed_ids else None,
+        )
+        sample_id = sample_ids[0]
+        finding.evidence_refs = await self._capture_evidence(evidence, context, session, url_for(sample_id), label=f"idor-path-{sample_id}", finding=finding)
+        return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description,
+                             role=self.high_priv_role, endpoint=endpoint, finding=finding)
 
     async def _technique_idor_leaked_ids(self, endpoints, session_manager, session_pool, target_url, evidence, seen_bodies: list[str]) -> list[TestCaseResult]:
         test_id, tid, technique = "TC-053", "TC-053.4", "ID enumeration via IDs leaked in other responses"
@@ -515,7 +620,7 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         results: list[TestCaseResult] = []
         for endpoint, param in object_ref_endpoints:
             url_for = lambda cid, e=endpoint, p=param: _set_query_param(e.url, p, cid)
-            responses, statuses = await self._probe_candidates(context, leaked_ids, url_for)
+            responses, statuses, _control_fp = await self._probe_candidates(context, leaked_ids, url_for)
             distinct = {_content_fingerprint(b) for b in responses.values()}
             if len(responses) >= 1 and len(distinct) >= 1:
                 finding = self._object_ref_finding(
@@ -615,6 +720,7 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
                     "for any externally-visible object reference, in addition to (not instead of) enforcing "
                     "server-side object-level authorization."
                 ),
+                confidence="likely",  # contributing-risk signal, never claims unauthorized access was observed -- see this technique's own docstring
             )
             return [self._result(test_id, tid, technique, vuln_type, FAIL, description, role=self.high_priv_role, finding=finding)]
         if random_shaped / total > 0.5:
@@ -702,6 +808,7 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
                         "outcome. Manually verify what GET actually returns before treating this as more than a candidate."
                     ),
                     recommendation="Enforce identical authorization checks on every HTTP method a route responds to, not only the one the UI normally uses.",
+                    confidence="likely",  # a response-code differential, not a confirmed data/state exposure -- see description
                 )
                 finding.evidence_refs = await self._capture_evidence(evidence, context, session, endpoint.url, label=f"idor-method-override-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)
                 results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding))
@@ -752,7 +859,8 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         endpoint returned success."""
         outcomes: dict[str, int] = {}
         markers: dict[str, str] = {}
-        for candidate in self.config.candidate_ids:
+        observed = _observed_query_value(endpoint.url, param)
+        for candidate in _endpoint_candidate_ids(observed, self.config.candidate_ids):
             probe_url = _set_query_param(endpoint.url, param, candidate)
             kwargs: dict = {"max_redirects": 0}
             if http_method in ("PUT", "PATCH"):
@@ -783,7 +891,7 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
             )
 
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.6,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.6,
             endpoint=endpoint, user_role=self.high_priv_role,
             request_raw="\n".join(f"{http_method} {_set_query_param(endpoint.url, param, cid)}" for cid in confirmed[:3]),
             response_raw="\n".join(evidence_lines[:3]),
@@ -854,7 +962,9 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         for endpoint, idxs in candidates:
             outer_index = idxs[0]  # vary the outermost id, keep the inner (last) one fixed
             url_for = lambda cid, e=endpoint, i=outer_index: _set_path_segment(e.url, i, cid)
-            responses, statuses = await self._probe_candidates(context, self.config.candidate_ids, url_for)
+            observed = _observed_path_segment_value(endpoint.url, outer_index)
+            endpoint_candidates = _endpoint_candidate_ids(observed, self.config.candidate_ids)
+            responses, statuses, _control_fp = await self._probe_candidates(context, endpoint_candidates, url_for)
             distinct = {_content_fingerprint(b) for b in responses.values()}
             if len(responses) >= 2 and len(distinct) >= 2:
                 finding = self._object_ref_finding(
@@ -900,7 +1010,7 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
             decision = classify_response(status, body, min_content_length=self.config.min_content_length)
             if decision == AuthorizationDecision.ALLOWED:
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=6.5,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
                     endpoint=_synthetic_endpoint(link_url), user_role=self.low_priv_role,
                     request_raw=f"GET {link_url}", response_raw=f"HTTP {status}, {len(body)} bytes",
                     description=f"'{link_url}' is hidden from the UI for role '{self.low_priv_role}' (not in its rendered navigation) but still fully reachable via a direct request.",

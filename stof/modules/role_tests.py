@@ -79,7 +79,7 @@ class RoleTechniquesMixin:
             finding = Finding(
                 module_id=self.module_id,
                 vuln_type="Role Manipulation via Parameter Tampering",
-                severity="Critical",
+                severity="High",
                 cvss_score=8.8,
                 endpoint=endpoint,
                 user_role=self.low_priv_role,
@@ -101,6 +101,14 @@ class RoleTechniquesMixin:
                     "session state, and re-validate authorization on every request "
                     "regardless of any client-supplied role parameter."
                 ),
+                # The description above says "suggests" / "may be
+                # trusted" -- single-session parameter tampering alone,
+                # no cross-identity confirmation that a genuinely
+                # different low-priv identity is actually elevated (the
+                # same "never report off single-session enumeration
+                # alone" principle idor_tests.py's own cross-session
+                # confirmation was built for).
+                confidence="likely",
             )
             finding.evidence_refs = await self._capture_evidence(
                 evidence, context, session, tampered_url, label=f"role-tamper-{param}-{elevated_value}", finding=finding)
@@ -147,7 +155,7 @@ class RoleTechniquesMixin:
                 continue
             if resp.status in (200, 201, 204):
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.8,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.8,
                     endpoint=endpoint, user_role=self.low_priv_role,
                     request_raw=f"{endpoint.method} {endpoint.url}\nContent-Type: application/json\n\n{json_module.dumps(payload)}",
                     response_raw=f"HTTP {resp.status}",
@@ -175,7 +183,7 @@ class RoleTechniquesMixin:
         elevated_value, _url, tampered_status, tampered_body, baseline_status, baseline_body = result
         header_desc = f"Cookie: role={elevated_value}" if via == "cookie" else f"X-Role: {elevated_value}"
         return Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.2,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.2,
             endpoint=endpoint, user_role=self.low_priv_role,
             request_raw=f"GET {endpoint.url}\n{header_desc}",
             response_raw=f"HTTP {tampered_status}, {len(tampered_body)} bytes (baseline HTTP {baseline_status}, {len(baseline_body)} bytes)",

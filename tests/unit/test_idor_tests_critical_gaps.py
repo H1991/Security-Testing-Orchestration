@@ -528,7 +528,7 @@ async def test_client_side_only_access_control_skips_when_dom_extraction_fails(t
 def _finding(vuln_type: str, response_raw: str) -> Finding:
     endpoint = Endpoint(url="https://x/api/users/2", method="GET", endpoint_type="api")
     return Finding(
-        module_id="idor_tests", vuln_type=vuln_type, severity="Critical", cvss_score=8.1,
+        module_id="idor_tests", vuln_type=vuln_type, severity="High", cvss_score=8.1,
         endpoint=endpoint, user_role="admin", request_raw="GET x", response_raw=response_raw,
         description="d", recommendation="r",
     )
@@ -746,7 +746,7 @@ async def test_bfla_state_changing_tests_plainly_named_write_endpoint(tmp_path):
 
     by_id = {r.technique_id: r for r in results if r.technique_id == "TC-055.2"}
     assert by_id["TC-055.2"].status == FAIL
-    assert by_id["TC-055.2"].finding.severity == "Critical"
+    assert by_id["TC-055.2"].finding.severity == "High"  # cvss_score=8.8 -- High per the CVSS v3.1 scale (7.0-8.9)
     assert "delete-category" in by_id["TC-055.2"].finding.description
 
 

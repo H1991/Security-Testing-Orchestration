@@ -88,19 +88,75 @@ class TestCaseResult:
         }
 
 
+def _root_cause_key(finding: "Finding") -> tuple[str, str, str, str]:
+    """Groups findings that are, in practice, the SAME underlying gap
+    independently confirmed by different sub-techniques of the same
+    umbrella family -- e.g. TC-055.1 (URL-naming heuristic) and TC-055.5
+    (role-differential matrix) both flagging BFLA on the identical
+    endpoint. `module_id` is part of the key specifically so this never
+    merges genuinely distinct vulnerability classes that happen to
+    share an endpoint (a real SQLi finding from `sqli_tests` and a real
+    XSS finding from `xss_tests` on the same URL stay two findings, not
+    one) -- only sibling `.N` techniques under the same top-level `TC-`
+    id, on the same endpoint, from the same module, count as the same
+    root cause."""
+    from stof.payloads.registry import UnknownTestCaseError, top_level_id
+
+    try:
+        family = top_level_id(finding.technique_id) if finding.technique_id else finding.vuln_type
+    except UnknownTestCaseError:
+        family = finding.technique_id
+    return (finding.module_id, family, finding.endpoint.method, finding.endpoint.url)
+
+
+def _merge_root_cause_duplicates(findings: list["Finding"]) -> list["Finding"]:
+    """Second dedup pass, on top of `extract_findings()`'s own literal-
+    `finding_id` dedup: when 2+ DIFFERENT `Finding` objects (different
+    techniques, independently confirmed, never reusing each other's
+    object) land on the same `_root_cause_key`, keep only the highest-
+    severity one and note in its own description how many sibling
+    techniques independently confirmed the same gap -- strengthening
+    confidence in the kept finding rather than silently discarding the
+    corroborating signal. Ties broken by encounter order (stable,
+    deterministic -- matches the order techniques actually ran in)."""
+    groups: dict[tuple[str, str, str, str], list[Finding]] = {}
+    for f in findings:
+        groups.setdefault(_root_cause_key(f), []).append(f)
+
+    merged: list[Finding] = []
+    for group in groups.values():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+        canonical = max(group, key=lambda f: f.cvss_score)
+        others = [f for f in group if f is not canonical]
+        technique_ids = ", ".join(sorted({f.technique_id for f in others if f.technique_id}))
+        canonical.description += (
+            f" Independently confirmed by {len(others)} other technique(s) against the same "
+            f"endpoint ({technique_ids}), consolidated here as one finding rather than counted separately."
+        )
+        merged.append(canonical)
+    return merged
+
+
 def extract_findings(results: list[TestCaseResult]) -> list["Finding"]:
     """The exact `list[Finding]` every FAIL-only consumer (findings
     store, HTML/JSON/Excel reports) already expects.
 
-    Deduplicated by `finding_id`: some techniques (e.g. TC-050.1/.2)
-    deliberately reuse another technique's already-confirmed `Finding`
-    object as evidence for an umbrella category rather than probing
-    again -- without this, the same underlying vulnerability inflates
-    the Critical count once per technique that reused it instead of
-    once per actual root cause (a real reviewer flagged this exact
-    "11 Critical findings" over-count against this project's own
-    scan output)."""
+    Two dedup passes. First, by `finding_id`: some techniques (e.g.
+    TC-050.1/.2) deliberately reuse another technique's already-
+    confirmed `Finding` OBJECT as evidence for an umbrella category
+    rather than probing again. Second, by `_root_cause_key()`: DIFFERENT
+    `Finding` objects from sibling sub-techniques of the same umbrella
+    family, independently confirming the same gap on the same endpoint,
+    get consolidated into one. Without either, the same underlying
+    vulnerability inflates the Critical count once per technique that
+    touched it instead of once per actual root cause (a real reviewer
+    flagged exactly this "11 Critical findings" over-count against this
+    project's own scan output -- the first pass fixed the literal-reuse
+    half of it; the second closes the independently-confirmed half)."""
     from stof.findings.classification import classify_finding_taxonomy
+    from stof.findings.cvss import cvss_vector_for_finding
 
     findings: list[Finding] = []
     seen_ids: set[str] = set()
@@ -118,8 +174,9 @@ def extract_findings(results: list[TestCaseResult]) -> list["Finding"]:
         # together. See `Finding.technique_id`'s own docstring.
         r.finding.technique_id = r.technique_id
         r.finding.cwe, r.finding.owasp_category = classify_finding_taxonomy(r.finding)
+        r.finding.cvss_vector = cvss_vector_for_finding(r.finding)
         findings.append(r.finding)
-    return findings
+    return _merge_root_cause_duplicates(findings)
 
 
 def summarize(results: list[TestCaseResult]) -> dict[str, int]:

@@ -21,6 +21,12 @@ from stof.config.schema import UserConfig
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
 from stof.findings.models import Finding
+from stof.modules._idor_shared import (
+    _endpoint_candidate_ids,
+    _numeric_neighbors,
+    _observed_path_segment_value,
+    _observed_query_value,
+)
 from stof.modules.idor_tests import IdorTestConfig, IdorTestsModule, _looks_like_object_reference, _set_query_param
 from stof.modules.results import ERROR, FAIL, PASS, SKIPPED
 from stof.session.models import Session
@@ -108,6 +114,114 @@ def test_looks_like_object_reference_rejects_unrelated_param():
 
 
 # ---------------------------------------------------------------------------
+# Observe-then-derive candidate ids -- regression coverage for the fix
+# that stops IDOR probing from depending on a per-target hardcoded
+# `idor_candidate_ids` range (a real target's config.json once held a
+# literal 800000-800010 for one specific demo app). Candidates now come
+# from whatever id THIS endpoint's own crawled URL actually showed,
+# first, with the configured/generic list only as a supplementary seed.
+# ---------------------------------------------------------------------------
+
+
+def test_numeric_neighbors_returns_nearest_first_pairs():
+    assert _numeric_neighbors("42", spread=3) == ["41", "43", "40", "44", "39", "45"]
+
+
+def test_numeric_neighbors_preserves_zero_padding_width():
+    assert _numeric_neighbors("007", spread=1) == ["006", "008"]
+
+
+def test_numeric_neighbors_never_includes_the_observed_value_itself():
+    assert "42" not in _numeric_neighbors("42")
+
+
+def test_numeric_neighbors_excludes_negative_candidates_near_zero():
+    assert _numeric_neighbors("1", spread=2) == ["0", "2", "3"]
+
+
+def test_numeric_neighbors_empty_for_a_uuid_shaped_value():
+    assert _numeric_neighbors("550e8400-e29b-41d4-a716-446655440000") == []
+
+
+def test_numeric_neighbors_empty_for_non_digit_value():
+    assert _numeric_neighbors("abc123") == []
+
+
+def test_observed_query_value_reads_the_real_value_present_in_the_url():
+    assert _observed_query_value("https://x/api/orders?orderId=800042", "orderId") == "800042"
+
+
+def test_observed_query_value_none_when_param_absent():
+    assert _observed_query_value("https://x/api/orders", "orderId") is None
+
+
+def test_observed_query_value_none_when_param_present_but_blank():
+    assert _observed_query_value("https://x/api/orders?orderId=", "orderId") is None
+
+
+def test_observed_path_segment_value_reads_the_real_segment():
+    assert _observed_path_segment_value("https://x/api/orders/800042", 3) == "800042"
+
+
+def test_observed_path_segment_value_none_for_out_of_range_index():
+    assert _observed_path_segment_value("https://x/api/orders/800042", 9) is None
+
+
+def test_endpoint_candidate_ids_puts_observed_neighbors_before_configured_list():
+    result = _endpoint_candidate_ids("800042", configured=["1", "2"], spread=2)
+    assert result == ["800041", "800043", "800040", "800044", "1", "2"]
+
+
+def test_endpoint_candidate_ids_falls_back_to_configured_list_when_nothing_observed():
+    assert _endpoint_candidate_ids(None, configured=["1", "2"]) == ["1", "2"]
+
+
+def test_endpoint_candidate_ids_falls_back_to_configured_list_for_a_uuid_observed_value():
+    result = _endpoint_candidate_ids("550e8400-e29b-41d4-a716-446655440000", configured=["1", "2"])
+    assert result == ["1", "2"]
+
+
+def test_endpoint_candidate_ids_dedupes_overlap_between_observed_and_configured():
+    result = _endpoint_candidate_ids("105", configured=["104", "999"], spread=1)
+    assert result == ["104", "106", "999"]  # "104" is both a derived neighbor and configured -- appears once
+
+
+@pytest.mark.asyncio
+async def test_horizontal_idor_probes_neighbors_of_the_real_observed_id_not_just_config(tmp_path):
+    """The actual gap a real target's config.json exposed: an endpoint
+    whose OWN crawled URL already shows a real id (800042) must have
+    its neighbors probed even when `candidate_ids` was configured with
+    values that have nothing to do with this target at all -- proving
+    detection no longer depends on a human pre-guessing and hardcoding
+    a target's numeric range."""
+    endpoint = Endpoint(
+        url="https://x/api/orders?orderId=800042", method="GET", endpoint_type="api",
+        parameters=["orderId"], auth_required=True,
+    )
+    admin_session = Session(user_id="admin-01", role="admin", auth_type="form_login", cookies={"JSESSIONID": "abc"})
+    session_manager = _session_manager(tmp_path, {"admin": admin_session})
+    bodies = {"800041": "Order #800041" * 20, "800043": "Order #800043" * 20}
+    seen_ids: list[str] = []
+
+    async def fake_get(url, max_redirects=0):
+        cid = url.rsplit("=", 1)[-1]
+        seen_ids.append(cid)
+        return _response(200, bodies[cid]) if cid in bodies else _response(500, "error")
+
+    pool = _pool_with_context(_fake_context(fake_get))
+    # A deliberately irrelevant configured range -- this target's real
+    # ids (800000s) are never configured anywhere; the module must find
+    # them itself from the endpoint it already crawled.
+    module = IdorTestsModule(config=IdorTestConfig(candidate_ids=["1", "2"]))
+
+    findings = await module.run([endpoint], session_manager, pool)
+
+    assert "800041" in seen_ids and "800043" in seen_ids
+    assert len(findings) == 1
+    assert findings[0].vuln_type.startswith("Insecure Direct Object Reference")
+
+
+# ---------------------------------------------------------------------------
 # Horizontal IDOR — happy path
 # ---------------------------------------------------------------------------
 
@@ -137,7 +251,7 @@ async def test_horizontal_idor_flags_distinct_objects_from_one_session(tmp_path)
     assert len(findings) == 1
     assert findings[0].vuln_type.startswith("Insecure Direct Object Reference")
     assert findings[0].user_role == "admin"
-    assert findings[0].severity == "Critical"
+    assert findings[0].severity == "High"  # cvss_score=8.1 -- High per the CVSS v3.1 scale (7.0-8.9)
 
 
 @pytest.mark.asyncio
@@ -206,6 +320,12 @@ async def test_horizontal_idor_confirms_finding_when_a_second_identity_can_also_
     assert len(findings) == 1
     assert "CONFIRMED via a second identity" in findings[0].description
     assert "'normal'" in findings[0].description
+    # Real cross-identity unauthorized access, independently confirmed
+    # by a genuinely different session -- correctly "confirmed", and
+    # `confirmed_role` names the identity that did the confirming (used
+    # by Burp evidence capture to replay both real sessions).
+    assert findings[0].confidence == "confirmed"
+    assert findings[0].confirmed_role == "normal"
 
 
 @pytest.mark.asyncio
@@ -269,6 +389,11 @@ async def test_horizontal_idor_falls_back_to_unconfirmed_when_no_second_role_con
 
     assert len(findings) == 1
     assert "Unconfirmed with a second identity" in findings[0].description
+    # Real bug this session fixed: the prose already said "Unconfirmed",
+    # but the structured confidence field used to silently default to
+    # "confirmed" anyway.
+    assert findings[0].confidence == "likely"
+    assert findings[0].confirmed_role is None
 
 
 @pytest.mark.asyncio
@@ -407,7 +532,12 @@ async def test_role_tampering_flags_client_controlled_role_param(tmp_path):
 
     role_findings = [f for f in findings if f.vuln_type == "Role Manipulation via Parameter Tampering"]
     assert len(role_findings) == 1
-    assert role_findings[0].severity == "Critical"
+    assert role_findings[0].severity == "High"  # cvss_score=8.8 -- High per the CVSS v3.1 scale (7.0-8.9)
+    # Regression: single-session parameter tampering with no cross-
+    # identity confirmation -- the finding's own description says
+    # "suggests"/"may be trusted", so the structured field must say
+    # "likely", not silently default to "confirmed".
+    assert role_findings[0].confidence == "likely"
 
 
 @pytest.mark.asyncio
@@ -504,12 +634,26 @@ async def test_horizontal_idor_uses_custom_candidate_ids_via_the_payload_registr
 
     findings = await module.run([endpoint], session_manager, pool)
 
-    assert seen_ids == ["9001", "9002"]
+    # _probe_candidates now also fires exactly one control/baseline probe
+    # (a random stof-control-* id) to filter out soft-404-echo false
+    # positives -- assert the real candidates were tried, without pinning
+    # to the control probe's random trailing value.
+    assert seen_ids[:2] == ["9001", "9002"]
+    assert len(seen_ids) == 3
+    assert seen_ids[2].startswith("stof-control-")
     assert len(findings) == 1
 
 
 @pytest.mark.asyncio
 async def test_idor_path_param_uses_custom_candidate_ids_via_the_payload_registry(tmp_path):
+    """A custom `candidate_ids` list must flow all the way through the
+    registry into the actual probe -- not just get registered and then
+    ignored in favor of the old config-direct read. This endpoint's own
+    path segment ("1") is itself a real observed id, so
+    `_endpoint_candidate_ids()` tries its numeric neighbors FIRST (see
+    `test_idor_shared.py`'s own dedicated coverage of that) -- this test
+    only asserts the configured ids are still tried, in the order they
+    were configured, not that they were the only thing probed."""
     endpoint = Endpoint(url="https://x/api/orders/1", method="GET", endpoint_type="api")
     session_manager = _session_manager(tmp_path, {"admin": Session(user_id="a", role="admin", auth_type="form_login")})
     bodies = {"9001": "Order #9001" * 20, "9002": "Order #9002" * 20}
@@ -527,7 +671,12 @@ async def test_idor_path_param_uses_custom_candidate_ids_via_the_payload_registr
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-053.1"].status == FAIL
-    assert seen_ids == ["9001", "9002"]
+    # A trailing stof-control-* baseline probe now always fires last (the
+    # same false-positive guard covered above) -- assert the configured
+    # candidates were tried immediately before it, not that they're the
+    # literal last two entries.
+    assert seen_ids[-1].startswith("stof-control-")
+    assert seen_ids[-3:-1] == ["9001", "9002"]
 
 
 # ---------------------------------------------------------------------------
@@ -767,7 +916,7 @@ async def test_id_predictability_draws_ids_from_base_findings_when_endpoints_alo
     bare_endpoint = Endpoint(url="https://x/bank/showAccount", method="GET", endpoint_type="api", parameters=["listAccounts"])
     sample_ids = [str(800000 + i) for i in range(6)]
     finding = Finding(
-        module_id="idor_tests", vuln_type="Insecure Direct Object Reference (IDOR)", severity="Critical", cvss_score=8.1,
+        module_id="idor_tests", vuln_type="Insecure Direct Object Reference (IDOR)", severity="High", cvss_score=8.1,
         endpoint=bare_endpoint, user_role="admin",
         request_raw="\n".join(f"GET https://x/bank/showAccount?listAccounts={cid}" for cid in sample_ids),
         response_raw="\n".join(f"[listAccounts={cid}] HTTP 200, 500 bytes" for cid in sample_ids),

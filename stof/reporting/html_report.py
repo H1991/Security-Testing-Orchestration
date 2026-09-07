@@ -12,7 +12,7 @@ from jinja2 import Environment, FileSystemLoader
 
 from stof.core.logger import get_logger
 
-from .json_report import build_summary
+from .json_report import SEVERITY_ORDER, build_summary
 
 if TYPE_CHECKING:
     from stof.findings.models import Finding
@@ -55,6 +55,30 @@ def _enrich(finding: "Finding") -> dict[str, Any]:
     data = finding.to_dict()
     data["evidence_images"] = _evidence_images(finding.evidence_refs)
     return data
+
+
+_SEVERITY_RANK = {sev: i for i, sev in enumerate(SEVERITY_ORDER)}
+_PRIORITY_SEVERITIES = ("Critical", "High")
+
+
+def _split_by_priority(enriched_findings: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Splits into (Critical/High, everything else), each severity-
+    sorted -- the report's whole point is that a reviewer opening it
+    sees "what needs action" before "what's hygiene", not one flat list
+    where a Critical BFLA finding and a missing-header Low sit in
+    whatever order the scan's modules happened to run. See this
+    project's own severity-vs-cvss_score audit (`Finding.
+    __post_init__`) for why that distinction is worth structurally
+    surfacing, not just correctly labeling."""
+    priority = sorted(
+        (f for f in enriched_findings if f["severity"] in _PRIORITY_SEVERITIES),
+        key=lambda f: _SEVERITY_RANK.get(f["severity"], len(SEVERITY_ORDER)),
+    )
+    other = sorted(
+        (f for f in enriched_findings if f["severity"] not in _PRIORITY_SEVERITIES),
+        key=lambda f: _SEVERITY_RANK.get(f["severity"], len(SEVERITY_ORDER)),
+    )
+    return priority, other
 
 
 def _summarize_recon(recon_report: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -102,11 +126,13 @@ def write(
     env = Environment(loader=FileSystemLoader(str(template_dir)), autoescape=True)
     template = env.get_template(TEMPLATE_NAME)
 
+    priority_findings, other_findings = _split_by_priority([_enrich(f) for f in findings])
     html = template.render(
         scan_metadata=scan_metadata,
         generated_at=datetime.now(timezone.utc).isoformat(),
         summary=build_summary(findings),
-        findings=[_enrich(f) for f in findings],
+        priority_findings=priority_findings,
+        other_findings=other_findings,
         recon=_summarize_recon(recon_report),
         module_notes=scan_metadata.get("module_notes", []),
     )

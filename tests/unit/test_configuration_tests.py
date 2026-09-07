@@ -957,7 +957,7 @@ async def test_password_autocomplete_fails_when_enabled():
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-017.13"].status == FAIL
-    assert by_id["TC-017.13"].finding.severity == "Info"
+    assert by_id["TC-017.13"].finding.severity == "Low"  # cvss_score=1.0 -- Low per the CVSS v3.1 scale
 
 
 @pytest.mark.asyncio
@@ -1084,7 +1084,7 @@ async def test_tls_certificate_fails_when_expired(monkeypatch):
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-017.15"].status == FAIL
-    assert by_id["TC-017.15"].finding.severity == "Critical"
+    assert by_id["TC-017.15"].finding.severity == "High"  # cvss_score=7.4 -- High per the CVSS v3.1 scale (7.0-8.9)
 
 
 @pytest.mark.asyncio
@@ -1128,5 +1128,5 @@ async def test_tls_certificate_fails_when_handshake_raises(monkeypatch):
 
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-017.15"].status == FAIL
-    assert by_id["TC-017.15"].finding.severity == "High"
+    assert by_id["TC-017.15"].finding.severity == "Medium"  # cvss_score=6.5 -- Medium per the CVSS v3.1 scale (4.0-6.9)
     assert "hostname mismatch" in by_id["TC-017.15"].finding.description

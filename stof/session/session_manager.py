@@ -97,6 +97,17 @@ class SessionManager:
         self._sessions[session.role] = session
         self._store.save(session)
 
+    def peek_session(self, role: str) -> Session | None:
+        """Synchronous, no-auth read of whatever session is already
+        cached for `role` -- `None` if that role never authenticated
+        this run. Unlike `get_session()`, never refreshes or
+        authenticates (no `Page` to do that with), so it's for a
+        caller that only wants to reuse an already-live session's real
+        cookies/headers after the scan's own auth phase already ran
+        (e.g. Burp evidence capture replaying a finding's actual
+        authenticated identity instead of an unauthenticated request)."""
+        return self._sessions.get(role)
+
     def invalidate(self, role: str) -> None:
         """Mark a role's session invalid (e.g. after a vulnerability
         module confirms a logout/session-fixation finding), forcing

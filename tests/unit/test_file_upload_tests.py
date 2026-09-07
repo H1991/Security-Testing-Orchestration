@@ -130,6 +130,10 @@ async def test_dangerous_extension_fails_when_upload_accepted():
     assert result.finding is not None
     assert result.finding.severity == "High"
     assert result.finding.vuln_type == "File Upload -- Dangerous Extension Accepted"
+    # Regression: the finding's own description says STOF "did not
+    # attempt to retrieve or execute the uploaded file to confirm
+    # actual code execution -- this needs manual verification".
+    assert result.finding.confidence == "likely"
 
 
 @pytest.mark.asyncio

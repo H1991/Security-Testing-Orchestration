@@ -481,7 +481,7 @@ class JwtTestsModule(VulnModule):
         finding = Finding(
             module_id=self.module_id,
             vuln_type="JWT Role Manipulation",
-            severity="Critical",
+            severity="High",
             cvss_score=8.8,
             endpoint=target_endpoint,
             user_role=role,
@@ -561,7 +561,7 @@ class JwtTestsModule(VulnModule):
             return self._result("TC-057.1", technique, vuln_type, PASS, f"signature-mismatched tampered token was rejected (HTTP {status})", role=role, endpoint=target_endpoint)
 
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.8,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.8,
             endpoint=target_endpoint, user_role=role,
             request_raw=f"GET {target_endpoint.url}\nAuthorization: Bearer {forged}",
             response_raw=f"HTTP {status}, {len(body)} bytes",

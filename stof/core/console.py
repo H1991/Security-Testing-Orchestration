@@ -373,7 +373,7 @@ class ScanConsole:
         self.echo(row("TOTAL", totals_values, bold=True, colors=value_colors))
         self.echo(click.style(border(_BL, _MB, _BR), dim=True))
 
-    def findings_by_severity(self, counts: dict[str, int]) -> None:
+    def findings_by_severity(self, counts: dict[str, int], critical_high_likely: int = 0) -> None:
         self.echo("")
         parts = [
             click.style("●", fg=_SEVERITY_COLOR.get(sev, "white")) + f" {sev} {counts[sev]}"
@@ -381,6 +381,15 @@ class ScanConsole:
         ]
         label = click.style("Findings", dim=True)
         self.echo(f"  {label}  " + ("   ".join(parts) if parts else click.style("none", fg="green")))
+        # Surfaced separately from the severity line itself, not folded
+        # into it -- this is the one number that answers "how many of
+        # my Critical/High findings can I trust without opening the
+        # report," which severity counts alone can't say (a Finding
+        # STOF is honest it couldn't fully confirm -- a timing signal, an
+        # accepted-but-unverifiable change -- is still Critical/High
+        # severity, just not yet PROVEN). See `Finding.confidence`.
+        if critical_high_likely:
+            self.echo(f"  {click.style(f'{critical_high_likely} Critical/High finding(s) need manual confirmation', fg='yellow')} {click.style('(see report for which)', dim=True)}")
 
     def _labeled_path(self, label: str, path: str) -> str:
         return f"    {click.style(f'{label:<12}', dim=True)}{path}"

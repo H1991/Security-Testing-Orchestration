@@ -137,7 +137,7 @@ async def test_run_flags_accepted_role_tampered_token(tmp_path):
 
     assert len(findings) == 1
     assert findings[0].vuln_type == "JWT Role Manipulation"
-    assert findings[0].severity == "Critical"
+    assert findings[0].severity == "High"  # cvss_score=8.8 -- High per the CVSS v3.1 scale (7.0-8.9)
     assert findings[0].user_role == "normal"
 
 

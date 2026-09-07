@@ -10,12 +10,17 @@ each other to reach.
 from __future__ import annotations
 
 import hashlib
+import json as json_module
 import re
+import secrets
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from stof.core.logger import get_logger
 from stof.core.rate_limiter import throttled
 from stof.crawler.endpoint_store import Endpoint
 from stof.recon.parameter_discovery import guess_param_type
+
+_log = get_logger("modules._idor_shared")
 
 _ELEVATED_ROLE_VALUES = ("admin", "administrator", "true", "1", "superuser")
 
@@ -172,6 +177,140 @@ def _set_path_segment(url: str, index: int, value: str) -> str:
     segments = parts.path.split("/")
     segments[index] = value
     return urlunsplit((parts.scheme, parts.netloc, "/".join(segments), parts.query, parts.fragment))
+
+
+def _observed_query_value(url: str, param: str) -> str | None:
+    """The real value `param` actually held in THIS crawled endpoint's
+    own URL -- e.g. for `/api/orders?orderId=800042`, the value for
+    `orderId` is `"800042"`. This is the seed the active id-substitution
+    techniques derive candidates from now (`_endpoint_candidate_ids`
+    below), instead of only ever trying a target-wide configured list
+    that has no relationship to what this specific endpoint actually
+    showed."""
+    for name, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+        if name == param and value:
+            return value
+    return None
+
+
+def _observed_path_segment_value(url: str, index: int) -> str | None:
+    """The real value already sitting at `index` in this endpoint's own
+    path -- e.g. for `/api/orders/800042` at index 2, `"800042"`. Same
+    role as `_observed_query_value` above, for the path-segment id
+    techniques."""
+    segments = urlsplit(url).path.split("/")
+    if 0 <= index < len(segments) and segments[index]:
+        return segments[index]
+    return None
+
+
+def _numeric_neighbors(value: str, spread: int = 5) -> list[str]:
+    """Small, nearest-first set of candidate ids around a REAL id
+    already observed at one specific endpoint -- the standard adjacent-
+    id IDOR probe (an attacker who can already see id 800042 tries
+    800041/800043 next, not an arbitrary unrelated value), and the
+    reason this project no longer needs a human to pre-guess a target's
+    numeric range in config.json: the range comes from whatever id the
+    crawler actually saw at THIS endpoint, not a value configured once
+    for the whole target (see `_endpoint_candidate_ids` below).
+
+    Only meaningful for a decimal-digit id -- `_id_shape(value) ==
+    "sequential_int"` territory (TC-053.6's own classification, reused
+    conceptually here); a uuid or long-random-token observed value has
+    no numerically-adjacent neighbor worth trying, so this returns `[]`
+    for anything non-digit rather than a numerically meaningless probe.
+    Preserves the observed value's zero-padding width (e.g. "007" ->
+    "006"/"008") since some apps validate id format strictly. Never
+    includes `value` itself -- probing the id the current session
+    already legitimately owns proves nothing."""
+    if not value.isdigit():
+        return []
+    width = len(value)
+    n = int(value)
+    out: list[str] = []
+    for delta in range(1, spread + 1):
+        for neighbor in (n - delta, n + delta):
+            if neighbor >= 0:
+                out.append(str(neighbor).zfill(width))
+    return out
+
+
+def _endpoint_candidate_ids(observed_value: str | None, configured: list[str], spread: int = 5) -> list[str]:
+    """The full per-endpoint candidate list for an object-reference
+    substitution technique: real neighbors of whatever id THIS endpoint
+    actually showed, first (a live attacker always probes near an id
+    they can already see), then the caller's configured/generic list as
+    a supplementary set -- covers a target with nothing numeric to
+    derive from yet (no value observed, or a uuid/opaque id) and still
+    lets an operator who already knows a specific valid id add it
+    explicitly via `target.idor_candidate_ids`. De-duplicated, order-
+    preserving, so a value that happens to appear in both sources is
+    only probed once."""
+    seen: dict[str, None] = {}
+    if observed_value:
+        for candidate in _numeric_neighbors(observed_value, spread=spread):
+            seen.setdefault(candidate, None)
+    for candidate in configured:
+        seen.setdefault(candidate, None)
+    return list(seen.keys())
+
+
+def _control_candidate_value() -> str:
+    """A per-probe-set random value guaranteed not to correspond to any
+    real object -- the same "random, definitely-nonexistent" principle
+    `stof/modules/_probe_shared.py`'s `control_fingerprint()` already
+    uses for wordlist sweeps (shared `stof-control-` marker prefix),
+    applied here as a substituted CANDIDATE VALUE into an existing
+    endpoint instead of an appended path. A fresh random token per call
+    (not a fixed constant), so a target that somehow caches/special-
+    cases one specific probe value can't quietly defeat this."""
+    return f"stof-control-{secrets.token_hex(6)}"
+
+
+def _exclude_control_fingerprint(responses: dict[str, str], control_fingerprint: str | None) -> dict[str, str]:
+    """Drops every candidate whose response body fingerprint matches
+    the control/baseline probe's fingerprint (`_control_candidate_
+    value` above) -- the real, confirmed false-positive class this
+    guards against: a soft-404/catch-all response that returns HTTP 200
+    with a body that VARIES per requested id (e.g. it echoes the id
+    into an "Object <id> not found" message) still produces 2+ DISTINCT
+    fingerprints across candidates, which the plain "are these bodies
+    different from each other" check alone cannot tell apart from a
+    real distinct object. Same "discard any hit indistinguishable from
+    a known-invalid control" rule `stof/modules/_probe_shared.py`'s
+    `sweep_paths()` already applies for wordlist hits, extended here to
+    id-substitution. `control_fingerprint=None` (the control probe
+    itself failed/returned nothing usable) is a no-op -- silently
+    discarding every real candidate because the control probe didn't
+    work would blind the technique, not make it safer."""
+    if control_fingerprint is None:
+        return responses
+    return {cid: body for cid, body in responses.items() if _content_fingerprint(body) != control_fingerprint}
+
+
+async def _control_fingerprint_body_field(method_fn, url: str, param: str, min_content_length: int) -> str | None:
+    """POST/PUT-body-field counterpart of the GET-based control-probe
+    principle above: substitutes a random, definitely-nonexistent value
+    into the JSON body field instead of a query string/path segment,
+    same reasoning, shared by the write-verb content-differential
+    techniques in `mass_assignment_tests.py` and `tenant_tests.py`
+    (both already build a bound async `method_fn` the same way
+    `_method_request_fn` does). Not fully pure (issues a real HTTP
+    request), same "shared, leading-underscore file" convention
+    `stof/modules/_probe_shared.py` already documents for its own
+    control-probe helper. Returns `None` on any probe failure or a
+    non-200/too-short response -- callers treat that as "nothing to
+    baseline against", not a hard error."""
+    payload = {param: _control_candidate_value()}
+    try:
+        resp = await method_fn(url, data=json_module.dumps(payload), headers={"Content-Type": "application/json"}, max_redirects=0)
+        body = await resp.text()
+    except Exception as exc:
+        _log.warning(f"control probe failed for {url}: {exc}")
+        return None
+    if resp.status == 200 and len(body) >= min_content_length:
+        return _content_fingerprint(body)
+    return None
 
 
 # TC-053.6's minimum sample size before drawing any conclusion about

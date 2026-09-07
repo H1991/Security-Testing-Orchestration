@@ -39,6 +39,7 @@ from playwright.async_api import async_playwright
 
 from stof.auth import AssistedLoginProvider, FormLoginProvider, JWTAuthProvider
 from stof.config import ConfigError, load_config, load_dotenv, load_users
+from stof.core import rate_limiter
 from stof.core.console import DEFAULT_LOG_DIR, ScanConsole, attach_file_logging, detach_file_logging
 from stof.core.logger import get_logger
 from stof.core.module_registry import VULN_MODULE_NAMES
@@ -157,8 +158,16 @@ def _apply_application_profile(
     return filtered, skips
 
 
-def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict, target_profile=None) -> dict:
-    idor_ids = config.target.idor_candidate_ids or _GENERIC_IDOR_CANDIDATE_IDS
+def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict, target_profile=None, shared_candidate_ids: list[str] | None = None) -> dict:
+    # `shared_candidate_ids`, when given, is the SAME mutable list object
+    # `_run_all_vuln_modules()` keeps growing as earlier modules in this
+    # scan discover new id-shaped values (leaked in a PII/disclosure
+    # finding, an IDOR response, ...) -- see that function's own comment.
+    # Every `idor_tests` lambda below reads it by reference at CALL time
+    # (Python closures are late-binding), so a module that runs later in
+    # `module_names` sees ids an earlier module already surfaced, not
+    # just the ones configured before the scan even started.
+    idor_ids = shared_candidate_ids if shared_candidate_ids is not None else list(config.target.idor_candidate_ids or _GENERIC_IDOR_CANDIDATE_IDS)
     jwt_config_kwargs = {}
     if config.target.jwt_role_claim is not None:
         jwt_config_kwargs["role_claim"] = config.target.jwt_role_claim
@@ -729,6 +738,33 @@ async def _run_burp_scan(pw, config, endpoint_list, evidence, click_echo=click.e
             await controller.close()
 
 
+def _grow_shared_candidate_ids(shared_ids: list[str], new_findings: list[Finding], module_name: str, console, cap: int = 60) -> None:
+    """Cross-module identifier sharing: an id-shaped value leaked in
+    ANY module's own finding this scan (a PII-exposed account id from
+    `disclosure_tests`, a leaked order id from an `idor_tests` response,
+    ...) is fed into `shared_ids` -- the SAME mutable list every
+    `IdorTestConfig(candidate_ids=...)` this scan holds a reference to
+    -- so a module running LATER in `module_names` gets to try ids a
+    module that ran EARLIER already proved are real, live object
+    references on this target, not just this project's own generic
+    `1`-`20` placeholder range. Reuses `idor_tests.py`'s own leaked-id
+    extraction (`_extract_leaked_ids`) rather than duplicating its
+    regex -- the exact same "2-10 digit run or UUID" shape already
+    proven against real targets. Capped so an unusually chatty module
+    can't grow the pool large enough to slow down every later module's
+    own candidate-id probe loop."""
+    from stof.modules._idor_shared import _extract_leaked_ids
+
+    if len(shared_ids) >= cap or not new_findings:
+        return
+    texts = [f"{f.request_raw}\n{f.response_raw}" for f in new_findings]
+    room = cap - len(shared_ids)
+    newly_found = _extract_leaked_ids(texts, known=set(shared_ids), limit=room)
+    shared_ids.extend(newly_found)
+    if newly_found:
+        console.info(f"{len(newly_found)} new object id candidate(s) discovered by {module_name}, now shared with the remaining modules this scan")
+
+
 def _endpoints_from_discovered_routes(recon_report, base_url: str) -> list[Endpoint]:
     """Resolves `ReconReport.discovered_routes` (raw path strings mined
     from JS bundles, see `secrets_scanner.find_routes()`) against
@@ -749,6 +785,20 @@ def _endpoints_from_discovered_routes(recon_report, base_url: str) -> list[Endpo
             continue
         endpoints.append(Endpoint(url=urljoin(base_url, path), method="GET", endpoint_type="page"))
     return endpoints
+
+
+def _severity_summary(all_findings: list[Finding]) -> tuple[dict[str, int], int]:
+    """`(severity_counts, critical_high_likely)` for the end-of-scan
+    console summary -- pulled out of `_run_test` itself purely to keep
+    that function's own cyclomatic complexity from growing further; no
+    behavior difference from the inline version."""
+    severity_counts: dict[str, int] = {}
+    critical_high_likely = 0
+    for f in all_findings:
+        severity_counts[f.severity] = severity_counts.get(f.severity, 0) + 1
+        if f.severity in ("Critical", "High") and f.confidence == "likely":
+            critical_high_likely += 1
+    return severity_counts, critical_high_likely
 
 
 def _findings_from_recon_secrets(recon_report) -> list[Finding]:
@@ -969,6 +1019,7 @@ async def _run_crawl(
     echo = console.echo if console is not None else click.echo
     load_dotenv()
     config = load_config(config_path)
+    rate_limiter.configure_from_intensity(config.testing.scan_intensity)
     users = load_users(users_path)
     users_by_role = {u.role: u for u in users.users}
 
@@ -1074,6 +1125,7 @@ async def _run_scan(
     scan_id = scan_id or uuid.uuid4().hex[:8]
     load_dotenv()
     config = load_config(config_path)
+    rate_limiter.configure_from_intensity(config.testing.scan_intensity)
     module_names = _resolve_module_names(module_names, config)
     console = ScanConsole(scan_id, log_dir=log_dir)
     file_handler = attach_file_logging(console.log_path)
@@ -1128,6 +1180,11 @@ async def _run_test(
     load_dotenv()
     config = load_config(config_path)
     module_names = _resolve_module_names(module_names, config)
+    # As early as possible -- before the crawler or any module makes its
+    # first real request -- so `config.testing.scan_intensity` governs
+    # this ENTIRE run. See `stof.core.rate_limiter`'s own docstring for
+    # why this exists.
+    rate_limiter.configure_from_intensity(config.testing.scan_intensity)
 
     if owns_console:
         console = ScanConsole(scan_id, log_dir=log_dir)
@@ -1214,7 +1271,11 @@ async def _run_test(
                 target_profile = build_target_profile(recon_report)
                 if target_profile.stack_family != "unknown":
                     console.info(f"Target stack profile: '{target_profile.stack_family}' (confidence: {target_profile.confidence})")
-                module_builders = _build_module_builders(config, jwt_roles, users_by_role, target_profile)
+                # Grown in place as each module's own findings surface new
+                # id-shaped values -- see `_run_all_vuln_modules()`'s own
+                # comment right before its `module_findings.extend(...)` line.
+                shared_candidate_ids = list(config.target.idor_candidate_ids or _GENERIC_IDOR_CANDIDATE_IDS)
+                module_builders = _build_module_builders(config, jwt_roles, users_by_role, target_profile, shared_candidate_ids)
 
                 if workflow_ids:
                     await _replay_workflows(workflow_ids, users_by_role, users, session_manager, session_pool, console)
@@ -1304,7 +1365,13 @@ async def _run_test(
                         console.module_summary(name, counts)
                         module_rows.append((name, counts))
                         all_results.extend(results)
-                        module_findings.extend(extract_findings(results))
+                        new_findings = extract_findings(results)
+                        module_findings.extend(new_findings)
+                        # See `_grow_shared_candidate_ids`'s own docstring --
+                        # this module's OWN findings may have just leaked an
+                        # id-shaped value a LATER module in `module_names`
+                        # can now try, without waiting for a future re-scan.
+                        _grow_shared_candidate_ids(shared_candidate_ids, new_findings, name, console)
                     return module_findings, all_results
 
                 # Burp's Active Scan is independent of stof's own modules and
@@ -1339,7 +1406,7 @@ async def _run_test(
                 if config.burp.enabled and all_findings:
                     console.phase("CAPTURING EVIDENCE VIA BURP")
                     console.info(f"Sending {len(all_findings)} confirmed finding(s) through Burp's proxy at {config.burp.proxy_url}...")
-                    enriched = await capture_findings_via_burp(pw, config.burp.proxy_url, all_findings, click_echo=click.echo)
+                    enriched = await capture_findings_via_burp(pw, config.burp.proxy_url, all_findings, session_manager=session_manager, click_echo=click.echo)
                     console.info(f"Burp capture enriched {enriched}/{len(all_findings)} finding(s) with real request/response evidence")
 
                 if config.output.generate_walkthrough and all_findings:
@@ -1399,10 +1466,8 @@ async def _run_test(
             walkthroughs=walkthroughs,
         )
 
-        severity_counts: dict[str, int] = {}
-        for f in all_findings:
-            severity_counts[f.severity] = severity_counts.get(f.severity, 0) + 1
-        console.findings_by_severity(severity_counts)
+        severity_counts, critical_high_likely = _severity_summary(all_findings)
+        console.findings_by_severity(severity_counts, critical_high_likely=critical_high_likely)
         console.reports(
             str(report_paths.html), str(report_paths.json), str(report_paths.excel),
             walkthrough=str(report_paths.walkthrough) if report_paths.walkthrough else None,

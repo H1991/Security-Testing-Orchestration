@@ -157,6 +157,20 @@ _MAX_SCHEMA_BYPASS_CANDIDATES = 5
 _SCHEMA_BYPASS_DENIED_MARKERS: tuple[str, ...] = ("login", "sign in", "log in", "unauthorized", "access denied", "please log in", "authentication required")
 
 
+def _confidence_from_relogin(confirmed: bool | None) -> str:
+    """Shared by every password-change technique in this file that
+    confirms its own accepted-at-the-HTTP-layer finding via re-login
+    (`_confirm_password_works`/`_confirm_password_works_for`). `confirmed`
+    is never `False` at any call site -- each one already returns early
+    on that outcome (a re-login failure means the change didn't really
+    happen, so there's no Finding to build confidence for at all).
+    `True` means STOF independently verified the change by logging in
+    with the resulting credential; `None` means no login endpoint was
+    configured to check, so the change-password endpoint's own accept/
+    reject response is the only signal STOF has."""
+    return "confirmed" if confirmed is True else "likely"
+
+
 def _extract_token(body: dict) -> str | None:
     """Same field-name-agnostic response walk as `jwt_auth.py`'s own
     `_extract_token()` -- reimplemented here rather than imported,
@@ -627,7 +641,7 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 for pattern in _API_KEY_PATTERNS:
                     if re.search(pattern, body):
                         finding = Finding(
-                            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.5,
+                            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
                             endpoint=_synthetic_endpoint(url, "GET"), user_role="unauthenticated",
                             request_raw=f"GET {url}", response_raw=f"HTTP {status}, API-key-shaped value found in response body",
                             description=f"'{url}' is publicly reachable and its response contains what looks like a live API key or secret.",
@@ -721,6 +735,12 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 "possible via the login endpoint; it does not confirm any specific credential as valid."
             ),
             recommendation="Return an identical response (status, body content/length, and timing) for a failed login regardless of whether the submitted username exists.",
+            # The description above says so explicitly: this is a
+            # behavioral-differential SIGNAL that enumeration is
+            # possible, not a confirmed enumeration of any real
+            # username -- same confidence-correctness bug class found
+            # and fixed across idor_tests.py/xss_tests.py this session.
+            confidence="likely",
         )
         finding.evidence_refs = await self._capture(evidence, finding)
         return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
@@ -800,12 +820,13 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 "took effect, so this is the change-password endpoint's response alone): "
             )
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.5,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
                 endpoint=_synthetic_endpoint(self.config.change_password_url, "GET"), user_role=self.config.test_role,
                 request_raw=f"(change-password request to {self.config.change_password_url})",
                 response_raw=f"HTTP {status} -- new password '{candidate}' accepted",
                 description=f"{confirmation_note}The password-change endpoint accepted the weak candidate password '{candidate}' with no apparent policy check.",
                 recommendation="Enforce a minimum length/complexity policy, and reject passwords from a common-password list, server-side on every password-set operation.",
+                confidence=_confidence_from_relogin(confirmed),
             )
             finding.evidence_refs = await self._capture(evidence, finding)
             return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
@@ -934,12 +955,13 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 "Unconfirmed via re-login (no login_json_endpoint/test_username configured): "
             )
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=4.3,
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=4.3,
                 endpoint=_synthetic_endpoint(self.config.change_password_url, "GET"), user_role=self.config.test_role,
                 request_raw=f"(sequential change-password calls: original -> '{probe}' -> original -> '{probe}' again)",
                 response_raw=f"HTTP {reuse_status} -- immediately-previous password accepted again",
                 description=f"{confirmation_note}The password-change endpoint accepted a password identical to the one just changed away from, with no reuse-prevention check.",
                 recommendation="Track a history of recent password hashes and reject a new password that matches any of them.",
+                confidence=_confidence_from_relogin(confirmed),
             )
             finding.evidence_refs = await self._capture(evidence, finding)
             return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
@@ -990,12 +1012,13 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 "Unconfirmed via re-login (no login_json_endpoint/test_username configured): "
             )
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.1,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.1,
                 endpoint=_synthetic_endpoint(self.config.change_password_url, "GET"), user_role=self.config.test_role,
                 request_raw=f"GET {self.config.change_password_url}?new=***&repeat=*** (no 'current' password param)",
                 response_raw=f"HTTP {status} -- accepted",
                 description=f"{confirmation_note}The password-change endpoint accepted a new password with no current-password parameter supplied at all, letting a hijacked session lock the real owner out permanently.",
                 recommendation="Always require and verify the current password (or a freshly-issued step-up credential) before accepting a new one.",
+                confidence=_confidence_from_relogin(confirmed),
             )
             finding.evidence_refs = await self._capture(evidence, finding)
             return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
@@ -1052,7 +1075,7 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                                  f"reset-request responses for a real vs. a fake email were indistinguishable (both HTTP {real_status}){surface_note}")
 
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=5.3,
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
             endpoint=probed_endpoint, user_role="unauthenticated",
             request_raw=f"2x POST {probed_url} (email/username={self.config.victim_email!r} vs. a nonexistent email){surface_note}",
             response_raw=f"real: HTTP {real_status}, {len(real_body)} bytes | fake: HTTP {fake_status}, {len(fake_body)} bytes",
@@ -1124,7 +1147,7 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
         predictable = token1 == token2 or (token1.isdigit() and token2.isdigit() and abs(int(token2) - int(token1)) <= 2) or len(token1) < 6
         if predictable:
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.1,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.1,
                 endpoint=_synthetic_endpoint(self.config.reset_password_request_url, "POST"), user_role="unauthenticated",
                 request_raw=f"2x POST {self.config.reset_password_request_url} (email={self.config.victim_email!r})",
                 response_raw=f"token 1: {token1[:2]}... | token 2: {token2[:2]}...",
@@ -1169,7 +1192,7 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
 
         if first_status < 400 and second_status < 400:
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=6.5,
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
                 endpoint=_synthetic_endpoint(self.config.reset_password_complete_url, "POST"), user_role="unauthenticated",
                 request_raw=f"2x POST {self.config.reset_password_complete_url} (same token)",
                 response_raw=f"first use: HTTP {first_status} | second use: HTTP {second_status}",
@@ -1210,7 +1233,7 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
 
         if injected_host in body:
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.5,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
                 endpoint=_synthetic_endpoint(self.config.reset_password_request_url, "POST"), user_role="unauthenticated",
                 request_raw=f"POST {self.config.reset_password_request_url}\nX-Forwarded-Host: {injected_host}\nHost: {injected_host}",
                 response_raw=body[:300],
@@ -1302,7 +1325,7 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 "Unconfirmed via re-login (no login_json_endpoint configured): "
             )
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.8,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.8,
                 endpoint=_synthetic_endpoint(self.config.change_password_url, "GET"), user_role=self.config.test_role,
                 request_raw=f"GET/POST {self.config.change_password_url} with current=*** (attacker's own), new=***, {target_field}={self.config.victim_email!r}",
                 response_raw=f"HTTP {status} -- accepted",
@@ -1316,6 +1339,7 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                     "the account being changed exclusively from the authenticated session/token; ignore any request body or "
                     "query parameter naming a different user."
                 ),
+                confidence=_confidence_from_relogin(confirmed),
             )
             finding.evidence_refs = await self._capture(evidence, finding)
             return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)

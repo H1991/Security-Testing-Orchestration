@@ -14,15 +14,38 @@ from stof.engine.burp_capture import (
     capture_via_burp,
 )
 from stof.findings.models import Finding
+from stof.session.models import Session
 
 
-def _finding(request_raw: str, finding_id: str = "f1", response_raw: str = "HTTP 200, 512 bytes") -> Finding:
+def _finding(
+    request_raw: str, finding_id: str = "f1", response_raw: str = "HTTP 200, 512 bytes",
+    user_role: str = "normal", confirmed_role: str | None = None,
+) -> Finding:
     return Finding(
         module_id="sqli_tests", vuln_type="SQL Injection", severity="Critical", cvss_score=9.1,
         endpoint=Endpoint(url="https://target.example/search", method="GET", endpoint_type="page"),
-        user_role="normal", request_raw=request_raw, response_raw=response_raw,
-        description="d", recommendation="r", finding_id=finding_id,
+        user_role=user_role, request_raw=request_raw, response_raw=response_raw,
+        description="d", recommendation="r", finding_id=finding_id, confirmed_role=confirmed_role,
     )
+
+
+def _session(role: str, cookies: dict | None = None, headers: dict | None = None) -> Session:
+    return Session(
+        user_id=f"{role}-01", role=role, auth_type="form_login",
+        cookies=cookies if cookies is not None else {"JSESSIONID": f"{role}-cookie"}, headers=headers or {},
+    )
+
+
+class _FakeSessionManager:
+    """Minimal stand-in for `SessionManager.peek_session()` -- these
+    tests only need the synchronous cache read, not the full auth
+    machinery."""
+
+    def __init__(self, sessions: dict[str, Session]) -> None:
+        self._sessions = sessions
+
+    def peek_session(self, role: str) -> Session | None:
+        return self._sessions.get(role)
 
 
 def _response(status=200, headers=None, text="body"):
@@ -125,6 +148,46 @@ class TestCaptureViaBurp:
         result = await capture_via_burp(pw, "http://127.0.0.1:8080", _finding("TRACE https://target.example/search"))
         assert result is None
 
+    @pytest.mark.asyncio
+    async def test_no_session_sends_no_cookie_header(self):
+        """Regression for the real gap this was built to fix: a bare
+        capture with no session must stay exactly as unauthenticated as
+        before (never silently invent a Cookie header), so its request
+        text and behavior are unchanged for a finding with no known
+        session."""
+        request_context = AsyncMock()
+        request_context.get = AsyncMock(return_value=_response(status=200, text="ok"))
+        request_context.dispose = AsyncMock()
+        pw = _playwright_with_context(request_context)
+
+        result = await capture_via_burp(pw, "http://127.0.0.1:8080", _finding("GET https://target.example/search"))
+
+        assert result is not None
+        _, call_kwargs = request_context.get.await_args
+        assert "Cookie" not in call_kwargs["headers"]
+        assert "unauthenticated replay" in result[0]
+
+    @pytest.mark.asyncio
+    async def test_session_sends_real_cookie_and_auth_headers(self):
+        """The actual bug report this fixes: an unauthenticated replay
+        of a login-gated finding tells a reviewer nothing about whether
+        it's real. Passing the real `Session` must make the replayed
+        request carry its actual cookies/headers, not a bare curl-
+        equivalent request."""
+        request_context = AsyncMock()
+        request_context.get = AsyncMock(return_value=_response(status=200, text="ok"))
+        request_context.dispose = AsyncMock()
+        pw = _playwright_with_context(request_context)
+        session = _session("admin", cookies={"JSESSIONID": "abc123"}, headers={"Authorization": "Bearer tok"})
+
+        result = await capture_via_burp(pw, "http://127.0.0.1:8080", _finding("GET https://target.example/search"), session=session)
+
+        assert result is not None
+        _, call_kwargs = request_context.get.await_args
+        assert call_kwargs["headers"]["Cookie"] == "JSESSIONID=abc123"
+        assert call_kwargs["headers"]["Authorization"] == "Bearer tok"
+        assert "role 'admin'" in result[0]
+
 
 class TestCaptureFindingsViaBurp:
     @pytest.mark.asyncio
@@ -151,3 +214,84 @@ class TestCaptureFindingsViaBurp:
         assert original_f1_response in findings[0].response_raw
         assert "captured" in findings[0].response_raw
         assert findings[1].response_raw == original_f2_response  # untouched on failure
+
+    @pytest.mark.asyncio
+    async def test_uses_the_findings_own_role_session_when_session_manager_given(self):
+        request_context = AsyncMock()
+        request_context.get = AsyncMock(return_value=_response(status=200, text="captured"))
+        request_context.dispose = AsyncMock()
+        pw = _playwright_with_context(request_context)
+        session_manager = _FakeSessionManager({"admin": _session("admin", cookies={"JSESSIONID": "admin-cookie"})})
+        finding = _finding("GET https://target.example/a", user_role="admin")
+
+        enriched = await capture_findings_via_burp(pw, "http://127.0.0.1:8080", [finding], session_manager=session_manager)
+
+        assert enriched == 1
+        _, call_kwargs = request_context.get.await_args
+        assert call_kwargs["headers"]["Cookie"] == "JSESSIONID=admin-cookie"
+        assert "role: admin" in finding.request_raw
+
+    @pytest.mark.asyncio
+    async def test_confirmed_role_captures_both_identities_side_by_side(self):
+        """The real point of this whole feature: an IDOR/BOLA finding
+        with a cross-session-confirming second identity
+        (`Finding.confirmed_role`) gets BOTH real, authenticated
+        requests captured -- not just the one that first observed the
+        distinct content -- so a human reviewer can compare two real
+        responses under two real sessions directly in Burp's Proxy
+        history."""
+        request_context = AsyncMock()
+        request_context.get = AsyncMock(return_value=_response(status=200, text="captured"))
+        request_context.dispose = AsyncMock()
+        pw = _playwright_with_context(request_context)
+        session_manager = _FakeSessionManager({
+            "admin": _session("admin", cookies={"JSESSIONID": "admin-cookie"}),
+            "normal": _session("normal", cookies={"JSESSIONID": "normal-cookie"}),
+        })
+        finding = _finding("GET https://target.example/a", user_role="admin", confirmed_role="normal")
+
+        enriched = await capture_findings_via_burp(pw, "http://127.0.0.1:8080", [finding], session_manager=session_manager)
+
+        assert enriched == 1
+        assert request_context.get.await_count == 2
+        cookies_sent = [call.kwargs["headers"]["Cookie"] for call in request_context.get.await_args_list]
+        assert cookies_sent == ["JSESSIONID=admin-cookie", "JSESSIONID=normal-cookie"]
+        assert "role: admin" in finding.request_raw
+        assert "role: normal" in finding.request_raw
+
+    @pytest.mark.asyncio
+    async def test_confirmed_role_with_no_matching_session_only_captures_primary(self):
+        """`confirmed_role` names a role, not a guaranteed live session
+        -- if that role never authenticated this run (or no
+        session_manager was given), the primary capture must still
+        succeed on its own rather than the whole finding silently
+        getting nothing."""
+        request_context = AsyncMock()
+        request_context.get = AsyncMock(return_value=_response(status=200, text="captured"))
+        request_context.dispose = AsyncMock()
+        pw = _playwright_with_context(request_context)
+        session_manager = _FakeSessionManager({"admin": _session("admin")})
+        finding = _finding("GET https://target.example/a", user_role="admin", confirmed_role="normal")
+
+        enriched = await capture_findings_via_burp(pw, "http://127.0.0.1:8080", [finding], session_manager=session_manager)
+
+        assert enriched == 1
+        assert request_context.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_session_manager_still_captures_unauthenticated(self):
+        """Backward-compatible default: omitting `session_manager`
+        entirely (existing callers, existing tests above) keeps the
+        original unauthenticated-capture behavior unchanged."""
+        request_context = AsyncMock()
+        request_context.get = AsyncMock(return_value=_response(status=200, text="captured"))
+        request_context.dispose = AsyncMock()
+        pw = _playwright_with_context(request_context)
+        finding = _finding("GET https://target.example/a", user_role="admin", confirmed_role="normal")
+
+        enriched = await capture_findings_via_burp(pw, "http://127.0.0.1:8080", [finding])
+
+        assert enriched == 1
+        assert request_context.get.await_count == 1
+        _, call_kwargs = request_context.get.await_args
+        assert "Cookie" not in call_kwargs["headers"]

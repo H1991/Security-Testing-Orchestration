@@ -6,11 +6,17 @@ from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
 from stof.reporting.json_report import build_report, build_summary, write
 
+# A representative CVSS score per severity band -- Finding.__post_init__
+# now enforces that the two agree, so a test fixture that varies
+# `severity` needs a matching `cvss_score` by default too, not one
+# fixed value for every band.
+_SAMPLE_CVSS_SCORE = {"Critical": 9.1, "High": 8.1, "Medium": 5.3, "Low": 2.6, "Info": 0.0}
 
-def _finding(severity="Critical", **overrides) -> Finding:
+
+def _finding(severity="High", **overrides) -> Finding:
     endpoint = Endpoint(url="https://x/bank/showAccount", method="GET", endpoint_type="api", parameters=["listAccounts"])
     defaults = dict(
-        module_id="idor_tests", vuln_type="IDOR", severity=severity, cvss_score=8.1, endpoint=endpoint,
+        module_id="idor_tests", vuln_type="IDOR", severity=severity, cvss_score=_SAMPLE_CVSS_SCORE[severity], endpoint=endpoint,
         user_role="admin", request_raw="GET x", response_raw="HTTP 200", description="d", recommendation="r",
         discovered_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
@@ -53,6 +59,26 @@ def test_build_summary_counts_by_source():
 def test_build_summary_by_source_omits_scanners_with_no_findings():
     summary = build_summary([_finding(scanner_source="stof")])
     assert summary["by_source"] == {"STOF": 1}
+
+
+def test_build_summary_counts_critical_high_confidence():
+    findings = [
+        _finding("Critical", confidence="confirmed"),
+        _finding("High", confidence="likely"),
+        _finding("High", confidence="confirmed"),
+        _finding("Low", confidence="likely"),  # not Critical/High -- excluded from this count
+    ]
+
+    summary = build_summary(findings)
+
+    assert summary["critical_high_confirmed"] == 2
+    assert summary["critical_high_likely"] == 1
+
+
+def test_build_summary_confidence_defaults_to_confirmed():
+    summary = build_summary([_finding("Critical")])
+    assert summary["critical_high_confirmed"] == 1
+    assert summary["critical_high_likely"] == 0
 
 
 # ---------------------------------------------------------------------------

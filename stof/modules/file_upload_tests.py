@@ -165,6 +165,13 @@ class FileUploadTestsModule(VulnModule):
                             "type validation."
                         ),
                         recommendation="Validate uploaded file content server-side (not just extension/declared Content-Type), store uploads outside the webroot or with execution disabled, and reject any filename whose extension (including a non-final one) matches an executable server-side handler.",
+                        # The description above says so explicitly:
+                        # "STOF did not attempt to retrieve or execute
+                        # the uploaded file to confirm actual code
+                        # execution -- this needs manual verification."
+                        # Acceptance alone is a real, actionable signal
+                        # (missing validation) but not a confirmed RCE.
+                        confidence="likely",
                     )
                     finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=label) if evidence else []
                     return self._result(tid, technique, FAIL, finding.description, endpoint=endpoint, finding=finding)

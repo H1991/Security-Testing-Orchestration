@@ -4,7 +4,7 @@
       "id": "admin-01",
       "role": "admin",
       "username": "vapt_publish@yopmail.com",
-      "password": "{{env:PUBLISH_PASSWORD}}",
+      "password": "{{env:ADMIN_PASSWORD}}",
       "auth_type": "form_login"
     },
     {

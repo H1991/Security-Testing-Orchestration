@@ -27,15 +27,31 @@ from pydantic import BaseModel, Field
 from stof.core.logger import get_logger
 from stof.core.module_registry import VULN_MODULE_NAMES
 from stof.recorder import cdp
+from stof.ui import targets as target_store
 
 _log = get_logger("ui.server")
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CONFIG_PATH = REPO_ROOT / "config" / "config.json"
 USERS_PATH = REPO_ROOT / "config" / "users.json"
+# Owned entirely by this console (stof/ui/targets.py) -- stof/main.py and
+# every vuln module never read this file. See targets.py's own module
+# docstring for why the scan engine stays single-target while this file
+# gives the console real multi-application support.
+TARGETS_PATH = REPO_ROOT / "config" / "targets.json"
 SESSIONS_DB_PATH = REPO_ROOT / "data" / "stof.db"  # same path stof/main.py's SessionStore uses
 ENV_PATH = REPO_ROOT / ".env"
 TESTCASES_PATH = REPO_ROOT / "config" / "testcases.json"
+# A small, hand-curated {TC-id: one-sentence client-safe summary} map
+# for the read-only Test Coverage page (see get_test_catalog() below) --
+# NOT a second copy of testcases.json's own rich technical description,
+# which stays exactly where it is and is still returned alongside this
+# as "technical_detail" for anyone who wants the full depth. Deliberately
+# a separate small file rather than a new field bolted onto
+# testcases.json: that file is a living planning/coverage-tracking
+# document (see EXPLOIT_COVERAGE.md's own cross-reference to it) and
+# this is purely a presentation concern for one page.
+TEST_CATALOG_SUMMARIES_PATH = REPO_ROOT / "config" / "test_catalog_summaries.json"
 LOGS_DIR = REPO_ROOT / "data" / "logs"
 REPORTS_DIR = REPO_ROOT / "data" / "reports"
 FINDINGS_DIR = REPO_ROOT / "data" / "findings"
@@ -60,6 +76,13 @@ SCAN_NAMES_PATH = REPO_ROOT / "data" / "scan_names.json"
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+# Same pattern stof/config/loader.py's own (private) _ENV_TOKEN_RE uses --
+# duplicated rather than imported, since that name is module-private and
+# importing stof.config.loader just for one regex would be an odd
+# dependency for the UI layer to take on. Used only by
+# _migrate_single_target_to_profile() to find out which real env var
+# name an existing users.json entry's {{env:VAR}} token actually names.
+_ENV_TOKEN_RE = re.compile(r"\{\{env:([A-Za-z_][A-Za-z0-9_]*)\}\}")
 
 # Same module identifiers `stof/main.py::_KNOWN_MODULES` declares --
 # now imported from the one authoritative source (module_registry.py)
@@ -197,6 +220,75 @@ def _module_testcases(mod_id: str) -> list[dict]:
         })
     out.sort(key=lambda t: int(t["id"].split("-")[1]))
     return out
+
+
+def _top_level_technique_counts() -> dict[str, int]:
+    """Every top-level TC-id actually implemented in `stof/modules/`,
+    mapped to how many distinct sub-technique ids (`TC-x.N`) exist under
+    it -- the same ground-truth-from-source approach `_technique_counts()`
+    uses, just grouped by top-level id instead of by declared module,
+    since one module can (and does) implement several unrelated
+    top-level items (`auth_tests.py` alone covers TC-022/025/027/129/
+    132/133). A top-level id with no `.N` children in source (referenced
+    only bare) counts as 1, not 0 -- it's still one real technique."""
+    all_ids: set[str] = set()
+    for mod_id in _KNOWN_MODULES:
+        for path in _module_source_files(mod_id):
+            all_ids |= set(_TC_ID_RE.findall(path.read_text(encoding="utf-8", errors="ignore")))
+    by_top: dict[str, set[str]] = {}
+    for tc_id in all_ids:
+        by_top.setdefault(tc_id.split(".")[0], set()).add(tc_id)
+    counts: dict[str, int] = {}
+    for top, ids in by_top.items():
+        sub_ids = {i for i in ids if "." in i}
+        counts[top] = len(sub_ids) if sub_ids else len(ids)
+    return counts
+
+
+def _test_catalog_entries() -> list[dict]:
+    """The Test Coverage page's data: one entry per top-level TC-id that
+    genuinely exists in `stof/modules/` today (never a planned/not-yet-
+    coded item from `testcases.json` -- same "only show real, documented
+    test cases" rule `_module_testcases()` already follows), enriched
+    with a curated client-safe one-liner where one exists
+    (`TEST_CATALOG_SUMMARIES_PATH`), falling back to `testcases.json`'s
+    own technical description otherwise so a technique newly added to
+    code still shows up here immediately, just less politely worded,
+    rather than silently missing until someone remembers to curate it."""
+    doc = _read_json(TESTCASES_PATH) or {}
+    by_id = {t["id"]: t for t in doc.get("tests", [])}
+    summaries = _read_json(TEST_CATALOG_SUMMARIES_PATH) or {}
+    counts = _top_level_technique_counts()
+
+    top_to_module: dict[str, str] = {}
+    for mod_id in _KNOWN_MODULES:
+        if mod_id == "crawler":
+            continue
+        ids: set[str] = set()
+        for path in _module_source_files(mod_id):
+            ids |= set(_TC_ID_RE.findall(path.read_text(encoding="utf-8", errors="ignore")))
+        for top_id in {i.split(".")[0] for i in ids}:
+            top_to_module[top_id] = mod_id
+
+    entries = []
+    for top_id, mod_id in top_to_module.items():
+        meta = by_id.get(top_id)
+        if meta is None:
+            continue
+        entries.append({
+            "id": top_id,
+            "module_id": mod_id,
+            "module_name": _MODULE_LABELS.get(mod_id, mod_id),
+            "name": meta.get("name"),
+            "severity": meta.get("severity"),
+            "summary": summaries.get(top_id) or meta.get("description"),
+            "technical_detail": meta.get("description"),
+            "compliance": meta.get("compliance"),
+            "cwe_id": meta.get("cwe_id"),
+            "technique_count": counts.get(top_id, 1),
+        })
+    entries.sort(key=lambda e: (e["module_name"], e["id"]))
+    return entries
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +685,23 @@ def _write_dotenv_value(path: Path, key: str, value: str) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _read_dotenv_value(path: Path, key: str) -> str | None:
+    """Symmetric counterpart to `_write_dotenv_value` -- reads one
+    `KEY=value` line back out of a dotenv file. Used ONLY server-side,
+    to copy a stored per-target-profile secret into the fixed
+    `ADMIN_PASSWORD`/`USER_PASSWORD` key `stof/config/loader.py`
+    actually resolves at scan time -- never returned in an API response
+    body (same "never echo a password back" convention `set_credentials`
+    already documents below)."""
+    if not path.is_file():
+        return None
+    prefix = f"{key}="
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # API models
 # ---------------------------------------------------------------------------
@@ -680,6 +789,42 @@ class CredentialsUpdateRequest(BaseModel):
     normal_auth_type: Literal["form_login", "jwt"] | None = None
 
 
+class TargetProfileRequest(BaseModel):
+    """Shared by `POST /api/targets` (create) and `PUT /api/targets/{id}`
+    (update). On create, `name`/`base_url`/`login_url` are required in
+    practice -- validated in the endpoint itself, not here, since
+    Pydantic can't express "required on create, optional on update" in
+    one model without two near-duplicate classes. Every other field is
+    independently optional, the same partial-update convention
+    `/api/config/target` and `/api/credentials` already use: `None`
+    (omitted) leaves it untouched; `""` on a selector or a username
+    clears it (a blank username also drops that role's credentials
+    entirely, mirroring `DELETE /api/credentials/{role}`)."""
+
+    name: str | None = None
+    app_type: Literal["web", "api", "mobile_api", "other"] | None = None
+    base_url: str | None = None
+    login_url: str | None = None
+    username_selector: str | None = None
+    password_selector: str | None = None
+    submit_selector: str | None = None
+    # Same optional/target-specific philosophy as the selectors above
+    # (see TargetConfig's own docstring in stof/config/schema.py) --
+    # `None` leaves whatever's stored untouched, `[]` clears back to the
+    # generic auto-detected default.
+    crawler_exclude_patterns: list[str] | None = None
+    idor_candidate_ids: list[str] | None = None
+    requires_assisted_login: bool | None = None
+    admin_username: str | None = None
+    admin_password: str | None = None
+    admin_auth_type: Literal["form_login", "jwt"] | None = None
+    normal_username: str | None = None
+    normal_password: str | None = None
+    normal_auth_type: Literal["form_login", "jwt"] | None = None
+    scan_intensity: Literal["cautious", "standard", "aggressive"] | None = None
+    allow_state_changing_probes: bool | None = None
+
+
 class StartRecordingRequest(BaseModel):
     name: str
     target_url: str | None = None
@@ -732,6 +877,25 @@ def get_module_testcases(module_id: str) -> list[dict]:
     return _module_testcases(module_id)
 
 
+@app.get("/api/test-catalog")
+def get_test_catalog() -> dict:
+    """Read-only, client-demo-facing capability catalog -- distinct from
+    `/api/modules` (global enable/disable) and the per-scan module
+    picker on New Scan (`StartScanRequest.modules`): this endpoint never
+    reads or writes any scan configuration, it only reports what's
+    actually implemented in code today, so a target/scan operator's own
+    module toggles have zero effect on what this shows."""
+    entries = _test_catalog_entries()
+    return {
+        "items": entries,
+        "summary": {
+            "test_case_count": len(entries),
+            "technique_count": sum(e["technique_count"] for e in entries),
+            "module_count": len({e["module_id"] for e in entries}),
+        },
+    }
+
+
 @app.put("/api/modules/{module_id}")
 async def set_module(module_id: str, body: ModuleToggleRequest) -> dict:
     if module_id not in _KNOWN_MODULES:
@@ -747,10 +911,17 @@ async def set_module(module_id: str, body: ModuleToggleRequest) -> dict:
     return {"id": module_id, "enabled": body.enabled}
 
 
+_VALID_SCAN_INTENSITIES = ("cautious", "standard", "aggressive")
+
+
 @app.get("/api/testing")
 def get_testing_flag() -> dict:
     doc = _read_json(CONFIG_PATH) or {}
-    return {"allow_state_changing_probes": bool(doc.get("testing", {}).get("allow_state_changing_probes", False))}
+    testing = doc.get("testing", {})
+    return {
+        "allow_state_changing_probes": bool(testing.get("allow_state_changing_probes", False)),
+        "scan_intensity": testing.get("scan_intensity", "standard"),
+    }
 
 
 @app.put("/api/testing")
@@ -758,10 +929,26 @@ async def set_testing_flag(body: dict) -> dict:
     doc = _read_json(CONFIG_PATH)
     if doc is None:
         raise HTTPException(404, f"{CONFIG_PATH} not found")
-    doc.setdefault("testing", {})["allow_state_changing_probes"] = bool(body.get("allow_state_changing_probes", False))
+    testing = doc.setdefault("testing", {})
+    # Each field independently optional -- only touched when the caller
+    # actually sends it. A PUT that only means to change ONE of these
+    # (the intensity selector's own change handler, say) must never
+    # silently reset the OTHER back to its default; the two are edited
+    # from two separate controls in Settings, not always together.
+    if "allow_state_changing_probes" in body:
+        testing["allow_state_changing_probes"] = bool(body["allow_state_changing_probes"])
+    if "scan_intensity" in body:
+        intensity = body["scan_intensity"]
+        if intensity not in _VALID_SCAN_INTENSITIES:
+            raise HTTPException(400, f"scan_intensity must be one of {_VALID_SCAN_INTENSITIES}, got {intensity!r}")
+        testing["scan_intensity"] = intensity
     CONFIG_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
-    await _broadcast_global({"event": "testing_changed", "allow_state_changing_probes": doc["testing"]["allow_state_changing_probes"]})
-    return doc["testing"]
+    await _broadcast_global({
+        "event": "testing_changed",
+        "allow_state_changing_probes": testing["allow_state_changing_probes"],
+        "scan_intensity": testing.get("scan_intensity", "standard"),
+    })
+    return testing
 
 
 @app.put("/api/config/target")
@@ -963,6 +1150,188 @@ def delete_credentials(role: str) -> dict:
     USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
     USERS_PATH.write_text(json.dumps(users_doc, indent=2) + "\n", encoding="utf-8")
     return {"removed": role, "remaining_roles": [u.get("role") for u in remaining]}
+
+
+# ---------------------------------------------------------------------------
+# Target Profiles -- the console's multi-application layer (see
+# stof/ui/targets.py's own module docstring for the full design). A
+# saved profile is inert data until "activated": activation is the one
+# place a profile becomes real, effective config.json/users.json state,
+# so every existing endpoint below (Verify Login, Manual Session,
+# /api/scans, the CLI itself) keeps working completely unchanged --
+# they only ever see "the" target for whatever's currently active.
+# ---------------------------------------------------------------------------
+
+
+def _migrate_single_target_to_profile() -> dict:
+    """First-run migration: if `targets.json` doesn't exist yet but
+    `config.json` already has a real target configured (every existing
+    STOF install before this feature shipped, including this repo's own
+    checked-in config), wrap that single target up as one saved profile
+    instead of silently discarding it -- "only supports one application"
+    becomes "starts with the one application you already had, plus room
+    for more," never a reset."""
+    doc = target_store.default_store()
+    cfg = _read_json(CONFIG_PATH) or {}
+    target = cfg.get("target") or {}
+    base_url = target.get("base_url")
+    if not base_url:
+        target_store.save(TARGETS_PATH, doc)
+        return doc
+
+    from urllib.parse import urlparse
+    host = urlparse(base_url).hostname or "target"
+    target_id = target_store.new_target_id(host, [])
+    profile = target_store.new_profile(target_id, host)
+    profile["base_url"] = base_url
+    profile["login_url"] = target.get("login_url", base_url)
+    for field in ("username_selector", "password_selector", "submit_selector", "crawler_exclude_patterns", "idor_candidate_ids"):
+        if target.get(field):
+            profile[field] = target[field]
+    profile["requires_assisted_login"] = bool(target.get("requires_assisted_login", False))
+    testing = cfg.get("testing") or {}
+    profile["scan_intensity"] = testing.get("scan_intensity", "standard")
+    profile["allow_state_changing_probes"] = bool(testing.get("allow_state_changing_probes", False))
+
+    users_doc = _read_json(USERS_PATH) or {}
+    for user in users_doc.get("users", []):
+        role = user.get("role")
+        if role not in ("admin", "normal"):
+            continue
+        profile[f"{role}_username"] = user.get("username")
+        profile[f"{role}_auth_type"] = user.get("auth_type", "form_login")
+        # An existing single-target install's users.json entry can
+        # reference ANY {{env:VAR}} token -- not necessarily the literal
+        # names ADMIN_PASSWORD/USER_PASSWORD (this repo's own real
+        # config.json is a live example: its admin entry is
+        # {{env:PUBLISH_PASSWORD}}). Read whichever var name the token
+        # actually names, never assume the fixed pair, or this silently
+        # migrates the WRONG (possibly stale/unrelated) password.
+        token_match = _ENV_TOKEN_RE.fullmatch(user.get("password", ""))
+        existing_value = _read_dotenv_value(ENV_PATH, token_match.group(1)) if token_match else None
+        if existing_value is not None:
+            _write_dotenv_value(ENV_PATH, target_store.env_key(role, target_id), existing_value)
+            profile[f"{role}_password_set"] = True
+
+    doc["targets"] = [profile]
+    doc["active_target_id"] = target_id
+    target_store.save(TARGETS_PATH, doc)
+    return doc
+
+
+def _load_targets_doc() -> dict:
+    if not TARGETS_PATH.is_file():
+        return _migrate_single_target_to_profile()
+    return target_store.load(TARGETS_PATH)
+
+
+def _activate_target(doc: dict, target_id: str) -> dict:
+    """Writes `target_id`'s saved profile into config.json/users.json --
+    the exact files `stof/main.py`'s scan engine has always read -- so
+    the scan engine itself never learns a multi-target concept exists."""
+    profile = target_store.find(doc, target_id)
+    if profile is None:
+        raise HTTPException(404, f"no target profile '{target_id}'")
+
+    cfg = _read_json(CONFIG_PATH) or {}
+    cfg["target"] = target_store.target_block(profile)
+    testing = cfg.setdefault("testing", {})
+    testing.update(target_store.testing_block(profile))
+    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8")
+
+    users_doc = {"users": target_store.user_entries(profile)}
+    USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    USERS_PATH.write_text(json.dumps(users_doc, indent=2) + "\n", encoding="utf-8")
+
+    for role in ("admin", "normal"):
+        if profile.get(f"{role}_password_set"):
+            value = _read_dotenv_value(ENV_PATH, target_store.env_key(role, target_id))
+            if value is not None:
+                _write_dotenv_value(ENV_PATH, "ADMIN_PASSWORD" if role == "admin" else "USER_PASSWORD", value)
+
+    doc["active_target_id"] = target_id
+    target_store.save(TARGETS_PATH, doc)
+    return profile
+
+
+def _apply_target_credentials(profile: dict, target_id: str, body: TargetProfileRequest) -> None:
+    """The credential half of a target-profile create/update -- pulled
+    out for the same reason `_apply_credentials_update` was (CLAUDE.md's
+    complexity gate), and follows the exact same write-only-to-.env
+    rule (CLAUDE.md rule 6)."""
+    target_store.set_role_credentials(profile, "admin", body.admin_username, body.admin_auth_type)
+    target_store.set_role_credentials(profile, "normal", body.normal_username, body.normal_auth_type)
+    if body.admin_password:
+        _write_dotenv_value(ENV_PATH, target_store.env_key("admin", target_id), body.admin_password)
+        target_store.mark_password_set(profile, "admin")
+    if body.normal_password:
+        _write_dotenv_value(ENV_PATH, target_store.env_key("normal", target_id), body.normal_password)
+        target_store.mark_password_set(profile, "normal")
+
+
+@app.get("/api/targets")
+def list_targets() -> dict:
+    doc = _load_targets_doc()
+    return {"targets": doc["targets"], "active_target_id": doc["active_target_id"]}
+
+
+@app.post("/api/targets")
+async def create_target(body: TargetProfileRequest) -> dict:
+    if not (body.name or "").strip():
+        raise HTTPException(400, "name is required")
+    if not (body.base_url or "").strip() or not (body.login_url or "").strip():
+        raise HTTPException(400, "base_url and login_url are required")
+    doc = _load_targets_doc()
+    target_id = target_store.new_target_id(body.name, [t["id"] for t in doc["targets"]])
+    profile = target_store.new_profile(target_id, body.name.strip())
+    target_store.apply_fields(profile, body.model_dump())
+    _apply_target_credentials(profile, target_id, body)
+    doc["targets"].append(profile)
+    target_store.save(TARGETS_PATH, doc)
+    activated = _activate_target(doc, target_id)
+    await _broadcast_global({"event": "target_created", "target_id": target_id, "name": profile["name"]})
+    return activated
+
+
+@app.put("/api/targets/{target_id}")
+async def update_target(target_id: str, body: TargetProfileRequest) -> dict:
+    doc = _load_targets_doc()
+    profile = target_store.find(doc, target_id)
+    if profile is None:
+        raise HTTPException(404, f"no target profile '{target_id}'")
+    target_store.apply_fields(profile, body.model_dump())
+    _apply_target_credentials(profile, target_id, body)
+    target_store.save(TARGETS_PATH, doc)
+    if doc["active_target_id"] == target_id:
+        profile = _activate_target(doc, target_id)
+        await _broadcast_global({"event": "target_updated", "target_id": target_id})
+    return profile
+
+
+@app.post("/api/targets/{target_id}/activate")
+async def activate_target(target_id: str) -> dict:
+    doc = _load_targets_doc()
+    profile = _activate_target(doc, target_id)
+    await _broadcast_global({"event": "target_activated", "target_id": target_id, "name": profile["name"]})
+    return profile
+
+
+@app.delete("/api/targets/{target_id}")
+async def delete_target(target_id: str) -> dict:
+    doc = _load_targets_doc()
+    profile = target_store.find(doc, target_id)
+    if profile is None:
+        raise HTTPException(404, f"no target profile '{target_id}'")
+    doc["targets"] = [t for t in doc["targets"] if t["id"] != target_id]
+    new_active = None
+    if doc["active_target_id"] == target_id:
+        new_active = doc["targets"][0]["id"] if doc["targets"] else None
+        doc["active_target_id"] = new_active
+    target_store.save(TARGETS_PATH, doc)
+    if new_active:
+        _activate_target(doc, new_active)
+    await _broadcast_global({"event": "target_deleted", "target_id": target_id, "new_active_target_id": new_active})
+    return {"removed": target_id, "active_target_id": doc["active_target_id"]}
 
 
 @app.get("/api/recordings/launch-command")

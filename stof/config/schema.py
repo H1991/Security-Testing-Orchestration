@@ -23,9 +23,20 @@ class TargetConfig(BaseModel):
     a particular target's form, or to skip probing and go straight to
     the known-correct selector.
 
-    `idor_candidate_ids` is similarly optional -- unset falls back to a
-    generic small sequential-ID range rather than any one target's own
-    ID scheme."""
+    `idor_candidate_ids` is similarly optional, and deliberately NOT the
+    primary source of IDOR probe values -- the active id-substitution
+    techniques (TC-053.1/.2, TC-054.2/.4) now derive their real
+    candidates per endpoint, from whatever id that specific endpoint's
+    own crawled URL actually showed (`_idor_shared._endpoint_
+    candidate_ids`), so a target's numeric range never needs a human to
+    pre-guess and hardcode it here. This field is only a *supplementary*
+    seed: a small generic fallback (or an operator-known specific id)
+    for the case where no numeric id was observed at all yet. Leave it
+    unset for a normal target -- setting it to one target's own
+    observed range (a real mistake caught in review: this field once
+    held a hardcoded 800000-800010 for one specific demo target, which
+    silently made every OTHER target's scan try ids irrelevant to it)
+    is exactly the anti-pattern this field's new role is meant to avoid."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -190,6 +201,21 @@ class TestingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     allow_state_changing_probes: bool = False
+    # A named preset, not raw request-rate numbers -- an operator picking
+    # a scan safety level shouldn't have to already know what a sane
+    # concurrency/pacing value even looks like. Resolved to real numbers
+    # by `SCAN_INTENSITY_PROFILES` (stof/core/rate_limiter.py's own
+    # consumer, wired in by main.py's scan entrypoint) via `configure()`.
+    # "standard" matches this project's own long-standing default
+    # (6 concurrent, no artificial pacing) byte-for-byte -- an existing
+    # config.json with no scan_intensity set gets IDENTICAL behavior to
+    # before this field existed. "cautious" exists because of a real,
+    # live-observed failure mode this session: a candidate-id/wordlist
+    # sweep firing dozens of requests in quick succession triggered two
+    # real account lockouts even with concurrency alone capped -- the
+    # concurrency cap doesn't limit requests PER SECOND, only how many
+    # are in flight at once.
+    scan_intensity: Literal["cautious", "standard", "aggressive"] = "standard"
 
 
 class Config(BaseModel):

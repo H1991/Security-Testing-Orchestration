@@ -225,6 +225,7 @@ class SsrfTestsModule(VulnModule):
     def _finding(
         self, endpoint: "Endpoint", vuln_type: str, param: str, description: str,
         request_preview: str, response_preview: str, severity: str = "Critical", cvss_score: float = 9.1,
+        confidence: str = "confirmed",
     ) -> Finding:
         return Finding(
             module_id=self.module_id, vuln_type=vuln_type, severity=severity, cvss_score=cvss_score,
@@ -236,6 +237,7 @@ class SsrfTestsModule(VulnModule):
                 "user-supplied URL; reject non-HTTP(S) schemes, loopback/link-local/private "
                 "address ranges, and cloud metadata endpoints regardless of DNS resolution path."
             ),
+            confidence=confidence,
         )
 
     async def _technique_metadata_fingerprint(
@@ -322,7 +324,7 @@ class SsrfTestsModule(VulnModule):
                 endpoint, vuln_type, param, description,
                 request_preview=f"{endpoint.method} {endpoint.url}\n{param}={_BLACKHOLE_URL!r}",
                 response_preview=f"observed delta: first={delta:.1f}s, confirm={confirm_delta:.1f}s",
-                severity="High", cvss_score=7.5,
+                severity="High", cvss_score=7.5, confidence="likely",  # a timing signal, not response content -- see description
             )
             finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-timing-{param}") if evidence else []
             return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)

@@ -12,7 +12,7 @@ from stof.reporting.reporter import generate_reports
 def _finding(**overrides) -> Finding:
     endpoint = Endpoint(url="https://x/bank/showAccount", method="GET", endpoint_type="api", parameters=["listAccounts"])
     defaults = dict(
-        module_id="idor_tests", vuln_type="IDOR", severity="Critical", cvss_score=8.1, endpoint=endpoint,
+        module_id="idor_tests", vuln_type="IDOR", severity="High", cvss_score=8.1, endpoint=endpoint,
         user_role="admin", request_raw="GET x", response_raw="HTTP 200", description="d", recommendation="r",
         discovered_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )

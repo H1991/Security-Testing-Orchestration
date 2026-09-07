@@ -11,7 +11,7 @@ def _finding(**overrides) -> Finding:
     defaults = dict(
         module_id="idor_tests",
         vuln_type="Vertical Privilege Escalation / Broken Function Level Authorization",
-        severity="Critical",
+        severity="High",
         cvss_score=8.8,
         endpoint=endpoint,
         user_role="normal",

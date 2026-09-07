@@ -16,27 +16,25 @@ if TYPE_CHECKING:
 
 _log = get_logger("reporting.excel_report")
 
-# Was "CVSS Score" -- every value here is a hardcoded illustrative
-# constant per finding type (grep-verified: 98 call sites across
-# stof/modules/, all literal numbers, none computed from a CVSS
-# vector). Labeled "CVSS Score" with no disclaimer, this column is
-# indistinguishable from a real calculated score once it lands in a
-# client's spreadsheet -- and clients DO feed CVSS into SLAs ("Critical
-# >= 9.0 = fix in 24h"). Renamed + a header comment rather than
-# computing real CVSS vectors for 98 sites: a confidently-wrong
-# precise-looking score would be worse than an honestly-labeled
-# approximation, and assigning correct AV/AC/PR/UI/S/C/I/A vectors per
-# finding type is real security-domain work that deserves its own
-# scoped pass, not a rename hiding behind it.
+# Was "CVSS Score" with no vector behind it at all (every value was a
+# hardcoded illustrative constant per finding type, none computed --
+# see stof.findings.cvss for the fix). A bare score with no vector is
+# indistinguishable from a real calculated one once it lands in a
+# client's spreadsheet, and clients DO feed CVSS into SLAs ("Critical
+# >= 9.0 = fix in 24h"). The adjacent CVSS v3.1 Vector column is now
+# the actual, independently-recomputable metric string the score comes
+# from -- empty only for the rare score CVSS's own discrete metric
+# space can't reproduce with any real vector (never a fabricated one).
 _COLUMNS = (
-    "Finding ID", "Vulnerability", "Severity", "Severity Score (Illustrative)", "Endpoint", "Method",
+    "Finding ID", "Vulnerability", "Severity", "Severity Score (Illustrative)", "CVSS v3.1 Vector", "Endpoint", "Method",
     "User Role", "Source", "Description", "Recommendation", "Discovered At", "Evidence Files",
 )
 _SEVERITY_SCORE_COL = _COLUMNS.index("Severity Score (Illustrative)") + 1
+_CVSS_VECTOR_COL = _COLUMNS.index("CVSS v3.1 Vector") + 1
 _SEVERITY_SCORE_NOTE = (
-    "Illustrative approximation of impact, not a calculated CVSS vector score "
-    "(no CVSS vector -- AV/AC/PR/UI/S/C/I/A -- is computed for any finding). "
-    "Use the Severity column as the authoritative rating."
+    "The base score of the adjacent CVSS v3.1 Vector column, independently recomputable from it. "
+    "Empty vector = no real CVSS v3.1 metric combination reproduces this exact score; "
+    "use the Severity column as the authoritative rating in that case."
 )
 
 _SOURCE_LABELS = {"stof": "STOF", "burp": "Burp Suite Pro"}
@@ -70,7 +68,7 @@ def write(findings: list["Finding"], output_path: str | Path) -> Path:
 
     for row_idx, finding in enumerate(findings, start=2):
         values = (
-            finding.finding_id, finding.vuln_type, finding.severity, finding.cvss_score,
+            finding.finding_id, finding.vuln_type, finding.severity, finding.cvss_score, finding.cvss_vector or "",
             finding.endpoint.url, finding.endpoint.method, finding.user_role,
             _SOURCE_LABELS.get(finding.scanner_source, finding.scanner_source),
             finding.description, finding.recommendation,
@@ -86,7 +84,7 @@ def write(findings: list["Finding"], output_path: str | Path) -> Path:
             severity_cell.fill = PatternFill(start_color=severity_color, end_color=severity_color, fill_type="solid")
             severity_cell.font = Font(bold=True, color="FFFFFF")
 
-    column_widths = (36, 40, 12, 10, 40, 8, 12, 14, 60, 60, 22, 30)
+    column_widths = (36, 40, 12, 10, 46, 40, 8, 12, 14, 60, 60, 22, 30)
     for col_idx, width in enumerate(column_widths, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = width
     ws.freeze_panes = "A2"

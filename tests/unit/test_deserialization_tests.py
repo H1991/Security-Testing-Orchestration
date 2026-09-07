@@ -142,6 +142,10 @@ async def test_polymorphic_type_confusion_fails_on_deserialization_shaped_error(
     assert by_id["TC-085.2"].status == FAIL
     assert by_id["TC-085.2"].finding is not None
     assert "did not attempt exploitation" in by_id["TC-085.2"].finding.description
+    # Regression: the description says exactly that -- a
+    # deserialization-shaped error signal, not a confirmed gadget-chain
+    # RCE.
+    assert by_id["TC-085.2"].finding.confidence == "likely"
 
 
 @pytest.mark.asyncio

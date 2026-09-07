@@ -472,7 +472,7 @@ class ConfigurationTestsModule(VulnModule):
         for url, status, body in hits:
             if status == 200 and len(body) >= self.config.min_content_length:
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.5,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
                     endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
                     request_raw=f"GET {url}", response_raw=f"HTTP {status}, {len(body)} bytes",
                     description=f"An admin/management panel at '{url}' is reachable without authentication (HTTP {status}, {len(body)} bytes).",
@@ -497,7 +497,7 @@ class ConfigurationTestsModule(VulnModule):
         for url, status, body in hits:
             if status == 200 and any(sig in body for sig in _DIRECTORY_LISTING_SIGNATURES):
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=5.3,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
                     endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
                     request_raw=f"GET {url}", response_raw=f"HTTP {status}, directory listing markup present",
                     description=f"'{url}' returns an auto-generated directory listing, exposing every file in that directory to any visitor.",
@@ -523,7 +523,7 @@ class ConfigurationTestsModule(VulnModule):
                 status, body = probe
                 if status >= 500 and any(sig in body for sig in _STACK_TRACE_SIGNATURES):
                     finding = Finding(
-                        module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=5.3,
+                        module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
                         endpoint=endpoint, user_role="unauthenticated",
                         request_raw=f"GET {probe_url}", response_raw=f"HTTP {status}, stack-trace signature present",
                         description=f"'{endpoint.url}' returned a raw stack trace (HTTP {status}) when sent a malformed parameter, revealing internal framework/file/path details.",
@@ -548,7 +548,7 @@ class ConfigurationTestsModule(VulnModule):
         for url, status, body in hits:
             if status == 200 and len(body) >= 10:
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=6.5,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
                     endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
                     request_raw=f"GET {url}", response_raw=f"HTTP {status}, {len(body)} bytes",
                     description=f"A default/sample/install file at '{url}' is publicly reachable (HTTP {status}, {len(body)} bytes).",
@@ -579,7 +579,7 @@ class ConfigurationTestsModule(VulnModule):
             value = headers.get(header_name)
             if value and _VERSION_NUMBER_RE.search(value):
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=4.3,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=4.3,
                     endpoint=_synthetic_endpoint(self._target_url(endpoints)), user_role="unauthenticated",
                     request_raw=f"GET {self._target_url(endpoints)}", response_raw=f"{header_name}: {value}",
                     description=f"The response includes a versioned '{header_name}' header ('{value}'), disclosing the exact server/framework version to any visitor.",
@@ -629,7 +629,7 @@ class ConfigurationTestsModule(VulnModule):
         acac = headers.get("access-control-allow-credentials")
         if self._is_cors_misconfigured(sent_origin, acao, acac):
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.1,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.1,
                 endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
                 request_raw=f"GET {url}\nOrigin: {sent_origin}",
                 response_raw=f"Access-Control-Allow-Origin: {acao}\nAccess-Control-Allow-Credentials: {acac}",
@@ -799,7 +799,7 @@ class ConfigurationTestsModule(VulnModule):
         count = _password_autocomplete_gap(content_type, body)
         if count:
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Info", cvss_score=1.0,
+                module_id=self.module_id, vuln_type=vuln_type, severity="Low", cvss_score=1.0,
                 endpoint=_synthetic_endpoint(login_url), user_role="unauthenticated",
                 request_raw=f"GET {login_url}", response_raw=f"{count} <input type=password> field(s) without autocomplete=off/new-password",
                 description=(
@@ -830,7 +830,7 @@ class ConfigurationTestsModule(VulnModule):
                 status, _body = probe
                 if status < 400:
                     finding = Finding(
-                        module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.4,
+                        module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.4,
                         endpoint=_synthetic_endpoint(plaintext_url), user_role="unauthenticated",
                         request_raw=f"GET {plaintext_url}", response_raw=f"HTTP {status} over plaintext http://",
                         description=f"A sensitive endpoint ('{plaintext_url}') is reachable over plaintext HTTP (HTTP {status}), letting credentials/session tokens be intercepted by any network-position attacker.",
@@ -947,7 +947,7 @@ class ConfigurationTestsModule(VulnModule):
             cert = await loop.run_in_executor(None, _fetch_tls_certificate, parts.hostname, parts.port or 443)
         except Exception as exc:
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.5,
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
                 endpoint=_synthetic_endpoint(url), user_role="unauthenticated",
                 request_raw=f"TLS handshake to {parts.hostname}:{parts.port or 443}", response_raw=f"handshake/validation failed: {exc}",
                 description=f"A TLS handshake to '{parts.hostname}:{parts.port or 443}' failed chain or hostname validation: {exc}. Visitors' browsers will show a certificate warning, training users to click through security errors.",
@@ -958,7 +958,7 @@ class ConfigurationTestsModule(VulnModule):
 
         days = cert["days_remaining"]
         if days < 0:
-            severity, cvss, state = "Critical", 7.4, f"expired {-days} day(s) ago"
+            severity, cvss, state = "High", 7.4, f"expired {-days} day(s) ago"
         elif days <= _CERT_EXPIRY_WARNING_DAYS:
             severity, cvss, state = "Medium", 5.3, f"expires in {days} day(s)"
         else:

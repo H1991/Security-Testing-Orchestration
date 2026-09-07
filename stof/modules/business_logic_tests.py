@@ -403,7 +403,7 @@ class BusinessLogicTestsModule(VulnModule):
         role_echoed = f'"{role_param}"' in body.replace(" ", "").lower() and elevated_value.lower() in body.lower()
         if signed_up and role_echoed:
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.6,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.6,
                 endpoint=registration_endpoint, user_role="unauthenticated",
                 request_raw=f"POST {registration_endpoint.url}\n{payload}",
                 response_raw=f"HTTP {resp.status}, {body[:300]}",
@@ -444,7 +444,7 @@ class BusinessLogicTestsModule(VulnModule):
         )
         if reached_directly:
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.5,
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
                 endpoint=latest, user_role="unauthenticated",
                 request_raw=f"{latest.method} {latest.url}",
                 response_raw=f"HTTP {resp.status}, {len(body)} bytes, no step-order rejection signature",
@@ -511,7 +511,7 @@ class BusinessLogicTestsModule(VulnModule):
             return None
 
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.5,
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
             endpoint=endpoint, user_role=self.config.test_role,
             request_raw=f"POST {endpoint.url}\n{params}",
             response_raw=f"HTTP {status}, {len(body)} bytes, '{field}':'{late_value}' echoed back",
@@ -583,6 +583,7 @@ class BusinessLogicTestsModule(VulnModule):
                     "the target's own state/ledger to confirm the underlying effect was actually double-applied; this needs manual review."
                 ),
                 recommendation="Serialize limited-use actions server-side (a DB-level unique constraint, row lock, or atomic compare-and-set) rather than relying on request-level validation alone, which two concurrent requests can both pass before either has committed its effect.",
+                confidence="likely",  # STOF cannot inspect the target's own state/ledger to confirm a double-apply -- see this technique's own docstring
             )
             finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="buslogic-race-condition") if evidence else []
             return self._result(tid, technique, FAIL, finding.description, endpoint=target, finding=finding)

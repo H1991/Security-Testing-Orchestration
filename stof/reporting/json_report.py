@@ -26,16 +26,33 @@ SEVERITY_ORDER = ("Critical", "High", "Medium", "Low", "Info")
 _SOURCE_LABELS = {"stof": "STOF", "burp": "Burp Suite Pro"}
 
 
+def _critical_high_confidence_counts(findings: list["Finding"]) -> dict[str, int]:
+    """The number a triager actually cares about first for a tool whose
+    whole point is not crying wolf on Critical/High: how many of THOSE
+    are STOF directly observing the claimed effect (a write that really
+    succeeded, a value really echoed back) vs. a genuinely uncertain
+    signal (a timing inference, an accepted-but-unconfirmable change, a
+    proven precondition for a vuln class STOF can't itself verify
+    exists) that STOF is honest about needing manual confirmation for.
+    See `Finding.confidence`'s own docstring."""
+    critical_high = [f for f in findings if f.severity in ("Critical", "High")]
+    counts = Counter(f.confidence for f in critical_high)
+    return {"confirmed": counts.get("confirmed", 0), "likely": counts.get("likely", 0)}
+
+
 def build_summary(findings: list["Finding"]) -> dict[str, Any]:
     counts = Counter(f.severity for f in findings)
     by_source_raw = Counter(f.scanner_source for f in findings)
     by_source = {
         _SOURCE_LABELS.get(source, source): count for source, count in by_source_raw.items()
     }
+    critical_high_confidence = _critical_high_confidence_counts(findings)
     return {
         "total_findings": len(findings),
         "by_severity": {sev: counts.get(sev, 0) for sev in SEVERITY_ORDER},
         "by_source": by_source,
+        "critical_high_confirmed": critical_high_confidence["confirmed"],
+        "critical_high_likely": critical_high_confidence["likely"],
     }
 
 

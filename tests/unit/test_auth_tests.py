@@ -8,7 +8,7 @@ from stof.auth.base import AuthProvider
 from stof.config.schema import UserConfig
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
-from stof.modules.auth_tests import AuthTestConfig, AuthTestsModule, _looks_form_authenticated
+from stof.modules.auth_tests import AuthTestConfig, AuthTestsModule, _confidence_from_relogin, _looks_form_authenticated
 from stof.modules.results import ERROR, FAIL, NOT_IMPLEMENTED, PASS, SKIPPED
 from stof.session.models import Session
 from stof.session.session_manager import SessionManager
@@ -34,6 +34,14 @@ def test_looks_form_authenticated_false_when_both_json_responses_are_errors():
         200, {}, '{"error":{"message":"Invalid email or password."}}',
         200, {}, '{"error":{"message":"Invalid email or password."}}',
     )
+
+
+def test_confidence_from_relogin_true_means_confirmed():
+    assert _confidence_from_relogin(True) == "confirmed"
+
+
+def test_confidence_from_relogin_none_means_likely():
+    assert _confidence_from_relogin(None) == "likely"
 
 
 def _user(role: str) -> UserConfig:
@@ -747,6 +755,10 @@ async def test_022_5_fails_on_genuine_body_differential_via_json_endpoint(tmp_pa
     assert by_id["TC-022.5"].status == FAIL
     assert by_id["TC-022.5"].finding is not None
     assert "body length" in by_id["TC-022.5"].finding.description
+    # Regression: the finding's own description says this "does not
+    # confirm any specific credential as valid" -- a behavioral
+    # differential signal, not a confirmed enumerated username.
+    assert by_id["TC-022.5"].finding.confidence == "likely"
 
 
 @pytest.mark.asyncio
@@ -863,10 +875,11 @@ async def test_horizontal_password_change_fails_and_reverts_when_a_target_field_
 
     assert result.status == FAIL
     assert result.finding is not None
-    assert result.finding.severity == "Critical"
+    assert result.finding.severity == "High"  # cvss_score=8.8 -- High per the CVSS v3.1 scale (7.0-8.9)
     assert result.finding.vuln_type == "Account Takeover via Unauthorized Password Modification"
     assert "userId" in result.finding.description
     assert "victim@x.com" in result.finding.description
+    assert result.finding.confidence == "likely"  # no login_json_endpoint configured to verify the change actually took effect
 
     userid_calls = [c for c in calls if c.get("userId") == "victim@x.com"]
     assert len(userid_calls) == 2  # set to the probe password, then reverted
@@ -908,6 +921,7 @@ async def test_horizontal_password_change_confirmed_via_relogin_as_the_victim_ac
 
     assert result.status == FAIL
     assert "CONFIRMED" in result.finding.description
+    assert result.finding.confidence == "confirmed"
 
 
 @pytest.mark.asyncio

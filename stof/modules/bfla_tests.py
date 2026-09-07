@@ -111,7 +111,7 @@ class BFLATechniquesMixin:
                 finding = Finding(
                     module_id=self.module_id,
                     vuln_type="Vertical Privilege Escalation / Broken Function Level Authorization",
-                    severity="Critical",
+                    severity="High",
                     cvss_score=8.8,
                     endpoint=endpoint,
                     user_role=self.low_priv_role,
@@ -176,7 +176,7 @@ class BFLATechniquesMixin:
                 continue
             if resp.status in (200, 201, 204):
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.8,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.8,
                     endpoint=endpoint, user_role=self.low_priv_role,
                     request_raw=f"{endpoint.method} {endpoint.url}", response_raw=f"HTTP {resp.status}",
                     description=f"A low-privileged session (role '{self.low_priv_role}') successfully invoked the privileged operation '{endpoint.url}' ({endpoint.method}), receiving HTTP {resp.status}.",
@@ -218,7 +218,7 @@ class BFLATechniquesMixin:
             self.authorization_matrix.record(endpoint, self.low_priv_role, decision)
             if decision == AuthorizationDecision.ALLOWED:
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.7,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.7,
                     endpoint=endpoint, user_role=self.low_priv_role,
                     request_raw=f"GET {endpoint.url}", response_raw=f"HTTP {status}, {len(body)} bytes",
                     description=(
@@ -257,7 +257,7 @@ class BFLATechniquesMixin:
             decision = classify_response(status, body, min_content_length=self.config.min_content_length)
             if decision == AuthorizationDecision.ALLOWED:
                 finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.1,
+                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.1,
                     endpoint=_synthetic_endpoint(url), user_role=self.low_priv_role,
                     request_raw=f"GET {url}", response_raw=f"HTTP {status}, {len(body)} bytes",
                     description=f"'{url}' -- not in the crawler's discovered endpoint list -- is reachable by a low-privileged session (role '{self.low_priv_role}') with a full HTTP {status} response.",
@@ -360,7 +360,7 @@ class BFLATechniquesMixin:
             return None
 
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.1,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.1,
             endpoint=endpoint, user_role=self.low_priv_role,
             request_raw=f"GET {endpoint.url}",
             response_raw=(

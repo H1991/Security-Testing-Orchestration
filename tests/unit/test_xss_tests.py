@@ -211,9 +211,15 @@ async def test_html_body_technique_fails_when_marker_reflects_unencoded(tmp_path
     by_id = _by_id(results)
     assert by_id["TC-128.1"].status == FAIL
     assert by_id["TC-128.1"].finding is not None
-    assert by_id["TC-128.1"].finding.severity == "High"
+    assert by_id["TC-128.1"].finding.severity == "Medium"  # cvss_score=6.1 -- the textbook reflected-XSS reference score, Medium per the CVSS v3.1 scale (4.0-6.9)
     # The marker itself (proof of this-run-only) shows up in the evidence.
     assert module._marker in by_id["TC-128.1"].finding.request_raw
+    # Regression: this technique's own description says "response-
+    # inspection signal only... never rendered in a real browser to
+    # confirm actual script execution" -- the structured confidence
+    # field must actually say so too, not silently default to
+    # "confirmed" while the prose says otherwise.
+    assert by_id["TC-128.1"].finding.confidence == "likely"
 
 
 @pytest.mark.asyncio
@@ -395,6 +401,10 @@ async def test_stored_xss_fails_when_plant_and_verify_both_succeed(tmp_path):
     assert "sendFeedback" in result.finding.description
     assert "admin.jsp" in result.finding.description
     assert module._marker in result.finding.request_raw
+    # Regression: same response-inspection-only gap as the reflected
+    # technique above -- this technique's own description says "never
+    # rendered in a real browser to confirm actual script execution".
+    assert result.finding.confidence == "likely"
 
 
 @pytest.mark.asyncio
@@ -576,6 +586,11 @@ async def test_dom_xss_fails_when_dialog_fires_with_marker(tmp_path):
     # navigation should have happened before the technique returned.
     assert len(page.visited_urls) == 1
     assert "#" in page.visited_urls[0]
+    # Contrast with the reflection/stored techniques' "likely" above:
+    # this one navigated a REAL browser and observed a real triggered
+    # dialog -- actual script execution, not a response-inspection
+    # signal -- so staying at the "confirmed" default is correct.
+    assert result.finding.confidence == "confirmed"
 
 
 @pytest.mark.asyncio

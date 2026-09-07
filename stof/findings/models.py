@@ -29,6 +29,32 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# CVSS v3.1's own qualitative severity rating scale -- the exact mapping
+# every compliance framework that references CVSS (PCI DSS, SOC 2,
+# ISO 27001) expects, and the single source of truth `Finding.
+# __post_init__` below enforces every STOF-generated finding actually
+# follows. Before this existed, ~130 `Finding(...)` call sites across
+# the vuln modules each hand-typed BOTH a severity string and a
+# cvss_score independently, with nothing keeping them in sync -- an
+# audit found 54 of them had drifted (the overwhelming majority
+# inflated, e.g. a CVSS 4.3 "Server Version Disclosure" labeled
+# "Critical"), which is exactly the kind of noise that erodes trust in
+# a tool's real Critical/High findings and would fail a compliance
+# review that checks severity against the reported CVSS score.
+_CVSS_SEVERITY_BANDS: tuple[tuple[float, str], ...] = (
+    (9.0, "Critical"), (7.0, "High"), (4.0, "Medium"), (0.1, "Low"),
+)
+
+
+def severity_for_score(cvss_score: float) -> str:
+    """CVSS v3.1 qualitative severity rating: 0.0 -> Info, 0.1-3.9 ->
+    Low, 4.0-6.9 -> Medium, 7.0-8.9 -> High, 9.0-10.0 -> Critical."""
+    for threshold, label in _CVSS_SEVERITY_BANDS:
+        if cvss_score >= threshold:
+            return label
+    return "Info"
+
+
 @dataclass
 class Finding:
     module_id: str
@@ -60,6 +86,66 @@ class Finding:
     technique_id: str | None = None
     cwe: str | None = None
     owasp_category: str | None = None
+    # "confirmed" (default) -- STOF directly observed the technical effect
+    # its own description claims (a write actually succeeded, a value was
+    # actually echoed back, a real triggered dialog/redirect). "likely" --
+    # a genuinely uncertain signal STOF says so about in its own
+    # description: a timing-based inference, a response-code differential
+    # without content verification, a proven precondition for a
+    # vulnerability class STOF can't independently confirm exists (e.g. a
+    # CSV/Excel export), or an accepted-but-unconfirmable password change
+    # (no login endpoint configured to verify it took effect). Was
+    # previously only ever expressed as free-text prose buried inside
+    # `description` -- e.g. "CONFIRMED: ..." vs "Unconfirmed via
+    # re-login..." -- with no way for a human triager or the report layer
+    # to filter on it. Every one of the ~15 call sites across this
+    # project's modules that already had this distinction in prose now
+    # also sets this field explicitly; every other call site keeps the
+    # "confirmed" default unchanged.
+    confidence: str = "confirmed"
+    # The full CVSS v3.1 vector (`CVSS:3.1/AV:N/AC:L/...`) `cvss_score`
+    # was computed from -- stamped centrally by `extract_findings()`
+    # (see `stof.findings.cvss.cvss_vector_for_finding`), never set
+    # directly at a `Finding(...)` call site. `None` when no real CVSS
+    # v3.1 metric combination reproduces this exact `cvss_score` (a
+    # genuine, if rare, gap in CVSS's own discrete scoring space -- see
+    # that module's docstring) -- never a fabricated vector.
+    cvss_vector: str | None = None
+    # The role of the SECOND, genuinely different identity that cross-
+    # session-confirmed this finding (see `idor_tests.py`'s
+    # `_confirm_cross_session`) -- `None` when no such confirmation ran
+    # (single-session evidence only, or a vuln class this doesn't apply
+    # to). Exists so a downstream consumer that wants to independently
+    # verify a finding (Burp evidence capture) knows there's a second,
+    # real authenticated identity worth replaying alongside `user_role`,
+    # not just the one that first observed the distinct content.
+    confirmed_role: str | None = None
+
+    def __post_init__(self) -> None:
+        # Only for STOF's own findings -- a Burp-imported finding
+        # (`scanner_source == "burp"`, Phase 2) carries Burp's own
+        # severity judgment, which legitimately isn't always a pure
+        # function of a CVSS score alone (Burp has "Information"-level
+        # findings with no CVSS score at all, for instance), and this
+        # project has no business overriding another scanner's own
+        # classification. For STOF's own findings, though, severity and
+        # cvss_score are two views of the exact same, single judgment
+        # call this codebase makes at Finding-construction time -- there
+        # is no legitimate reason for them to ever disagree, and 54
+        # already had before this check existed (see `severity_for_
+        # score`'s own docstring). Raising here (not silently
+        # normalizing) means a new technique that reintroduces this bug
+        # fails its own unit test immediately, not "eventually, in a
+        # report a compliance reviewer flags."
+        if self.scanner_source == "stof":
+            expected = severity_for_score(self.cvss_score)
+            if self.severity != expected:
+                raise ValueError(
+                    f"Finding(vuln_type={self.vuln_type!r}) has severity={self.severity!r} but "
+                    f"cvss_score={self.cvss_score} maps to {expected!r} on the CVSS v3.1 scale -- "
+                    "these must match for a STOF-generated finding. Fix the severity= argument "
+                    "at the Finding(...) call site (see severity_for_score())."
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -80,6 +166,9 @@ class Finding:
             "technique_id": self.technique_id,
             "cwe": self.cwe,
             "owasp_category": self.owasp_category,
+            "confidence": self.confidence,
+            "cvss_vector": self.cvss_vector,
+            "confirmed_role": self.confirmed_role,
         }
 
     @classmethod
@@ -104,6 +193,9 @@ class Finding:
             technique_id=data.get("technique_id"),
             cwe=data.get("cwe"),
             owasp_category=data.get("owasp_category"),
+            confidence=data.get("confidence", "confirmed"),
+            cvss_vector=data.get("cvss_vector"),
+            confirmed_role=data.get("confirmed_role"),
         )
 
     def to_row(self) -> dict[str, Any]:
@@ -128,6 +220,9 @@ class Finding:
             "technique_id": self.technique_id,
             "cwe": self.cwe,
             "owasp_category": self.owasp_category,
+            "confidence": self.confidence,
+            "cvss_vector": self.cvss_vector,
+            "confirmed_role": self.confirmed_role,
         }
 
     @classmethod
@@ -152,4 +247,7 @@ class Finding:
             technique_id=row.get("technique_id"),
             cwe=row.get("cwe"),
             owasp_category=row.get("owasp_category"),
+            confidence=row.get("confidence") or "confirmed",
+            cvss_vector=row.get("cvss_vector"),
+            confirmed_role=row.get("confirmed_role"),
         )

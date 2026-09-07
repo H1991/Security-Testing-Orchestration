@@ -63,6 +63,11 @@
   .tech-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .tech-tag { background: #eef2f7; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; font-size: 12px; }
   .recon-empty { color: var(--muted); font-size: 12.5px; }
+  .section-title.priority { color: var(--ink); border-bottom-color: var(--critical); font-size: 17px; letter-spacing: 0; text-transform: none; }
+  .section-title.secondary { margin-top: 46px; }
+  .section-clean { background: var(--card); border: 1px solid var(--border); border-left: 6px solid var(--low); border-radius: 8px; padding: 16px 20px; margin-bottom: 18px; color: var(--muted); font-size: 13.5px; }
+  .badge.confidence-likely { background: #fff3e0; color: #8a5300; border: 1px solid #f0c987; margin-left: 8px; }
+  code.inline { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; background: #eef2f7; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
 </style>
 </head>
 <body>
@@ -75,9 +80,10 @@
     {% if scan_metadata.modules_run %} &nbsp;·&nbsp; Modules: {{ scan_metadata.modules_run | join(", ") }}{% endif %}
   </div>
   <div class="meta" style="margin-top:6px; opacity:0.85;">
-    * Severity Score is this program's own illustrative approximation of impact, not a calculated CVSS vector
-    score (no CVSS vector -- AV/AC/PR/UI/S/C/I/A -- is computed for any finding). Use severity (Critical/High/
-    Medium/Low/Info) as the authoritative rating; treat the numeric score as a rough ranking aid only.
+    * Severity Score is the base score of the CVSS v3.1 vector shown on each finding below (independently
+    recomputable from that vector). A finding whose exact score has no real CVSS v3.1 vector shows no vector
+    string -- STOF never fabricates one just to fill the field; use severity (Critical/High/Medium/Low/Info) as
+    the authoritative rating in that case.
   </div>
 </header>
 <main>
@@ -99,18 +105,18 @@
   </div>
   {% endif %}
 
-  <h2 class="section-title">Vulnerability Findings</h2>
-  {% if findings %}
-    {% for f in findings %}
+  {% macro finding_card(f) %}
     <article class="finding sev-{{ f.severity | lower }}">
       <div class="finding-head">
         <h2>{{ f.vuln_type }}</h2>
         <span class="badge sev-{{ f.severity | lower }}">{{ f.severity }} &middot; Severity Score {{ f.cvss_score }}*</span>
+        {% if f.confidence == "likely" %}<span class="badge confidence-likely">Needs Manual Confirmation</span>{% endif %}
       </div>
       <dl>
         <dt>Endpoint</dt><dd>{{ f.endpoint.method }} {{ f.endpoint.url }}</dd>
         <dt>Tested as role</dt><dd>{{ f.user_role }}</dd>
         <dt>Found by</dt><dd>{{ "Burp Suite Pro" if f.scanner_source == "burp" else "STOF" }}</dd>
+        <dt>CVSS v3.1 Vector</dt><dd>{% if f.cvss_vector %}<code class="inline">{{ f.cvss_vector }}</code>{% else %}<span style="color: var(--muted);">not available for this exact score</span>{% endif %}</dd>
         <dt>Discovered</dt><dd>{{ f.discovered_at }}</dd>
         <dt>Description</dt><dd>{{ f.description }}</dd>
         <dt>Recommendation</dt><dd>{{ f.recommendation }}</dd>
@@ -131,9 +137,20 @@
       </div>
       {% endif %}
     </article>
-    {% endfor %}
+  {% endmacro %}
+
+  <h2 class="section-title priority">Critical &amp; High Severity &mdash; Requires Action ({{ priority_findings | length }})</h2>
+  {% if priority_findings %}
+    {% for f in priority_findings %}{{ finding_card(f) }}{% endfor %}
   {% else %}
-    <div class="empty">No findings were confirmed in this scan.</div>
+    <div class="section-clean">No Critical or High severity findings in this scan.</div>
+  {% endif %}
+
+  <h2 class="section-title secondary">Additional Findings &mdash; Medium / Low / Info ({{ other_findings | length }})</h2>
+  {% if other_findings %}
+    {% for f in other_findings %}{{ finding_card(f) }}{% endfor %}
+  {% else %}
+    <div class="empty">No additional findings.</div>
   {% endif %}
 
   {% if module_notes %}

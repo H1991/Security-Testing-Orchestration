@@ -373,7 +373,7 @@ class XssTestsModule(VulnModule):
         self, technique_id: str, technique_name: str, context_label: str,
         candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
         vuln_type: str = "Reflected Cross-Site Scripting",
-        severity: str = "High", cvss_score: float = 6.1,
+        severity: str = "Medium", cvss_score: float = 6.1,
         side_effect_note: str = (
             "and its only side effect is a harmless confirm() dialog tagged with this run's own random marker"
         ),
@@ -409,6 +409,16 @@ class XssTestsModule(VulnModule):
                 response_raw=body[:300],
                 description=description,
                 recommendation="HTML-encode all untrusted output at the point it's rendered (context-aware encoding for HTML body, attribute, and script/event-handler positions); do not rely on input validation alone.",
+                # This technique's own description says so explicitly:
+                # "response-inspection signal only... never rendered in a
+                # real browser to confirm actual script execution" -- a
+                # real bug found via code audit (same class as idor_
+                # tests.py's own confidence bug): the prose already said
+                # unconfirmed, but the structured field defaulted to
+                # "confirmed" anyway, so the report's "Needs Manual
+                # Confirmation" badge never fired for exactly the
+                # reflected-XSS findings that most need it.
+                confidence="likely",
             )
             finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"xss-{technique_id}-{param}") if evidence else []
             return self._result(technique_id, technique_name, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, vuln_type=vuln_type)
@@ -486,7 +496,7 @@ class XssTestsModule(VulnModule):
                     "random marker."
                 )
                 finding = Finding(
-                    module_id=self.module_id, vuln_type="Stored Cross-Site Scripting", severity="Critical", cvss_score=8.8,
+                    module_id=self.module_id, vuln_type="Stored Cross-Site Scripting", severity="High", cvss_score=8.8,
                     endpoint=verify_endpoint, user_role=self.config.high_priv_role,
                     request_raw=(
                         f"PLANT: {plant_endpoint.method} {plant_endpoint.url}\n{plant_field}={payload!r}\n"
@@ -495,6 +505,11 @@ class XssTestsModule(VulnModule):
                     response_raw=verify_body[:300],
                     description=description,
                     recommendation="HTML-encode all untrusted output at the point it's rendered, on every endpoint that displays stored content -- not just the endpoint it was submitted through; do not rely on input validation alone.",
+                    # Same response-inspection-only gap as
+                    # `_technique_reflection` above -- this technique's own
+                    # description already says "never rendered in a real
+                    # browser to confirm actual script execution".
+                    confidence="likely",
                 )
                 finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="xss-stored") if evidence else []
                 return self._result(tid, technique, FAIL, description, role=self.config.high_priv_role, endpoint=verify_endpoint, finding=finding, vuln_type="Stored Cross-Site Scripting")
@@ -610,7 +625,7 @@ class XssTestsModule(VulnModule):
                         "was auto-dismissed immediately and had no other effect."
                     )
                     finding = Finding(
-                        module_id=self.module_id, vuln_type="DOM-based Cross-Site Scripting", severity="High", cvss_score=6.1,
+                        module_id=self.module_id, vuln_type="DOM-based Cross-Site Scripting", severity="Medium", cvss_score=6.1,
                         endpoint=endpoint, user_role=self.config.low_priv_role,
                         request_raw=f"GET {probe_url}",
                         response_raw=f"triggered dialog message: {message!r}",

@@ -75,7 +75,7 @@ def test_test_result_logs_pass_and_fail_distinctly(tmp_path):
     from stof.crawler.endpoint_store import Endpoint
     from stof.findings.models import Finding
     finding = Finding(
-        module_id="idor_tests", vuln_type="IDOR", severity="Critical", cvss_score=8.1,
+        module_id="idor_tests", vuln_type="IDOR", severity="High", cvss_score=8.1,
         endpoint=Endpoint(url="https://x/a", method="GET", endpoint_type="api"),
         user_role="admin", request_raw="GET x", response_raw="HTTP 200", description="d", recommendation="r",
     )
@@ -174,6 +174,48 @@ def test_summary_table_includes_grand_total(tmp_path):
     assert "idor_tests" in content
     assert "jwt_tests" in content
     assert "TOTAL" in content
+
+
+def test_findings_by_severity_lists_nonzero_severities(tmp_path):
+    console = ScanConsole("abc123", log_dir=tmp_path)
+
+    console.findings_by_severity({"Critical": 2, "High": 1, "Medium": 0})
+    console.close()
+
+    content = console.log_path.read_text(encoding="utf-8")
+    assert "Critical 2" in content
+    assert "High 1" in content
+    assert "Medium 0" not in content  # zero-count severities are omitted
+
+
+def test_findings_by_severity_shows_none_when_empty(tmp_path):
+    console = ScanConsole("abc123", log_dir=tmp_path)
+
+    console.findings_by_severity({})
+    console.close()
+
+    content = console.log_path.read_text(encoding="utf-8")
+    assert "none" in content
+
+
+def test_findings_by_severity_flags_unconfirmed_critical_high(tmp_path):
+    console = ScanConsole("abc123", log_dir=tmp_path)
+
+    console.findings_by_severity({"Critical": 3}, critical_high_likely=2)
+    console.close()
+
+    content = console.log_path.read_text(encoding="utf-8")
+    assert "2 Critical/High finding(s) need manual confirmation" in content
+
+
+def test_findings_by_severity_omits_confirmation_line_when_zero(tmp_path):
+    console = ScanConsole("abc123", log_dir=tmp_path)
+
+    console.findings_by_severity({"Critical": 3}, critical_high_likely=0)
+    console.close()
+
+    content = console.log_path.read_text(encoding="utf-8")
+    assert "need manual confirmation" not in content
 
 
 def test_application_profile_lists_role_auth_types_and_skips(tmp_path):

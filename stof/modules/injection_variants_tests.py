@@ -270,12 +270,13 @@ class InjectionVariantsTestsModule(VulnModule):
                 "review -- it does not by itself prove an exploitable filter bypass or access-control gap."
             )
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Low", cvss_score=4.3,
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=4.3,
                 endpoint=endpoint, user_role=self.config.low_priv_role,
                 request_raw=f"{endpoint.method} {endpoint.url}\n{target_param}={value_a}&{target_param}={value_b}",
                 response_raw=body_p[:300],
                 description=description,
                 recommendation="Ensure every layer in the request path (WAF, load balancer, framework, application code) parses a duplicated parameter identically -- explicitly reject requests with duplicate parameter names where the framework allows it, rather than relying on whichever layer's implicit first/last behavior happens to match.",
+                confidence="likely",  # evidence of inconsistent parsing, not by itself proof of an exploitable bypass -- see description
             )
             finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="hpp-inconsistent-parsing") if evidence else []
             return self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Low")
@@ -346,6 +347,7 @@ class InjectionVariantsTestsModule(VulnModule):
                     response_raw=verify_body[:300],
                     description=description,
                     recommendation="Prefix any cell value beginning with =, +, -, or @ with a leading apostrophe (or strip/neutralize the leading character) before it can reach a CSV/Excel export, on every endpoint that displays or exports stored user-supplied content.",
+                    confidence="likely",  # proves the precondition (unescaped survival), not a confirmed CSV export -- see description
                 )
                 finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="csv-formula-injection") if evidence else []
                 return self._result(tid, technique, FAIL, description, vuln_type, role=self.config.high_priv_role, endpoint=verify_endpoint, finding=finding, severity="Medium")

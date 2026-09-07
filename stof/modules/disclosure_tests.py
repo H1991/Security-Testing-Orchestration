@@ -441,7 +441,7 @@ class DisclosureTestsModule(VulnModule):
             return None
         labels = sorted({m.label for m in matches})
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=6.5,
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
             endpoint=endpoint, user_role=self.config.high_priv_role,
             request_raw=f"GET {endpoint.url}",
             response_raw=f"HTTP {status}, {len(matches)} PII match(es): {', '.join(labels)}",
@@ -486,7 +486,7 @@ class DisclosureTestsModule(VulnModule):
             return None
         labels = sorted({m.label for m in matches})
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=6.5,
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
             endpoint=endpoint, user_role=self.config.high_priv_role,
             request_raw=f"GET {probe_url}",
             response_raw=f"HTTP {status}, {len(matches)} PII match(es) in error response: {', '.join(labels)}",
@@ -515,7 +515,7 @@ class DisclosureTestsModule(VulnModule):
         endpoint, matches = flagged[0]
         labels = sorted({m.label for m in matches}) or ["PII-named parameter"]
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=5.3,
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
             endpoint=endpoint, user_role=self.config.high_priv_role,
             request_raw=f"{endpoint.method} {endpoint.url}",
             response_raw=f"{len(flagged)} discovered URL(s) contain apparent PII: {', '.join(labels)}",
@@ -652,7 +652,7 @@ class DisclosureTestsModule(VulnModule):
             return None
         labels = sorted({m.label for m in matches})
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.5,
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
             endpoint=endpoint, user_role=self.config.high_priv_role,
             request_raw=f"GET {endpoint.url}",
             response_raw=f"HTTP {status}, {len(matches)} match(es) hidden in HTML comment/inline-script: {', '.join(labels)}",
@@ -719,7 +719,7 @@ class DisclosureTestsModule(VulnModule):
         labels = sorted({m.label for _key, m in hits})
         keys = sorted({key for key, _m in hits})
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=6.5,
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
             endpoint=endpoint, user_role=self.config.high_priv_role,
             request_raw=f"GET {endpoint.url} (page.evaluate: Object.entries(localStorage)/Object.entries(sessionStorage))",
             response_raw=f"{len(hits)} PII match(es) in client storage key(s) {', '.join(keys)}: {', '.join(labels)}",

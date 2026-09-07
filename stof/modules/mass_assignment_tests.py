@@ -20,7 +20,13 @@ import json as json_module
 from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
-from ._idor_shared import _content_fingerprint, _method_request_fn, _object_ref_endpoints
+from ._idor_shared import (
+    _content_fingerprint,
+    _control_fingerprint_body_field,
+    _exclude_control_fingerprint,
+    _method_request_fn,
+    _object_ref_endpoints,
+)
 from .results import FAIL, PASS, SKIPPED, TestCaseResult
 
 _log = get_logger("modules.mass_assignment_tests")
@@ -51,21 +57,29 @@ class MassAssignmentTechniquesMixin:
         drops to setup + orchestration only -- same branches, same
         order, just named and separated."""
         responses: dict[str, str] = {}
+        method_fn = _method_request_fn(context, endpoint.method.upper())
         for candidate in self.config.candidate_ids:
             payload = {param: candidate}
             try:
-                resp = await _method_request_fn(context, endpoint.method.upper())(endpoint.url, data=json_module.dumps(payload), headers={"Content-Type": "application/json"}, max_redirects=0)
+                resp = await method_fn(endpoint.url, data=json_module.dumps(payload), headers={"Content-Type": "application/json"}, max_redirects=0)
                 body = await resp.text()
             except Exception as exc:
                 _log.warning(f"body-field probe failed for {endpoint.url}: {exc}")
                 continue
             if resp.status == 200 and len(body) >= self.config.min_content_length:
                 responses[candidate] = body
+        # Same false-positive guard idor_tests.py's own _probe_candidates
+        # applies: discard any candidate indistinguishable from a
+        # control/baseline probe (a soft-error response that echoes the
+        # submitted value back, e.g., would otherwise look like 2+ real
+        # distinct objects).
+        control_fp = await _control_fingerprint_body_field(method_fn, endpoint.url, param, self.config.min_content_length)
+        responses = _exclude_control_fingerprint(responses, control_fp)
         distinct = {_content_fingerprint(b) for b in responses.values()}
         if len(responses) >= 2 and len(distinct) >= 2:
             sample_ids = list(responses.keys())[:3]
             finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.1,
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.1,
                 endpoint=endpoint, user_role=self.high_priv_role,
                 request_raw="\n".join(f"{endpoint.method} {endpoint.url}\n{{\"{param}\": \"{cid}\"}}" for cid in sample_ids),
                 response_raw="\n".join(f"[{param}={cid}] {len(responses[cid])} bytes" for cid in sample_ids),
@@ -112,7 +126,7 @@ class MassAssignmentTechniquesMixin:
         if resp.status not in (200, 201) or not ('"role":"admin"' in body.replace(" ", "").lower() or '"isadmin":true' in body.replace(" ", "").lower()):
             return None
         finding = Finding(
-            module_id=self.module_id, vuln_type="Privilege Escalation via Mass Assignment", severity="Critical", cvss_score=8.8,
+            module_id=self.module_id, vuln_type="Privilege Escalation via Mass Assignment", severity="High", cvss_score=8.8,
             endpoint=endpoint, user_role=self.low_priv_role,
             request_raw=f"{endpoint.method} {endpoint.url}\nContent-Type: application/json\n\n{json_module.dumps(payload)}",
             response_raw=f"HTTP {resp.status}, {body[:300]}",

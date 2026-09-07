@@ -227,7 +227,7 @@ class DeserializationTestsModule(VulnModule):
             return None
         finding = Finding(
             module_id=self.module_id, vuln_type="Insecure Deserialization (polymorphic type handling)",
-            severity="Critical", cvss_score=8.1, endpoint=endpoint, user_role=self.config.high_priv_role,
+            severity="High", cvss_score=8.1, endpoint=endpoint, user_role=self.config.high_priv_role,
             request_raw=f"POST {endpoint.url}\nContent-Type: application/json\n\n{json_module.dumps(marker)}",
             response_raw=f"HTTP {resp.status}, {body[:300]}",
             description=(
@@ -237,6 +237,11 @@ class DeserializationTestsModule(VulnModule):
                 "This probe used a harmless class name and did not attempt exploitation."
             ),
             recommendation="Disable polymorphic type handling entirely, or restrict it to an explicit allow-list of expected types -- never let client input name the class to instantiate.",
+            # The description above says so explicitly: "this probe used
+            # a harmless class name and did not attempt exploitation" --
+            # a deserialization-shaped error signal, not a confirmed
+            # gadget-chain RCE.
+            confidence="likely",
         )
         finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"deserialization-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
         return finding

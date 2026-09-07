@@ -2,25 +2,12 @@
   "target": {
     "base_url": "https://test.kapturekm.com/kauthor/login",
     "login_url": "https://test.kapturekm.com/kauthor/login",
+    "requires_assisted_login": false,
     "crawler_exclude_patterns": [
       "content=inside_",
       "survey_questions",
       "privacypolicy"
-    ],
-    "idor_candidate_ids": [
-      "800000",
-      "800001",
-      "800002",
-      "800003",
-      "800004",
-      "800005",
-      "800006",
-      "800007",
-      "800008",
-      "800009",
-      "800010"
-    ],
-    "requires_assisted_login": false
+    ]
   },
   "browser": {
     "headless": true,
@@ -62,6 +49,7 @@
     "run_active_scan": false
   },
   "testing": {
-    "allow_state_changing_probes": true
+    "allow_state_changing_probes": true,
+    "scan_intensity": "standard"
   }
 }

@@ -158,7 +158,7 @@ async def test_hpp_fails_when_polluted_response_reflects_both_values(tmp_path):
     assert result.status == FAIL
     assert result.finding is not None
     assert "id" in result.finding.description
-    assert result.finding.severity == "Low"
+    assert result.finding.severity == "Medium"  # cvss_score=4.3 -- Medium per the CVSS v3.1 scale (4.0-6.9)
 
 
 @pytest.mark.asyncio

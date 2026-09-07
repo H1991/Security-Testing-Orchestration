@@ -28,6 +28,7 @@ from stof.main import (
     _coverage_funnel,
     _endpoints_from_discovered_routes,
     _findings_from_recon_secrets,
+    _grow_shared_candidate_ids,
     _looks_like_driver_dead,
     _module_hit_dead_driver,
     _module_note,
@@ -299,7 +300,7 @@ async def test_run_scan_writes_a_log_file(tmp_path):
 def _finding(module_id: str) -> Finding:
     endpoint = Endpoint(url="https://x/a", method="GET", endpoint_type="page", parameters=[])
     return Finding(
-        module_id=module_id, vuln_type="X", severity="Critical", cvss_score=8.1, endpoint=endpoint,
+        module_id=module_id, vuln_type="X", severity="High", cvss_score=8.1, endpoint=endpoint,
         user_role="admin", request_raw="GET x", response_raw="HTTP 200", description="d", recommendation="r",
         discovered_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
     )
@@ -311,6 +312,61 @@ def test_module_note_counts_findings_for_that_module_only():
     note = _module_note("idor_tests", findings)
 
     assert note == {"module": "idor_tests", "finding_count": 2, "note": None}
+
+
+# ---------------------------------------------------------------------------
+# _grow_shared_candidate_ids -- cross-module identifier sharing
+# ---------------------------------------------------------------------------
+
+
+def _finding_with_leaked_id(leaked_id: str) -> Finding:
+    endpoint = Endpoint(url="https://x/a", method="GET", endpoint_type="page", parameters=[])
+    return Finding(
+        module_id="disclosure_tests", vuln_type="PII Exposure via API Response", severity="Medium", cvss_score=6.5,
+        endpoint=endpoint, user_role="admin", request_raw="GET x",
+        response_raw=f'{{"accountId": "{leaked_id}", "email": "a@x.com"}}',
+        description="d", recommendation="r", discovered_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+
+def test_grow_shared_candidate_ids_adds_a_newly_leaked_id():
+    shared = ["1", "2"]
+    console = _FakeConsole()
+
+    _grow_shared_candidate_ids(shared, [_finding_with_leaked_id("800047")], "disclosure_tests", console)
+
+    assert "800047" in shared
+    assert any("1 new object id candidate" in msg for msg in console.infos)
+
+
+def test_grow_shared_candidate_ids_skips_an_already_known_id():
+    shared = ["800047"]
+    console = _FakeConsole()
+
+    _grow_shared_candidate_ids(shared, [_finding_with_leaked_id("800047")], "disclosure_tests", console)
+
+    assert shared == ["800047"]  # not duplicated
+    assert console.infos == []  # nothing NEW to announce
+
+
+def test_grow_shared_candidate_ids_respects_the_cap():
+    shared = [str(i) for i in range(60)]  # already at the default cap
+    console = _FakeConsole()
+
+    _grow_shared_candidate_ids(shared, [_finding_with_leaked_id("800047")], "disclosure_tests", console)
+
+    assert len(shared) == 60
+    assert "800047" not in shared
+
+
+def test_grow_shared_candidate_ids_no_op_on_empty_findings():
+    shared = ["1", "2"]
+    console = _FakeConsole()
+
+    _grow_shared_candidate_ids(shared, [], "disclosure_tests", console)
+
+    assert shared == ["1", "2"]
+    assert console.infos == []
 
 
 def test_module_note_explains_zero_jwt_findings_when_no_jwt_role_configured():
@@ -579,6 +635,23 @@ def test_build_module_builders_uses_configured_idor_ids():
     module = builders["idor_tests"]()
 
     assert module.config.candidate_ids == ["800000", "800001"]
+
+
+def test_build_module_builders_uses_the_shared_candidate_ids_list_by_reference():
+    """When given, `shared_candidate_ids` is used AS-IS (not copied) --
+    growing it in place after this call must be visible to a module
+    built from the SAME `_build_module_builders()` call, since Python
+    closures are late-binding. See `_grow_shared_candidate_ids`'s own
+    docstring for why this matters."""
+    config = _config()
+    shared = ["1", "2"]
+
+    builders = _build_module_builders(config, [], {}, shared_candidate_ids=shared)
+    shared.append("800001")  # simulates a later module's own discovery
+    module = builders["idor_tests"]()
+
+    assert module.config.candidate_ids is shared
+    assert "800001" in module.config.candidate_ids
 
 
 def test_build_module_builders_passes_through_jwt_roles():

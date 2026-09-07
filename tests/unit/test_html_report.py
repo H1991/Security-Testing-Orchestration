@@ -4,13 +4,13 @@ from datetime import datetime, timezone
 
 from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
-from stof.reporting.html_report import _evidence_images, _summarize_recon, write
+from stof.reporting.html_report import _evidence_images, _split_by_priority, _summarize_recon, write
 
 
 def _finding(**overrides) -> Finding:
     endpoint = Endpoint(url="https://x/bank/showAccount", method="GET", endpoint_type="api", parameters=["listAccounts"])
     defaults = dict(
-        module_id="idor_tests", vuln_type="Insecure Direct Object Reference (IDOR)", severity="Critical",
+        module_id="idor_tests", vuln_type="Insecure Direct Object Reference (IDOR)", severity="High",
         cvss_score=8.1, endpoint=endpoint, user_role="admin", request_raw="GET x", response_raw="HTTP 200",
         description="A single session accessed multiple accounts.", recommendation="Enforce ownership checks.",
         discovered_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
@@ -85,24 +85,47 @@ def test_write_embeds_screenshot_as_base64_when_available(tmp_path):
 
 def test_write_labels_cvss_score_as_illustrative_not_a_real_cvss(tmp_path):
     """Same fix as excel_report.py's Severity Score column, applied to
-    the HTML badge -- every cvss_score value is a hardcoded illustrative
-    constant (never computed from a real CVSS vector), so the report
-    must never present it as an unqualified "CVSS" score a client could
-    mistake for a calculated one."""
+    the HTML badge -- the report must never present the numeric score
+    as an unqualified "CVSS" label a client could mistake for something
+    with no independently-verifiable backing."""
     findings = [_finding()]
     path = write(findings, {}, tmp_path / "report.html")
 
     html = path.read_text(encoding="utf-8")
     assert "CVSS 8.1" not in html  # the old, unqualified label
     assert "Severity Score 8.1" in html
-    assert "not a calculated CVSS vector" in html
+
+
+def test_write_shows_a_real_cvss_vector_when_one_reproduces_the_score(tmp_path):
+    """cvss_score is now backed by a real, independently-recomputable
+    CVSS v3.1 vector whenever one exists for that exact score (see
+    stof.findings.cvss) -- the report shows it, not a disclaimer that
+    none was ever computed."""
+    finding = _finding(vuln_type="Insecure Direct Object Reference (IDOR)", cvss_score=8.1)
+    finding.cvss_vector = "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:H"
+
+    path = write([finding], {}, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:U/C:N/I:H/A:H" in html
+
+
+def test_write_is_honest_when_no_vector_reproduces_the_score(tmp_path):
+    finding = _finding()
+    finding.cvss_vector = None
+
+    path = write([finding], {}, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "not available for this exact score" in html
 
 
 def test_write_with_no_findings_shows_empty_state(tmp_path):
     path = write([], {}, tmp_path / "report.html")
 
     html = path.read_text(encoding="utf-8")
-    assert "No findings were confirmed" in html
+    assert "No Critical or High severity findings" in html
+    assert "No additional findings" in html
 
 
 def test_write_escapes_html_in_finding_fields(tmp_path):
@@ -177,3 +200,65 @@ def test_write_includes_module_notes(tmp_path):
     html = path.read_text(encoding="utf-8")
     assert "idor_tests" in html
     assert "Not applicable -- session-cookie based authentication." in html
+
+
+# ---------------------------------------------------------------------------
+# _split_by_priority / the report's Critical-High-first structure
+# ---------------------------------------------------------------------------
+
+
+def test_split_by_priority_separates_critical_high_from_the_rest():
+    findings = [
+        _finding(severity="Medium", cvss_score=5.3).to_dict(),
+        _finding(severity="Critical", cvss_score=9.5).to_dict(),
+        _finding(severity="Low", cvss_score=2.6).to_dict(),
+        _finding(severity="High", cvss_score=8.1).to_dict(),
+    ]
+
+    priority, other = _split_by_priority(findings)
+
+    assert [f["severity"] for f in priority] == ["Critical", "High"]
+    assert [f["severity"] for f in other] == ["Medium", "Low"]
+
+
+def test_split_by_priority_orders_critical_before_high():
+    findings = [
+        _finding(severity="High", cvss_score=7.5, finding_id="a").to_dict(),
+        _finding(severity="Critical", cvss_score=9.5, finding_id="b").to_dict(),
+    ]
+
+    priority, _other = _split_by_priority(findings)
+
+    assert [f["finding_id"] for f in priority] == ["b", "a"]
+
+
+def test_write_leads_with_the_critical_high_section(tmp_path):
+    findings = [_finding(severity="Medium", cvss_score=5.3), _finding(severity="Critical", cvss_score=9.5)]
+
+    path = write(findings, {}, tmp_path / "report.html")
+    html = path.read_text(encoding="utf-8")
+
+    priority_idx = html.index("Requires Action")
+    additional_idx = html.index("Additional Findings")
+    assert priority_idx < additional_idx
+
+
+def test_write_shows_confirmation_badge_only_for_likely_findings(tmp_path):
+    findings = [
+        _finding(confidence="likely", vuln_type="Timing-Based SSRF Signal"),
+        _finding(confidence="confirmed", vuln_type="Confirmed BFLA"),
+    ]
+
+    path = write(findings, {}, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert html.count("Needs Manual Confirmation") == 1
+
+
+def test_write_shows_clean_state_when_no_priority_findings(tmp_path):
+    findings = [_finding(severity="Low", cvss_score=2.6)]
+
+    path = write(findings, {}, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "No Critical or High severity findings" in html

@@ -151,7 +151,7 @@ class GraphQLTestsModule(VulnModule):
         if not (status == 200 and body and "errors" not in body and body.get("data", {}).get(field_name) is not None):
             return None
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.2,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.2,
             endpoint=endpoint, user_role=self.config.low_priv_role,
             request_raw=f"POST {endpoint.url}\n\nquery {{ {field_name} }}",
             response_raw=raw[:300],
@@ -201,7 +201,7 @@ class GraphQLTestsModule(VulnModule):
         if not (status == 200 and errors and not self._looks_like_auth_denial(errors)):
             return None
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.5,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
             endpoint=endpoint, user_role=self.config.low_priv_role,
             request_raw=f"POST {endpoint.url}\n\nmutation {{ {mutation_name} }}",
             response_raw=raw[:300],
@@ -301,7 +301,7 @@ class GraphQLTestsModule(VulnModule):
                                  role=self.config.low_priv_role, endpoint=endpoint)
 
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=7.5,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
             endpoint=endpoint, user_role=self.config.low_priv_role,
             request_raw=f"POST {endpoint.url}\n\n{batch_query}",
             response_raw=batch_raw[:300],
@@ -371,7 +371,7 @@ class GraphQLTestsModule(VulnModule):
         if value is None:
             return None
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.1,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.1,
             endpoint=endpoint, user_role=self.config.low_priv_role,
             request_raw=f"POST {endpoint.url}\n\n{query}",
             response_raw=raw[:300],

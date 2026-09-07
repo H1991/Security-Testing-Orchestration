@@ -563,29 +563,59 @@
   .status-badge.stopped { background: var(--medium-soft); color: var(--medium); }
   .empty-row td { padding: 40px 14px; text-align: center; color: var(--text-faint); }
 
-  /* modules grid */
-  .mods-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-  .mod-card { position: relative; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; display: flex; flex-direction: column; gap: 10px; }
-  .mod-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; padding-right: 46px; }
-  .mod-card-top::-webkit-details-marker { display: none; }
-  .mod-card h4 { font-size: 14.5px; font-weight: 700; }
-  .mod-card .layer { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 3px; }
-  /* The enable/disable switch is a sibling of <summary>, not nested
-     inside it (a <label>/checkbox descendant of <summary> is an
-     accessibility violation -- nested interactive controls inside an
-     already-interactive <summary> break keyboard/screen-reader
-     navigation, confirmed via Chrome DevTools' own "Disallowed
-     descendant" audit against this exact markup). Positioned to sit
-     visually where it always did, top-right of the card. */
-  .mod-card-switch { position: absolute; top: 16px; right: 16px; }
-  .mod-card-foot { display: flex; align-items: center; justify-content: space-between; margin-top: auto; padding-top: 4px; }
-  .tc-count { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
-  .mod-tc-list { display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
-  .mod-tc-row { background: var(--surface-2); border-radius: 6px; padding: 10px 12px; }
-  .mod-tc-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .mod-tc-head .finding-name { font-size: 13.5px; flex: 1; }
-  .mod-tc-desc { margin: 6px 0 0; font-size: 12.5px; color: var(--text-muted); line-height: 1.55; }
-  .mod-tc-compliance { margin-top: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); }
+  /* ---------------------------------------------------------------
+     Test Cases page -- dense, tabular, high-contrast. Deliberately
+     departs from this app's soft-card language on this ONE page (a
+     genuine data-table screen, not a form): sharp corners, hairline
+     row dividers instead of card shadows, monospace for every id/count,
+     uppercase tracked micro-labels for structural headers. Reuses the
+     existing color tokens (--critical/--high/--border/--surface, etc.)
+     rather than introducing a second palette, so it still reads as
+     part of the same app, not a bolted-on skin.
+     --------------------------------------------------------------- */
+  .cov-statrow { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--border); border-radius: 0; overflow: hidden; }
+  .cov-stat { padding: 14px 18px; border-right: 1px solid var(--border); display: flex; align-items: baseline; gap: 10px; }
+  .cov-stat:last-child { border-right: none; }
+  .cov-stat-label { font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-faint); }
+  .cov-stat-value { font-family: var(--mono); font-size: 22px; font-weight: 700; letter-spacing: -0.02em; }
+  @media (max-width: 720px) { .cov-statrow { grid-template-columns: 1fr; } .cov-stat { border-right: none; border-bottom: 1px solid var(--border); } .cov-stat:last-child { border-bottom: none; } }
+
+  .cov-table-wrap { border: 1px solid var(--border); border-radius: 0; overflow-x: auto; }
+  .cov-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .cov-table thead th {
+    text-align: left; font-family: var(--mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-faint); font-weight: 600; padding: 10px 12px; border-bottom: 1px solid var(--border);
+    background: var(--surface-2); white-space: nowrap;
+  }
+  .cov-table td { padding: 10px 12px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .cov-table .mono { font-family: var(--mono); }
+  .cov-col-expand { width: 28px; }
+  .cov-col-id { width: 80px; white-space: nowrap; }
+  .cov-col-sev { width: 100px; }
+  .cov-col-num { width: 90px; text-align: right; }
+  .cov-col-enabled { width: 70px; }
+  td.cov-col-num { text-align: right; }
+  .cov-loading { text-align: center; color: var(--text-faint); padding: 32px 12px !important; font-size: 13px; }
+
+  .cov-family-row td {
+    background: var(--surface-2); font-family: var(--mono); font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.09em; color: var(--text-muted); padding: 7px 12px;
+  }
+  .cov-module-row { background: var(--surface); }
+  .cov-module-row.is-disabled { opacity: 0.5; }
+  .cov-module-row.is-disabled .cov-module-name { text-decoration: line-through; text-decoration-color: var(--text-faint); }
+  .cov-module-name { font-weight: 700; }
+  .cov-expand-btn {
+    background: none; border: none; cursor: pointer; color: var(--text-faint); font-size: 11px;
+    width: 20px; height: 20px; line-height: 1; padding: 0;
+  }
+  .cov-expand-btn:hover { color: var(--text); }
+
+  .cov-tc-row td { background: var(--bg); }
+  .cov-tc-name { padding-left: 28px !important; }
+  .cov-tc-connector { color: var(--text-faint); margin-right: 6px; font-family: var(--mono); }
+  .cov-tc-summary { margin: 3px 0 0 20px; font-size: 12px; color: var(--text-muted); line-height: 1.55; font-weight: 400; max-width: 52ch; }
+  .cov-standard { font-size: 11px; color: var(--text-faint); max-width: 220px; }
 
   /* risk trend chart */
   .sev-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; font-size: 12.5px; color: var(--text-muted); }
@@ -736,47 +766,6 @@
   .scan-new-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
   .scan-new-side { display: flex; flex-direction: column; gap: 16px; min-width: 0; position: sticky; top: 0; }
   .scan-new-name-field { margin: 0; }
-
-  .scan-new-module-search {
-    display: flex; align-items: center; gap: 8px; padding: 8px 11px; margin: 0 0 12px;
-    border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2);
-  }
-  .scan-new-module-search svg { flex-shrink: 0; color: var(--text-faint); }
-  .scan-new-module-search input {
-    border: none; background: transparent; outline: none; font-size: 13.5px;
-    color: var(--text); width: 100%; font-family: var(--sans);
-  }
-  .scan-new-module-search input::placeholder { color: var(--text-faint); }
-
-  .scan-new-module-family { margin-bottom: 16px; }
-  .scan-new-module-family:last-child { margin-bottom: 0; }
-  .scan-new-module-family-label {
-    display: flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 700;
-    letter-spacing: 0.07em; text-transform: uppercase; color: var(--text-faint);
-    margin: 0 0 8px 2px;
-  }
-  .scan-new-module-family-label .n { font-family: var(--mono); font-weight: 400; letter-spacing: normal; text-transform: none; }
-  .scan-new-module-grid {
-    display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px;
-  }
-  .scan-new-module-grid label {
-    display: flex; align-items: flex-start; gap: 9px; font-size: 13.5px; padding: 10px 12px;
-    cursor: pointer; border-radius: 8px; border: 1px solid var(--border); background: var(--surface-2);
-    transition: border-color 0.15s ease, background 0.15s ease, transform 100ms ease;
-  }
-  .scan-new-module-grid label:hover { border-color: var(--accent); background: var(--surface); }
-  .scan-new-module-grid label:active { transform: scale(0.98); }
-  .scan-new-module-grid label:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--surface-2)); }
-  .scan-new-module-grid input { margin: 2px 0 0; flex-shrink: 0; }
-  .scan-new-module-grid .mod-name { font-weight: 600; display: block; }
-  .scan-new-module-grid .mod-tc-count { display: block; font-size: 12px; color: var(--text-faint); margin-top: 1px; font-family: var(--mono); }
-  .scan-new-module-no-match { padding: 20px 4px; text-align: center; color: var(--text-faint); font-size: 13.5px; }
-
-  .scan-new-module-skeleton-card {
-    height: 54px; border-radius: 8px; border: 1px solid var(--border);
-    background: linear-gradient(90deg, var(--surface-2) 25%, var(--surface-3) 37%, var(--surface-2) 63%);
-    background-size: 400% 100%; animation: shimmer 1.4s ease infinite;
-  }
 
   .scan-new-workflow-list label {
     display: flex; align-items: center; gap: 8px; font-size: 13.5px; padding: 7px 4px; cursor: pointer; border-radius: 6px;
@@ -1029,7 +1018,7 @@
     <button class="nav-item" data-panel="reports" title="Reports"><span class="ic" aria-hidden="true">▤</span><span class="label-text">Reports</span> <span class="count" id="navReportsCount">0</span></button>
 
     <div class="nav-label">Configuration</div>
-    <button class="nav-item" data-panel="modules" title="Modules"><span class="ic" aria-hidden="true">▦</span><span class="label-text">Modules</span> <span class="count" id="navModulesCount">0</span></button>
+    <button class="nav-item" data-panel="coverage" title="Test Cases"><span class="ic" aria-hidden="true">▦</span><span class="label-text">Test Cases</span> <span class="count" id="navModulesCount">0</span></button>
     <button class="nav-item" data-panel="workflows" title="Workflows"><span class="ic" aria-hidden="true">●</span><span class="label-text">Workflows</span> <span class="count" id="navWorkflowsCount">0</span></button>
     <button class="nav-item" data-panel="settings" title="Settings"><span class="ic" aria-hidden="true">⚙</span><span class="label-text">Settings</span></button>
 
@@ -1230,32 +1219,152 @@
             <input type="text" id="scanNewName" placeholder="e.g. Pre-release regression, Client X round 2" autocomplete="off" />
           </div>
 
-          <div class="card">
+          <div class="card" id="scanNewTargetPicker" style="margin-bottom: 16px;">
             <div class="card-head">
-              <span class="icon-chip orange" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.3"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.3"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.3"/></svg></span>
-              <h3>Modules to run</h3>
-              <div class="meta" id="scanNewModuleCount"></div>
-              <span>
-                <button type="button" class="btn-link-remove" id="scanNewModulesAll" style="color: var(--accent-text);">All</button>
-                <button type="button" class="btn-link-remove" id="scanNewModulesNone" style="color: var(--text-faint); margin-left: 8px;">None</button>
-              </span>
+              <span class="icon-chip teal" aria-hidden="true">◎</span>
+              <h3>Target application</h3>
+              <div class="meta">saved profiles — this install isn't limited to one application</div>
             </div>
             <div class="card-body" style="padding: 14px 18px;">
-              <div class="scan-new-module-search">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" width="14" height="14"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
-                <input type="text" id="scanNewModuleSearch" placeholder="Filter modules by name…" autocomplete="off" />
-              </div>
-              <div id="scanNewModuleList">
-                <div class="scan-new-module-grid scan-new-module-skeleton" id="scanNewModuleSkeleton">
-                  <div class="scan-new-module-skeleton-card" style="animation-delay: 0ms"></div>
-                  <div class="scan-new-module-skeleton-card" style="animation-delay: 60ms"></div>
-                  <div class="scan-new-module-skeleton-card" style="animation-delay: 120ms"></div>
-                  <div class="scan-new-module-skeleton-card" style="animation-delay: 180ms"></div>
-                  <div class="scan-new-module-skeleton-card" style="animation-delay: 240ms"></div>
-                  <div class="scan-new-module-skeleton-card" style="animation-delay: 300ms"></div>
-                </div>
+              <div class="field" style="margin: 0;">
+                <label>Application</label>
+                <select class="select" id="targetProfileSelect"></select>
               </div>
             </div>
+          </div>
+
+          <div class="card" id="settings-target" style="margin-bottom: 16px;">
+            <div class="card-head"><h3 id="targetFormTitle">Application &amp; Login</h3><div class="meta">config.json → target</div></div>
+            <form id="targetForm" class="form-body">
+              <div class="field"><label>Application name</label><input type="text" name="name" required placeholder="e.g. Kapture KM Staging" /></div>
+              <div class="field">
+                <label>Application type</label>
+                <select class="select" name="app_type" id="targetAppType">
+                  <option value="web">Web application</option>
+                  <option value="api">API</option>
+                  <option value="mobile_api">Mobile backend (API)</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
+              <div class="field"><label>Base URL</label><input type="url" name="base_url" required placeholder="https://example.com" /></div>
+              <div class="field"><label>Login page URL</label><input type="url" name="login_url" required placeholder="https://example.com/login" /></div>
+              <p style="margin: 4px 0 0; font-size: 12.5px; color: var(--text-faint); line-height: 1.6;">
+                That's all most targets need — STOF auto-detects the login form's fields on any application (no CSS selectors required). If a particular app's login page is unusual and auto-detect picks the wrong field, either set an exact override below, or use <b>Workflows → Upload a workflow</b> to capture the real login by recording it once with <code class="inline">tools/record_workflow.py</code>.
+              </p>
+              <details style="margin-top: 6px;">
+                <summary style="cursor:pointer; font-size: 13px; font-weight: 600; color: var(--text-muted);">Advanced: manual selector overrides</summary>
+                <div style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
+                  <div class="field"><label>Username field selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="username_selector" placeholder="#username" /></div>
+                  <div class="field"><label>Password field selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="password_selector" placeholder="#password" /></div>
+                  <div class="field"><label>Submit button selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="submit_selector" placeholder="button[type=submit]" /></div>
+                </div>
+              </details>
+              <!-- Assisted Login is paused (Cloudflare Turnstile flags any
+                   CDP-driven browser as a bot regardless of who clicks it --
+                   needs a headed-in-Xvfb rework, tracked separately). This
+                   field/checkbox stays wired (hidden) so re-enabling later is
+                   a one-line UI change, not new plumbing -- and so the
+                   requires_assisted_login form field the JS reads always
+                   exists, even while hidden. -->
+              <label class="checkbox-row" style="margin-top: 10px; display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-muted);" hidden>
+                <input type="checkbox" name="requires_assisted_login" id="requiresAssistedLogin" />
+                This target sits behind a bot/CAPTCHA challenge (Cloudflare, etc.)
+              </label>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary" id="targetFormSubmit">Save target</button>
+                <button type="button" class="btn" id="targetDeleteBtn" hidden>Delete this target</button>
+              </div>
+            </form>
+          </div>
+
+          <div class="card" id="settings-credentials" style="margin-bottom: 16px;">
+            <div class="card-head"><h3>Credentials</h3><div class="meta">users.json + .env</div></div>
+            <p class="card-desc">
+              Only got one account for this target? Leave the other role's fields blank, or click
+              <b>Remove</b> below if it's already configured — every module and Verify Login already
+              adapt to whatever's actually here, from one account up.
+            </p>
+            <form id="credentialsForm" class="form-body">
+              <div class="field">
+                <label>Admin username <button type="button" class="btn-link-remove" id="removeAdminBtn" hidden>Remove</button></label>
+                <input type="text" name="admin_username" autocomplete="off" placeholder="leave blank if this target has no admin account" />
+              </div>
+              <div class="field">
+                <label>Admin login method</label>
+                <select class="select" name="admin_auth_type" id="adminAuthType">
+                  <option value="form_login">Form login (auto-detected, no setup needed)</option>
+                  <option value="jwt">API token / JWT (no login form at all)</option>
+                </select>
+              </div>
+              <div class="field"><label id="adminPasswordLabel">Admin password <small>write-only, never shown back</small></label><input type="password" name="admin_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
+              <div class="field">
+                <label>Normal-user username <button type="button" class="btn-link-remove" id="removeNormalBtn" hidden>Remove</button></label>
+                <input type="text" name="normal_username" autocomplete="off" placeholder="leave blank if this target has no normal-user account" />
+              </div>
+              <div class="field">
+                <label>Normal-user login method</label>
+                <select class="select" name="normal_auth_type" id="normalAuthType">
+                  <option value="form_login">Form login (auto-detected, no setup needed)</option>
+                  <option value="jwt">API token / JWT (no login form at all)</option>
+                </select>
+              </div>
+              <div class="field"><label id="normalPasswordLabel">Normal-user password <small>write-only, never shown back</small></label><input type="password" name="normal_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
+              <p style="margin: 0; font-size: 12px; color: var(--text-faint);">
+                Neither fits (SSO/OAuth redirect to another domain, or a bot/CAPTCHA challenge)?
+                Skip these fields and use <b>Manual Session Cookies</b> below instead.
+              </p>
+              <div class="form-actions"><button type="submit" class="btn btn-primary">Save credentials</button></div>
+            </form>
+          </div>
+
+          <div class="card" id="settings-verify" style="margin-bottom: 16px;">
+            <div class="card-head"><h3>Verify Login</h3><div class="meta">runs a real login, shows you the result</div></div>
+            <p class="card-desc">
+              Drives a real browser through the login form as the selected account and shows you a
+              screenshot of what it actually reached — works the same whether this console is open on
+              this machine or on another one over the network, since nothing pops up on the server's
+              own screen.
+            </p>
+            <div class="form-body">
+              <div class="field" style="max-width: 260px;" id="verifyLoginRoleField">
+                <label>Account <small id="verifyLoginRoleHint"></small></label>
+                <select class="select" id="verifyLoginRole"></select>
+              </div>
+              <div class="form-actions" style="align-items: center; gap: 12px;">
+                <button type="button" class="btn btn-primary" id="verifyLoginBtn">▶ Verify login</button>
+                <span id="verifyLoginStatus" class="meta">idle</span>
+              </div>
+              <div id="verifyLoginShotWrap" hidden style="margin-top: 4px;">
+                <img id="verifyLoginShot" alt="Screenshot of the page reached after login" style="max-width: 100%; border-radius: 8px; border: 1px solid var(--border); display: block;" />
+              </div>
+            </div>
+          </div>
+
+          <div class="card" id="settings-manual-session" style="margin-bottom: 16px;">
+            <div class="card-head"><h3>Manual Session Cookies<span class="settings-status" id="manualSessionStatus">Not set</span></h3><div class="meta">for targets STOF can't log into automatically</div></div>
+            <p class="card-desc">
+              Log in as this account in your own real browser, then copy the cookie header from
+              devtools (Network tab → any request → <b>Cookie</b> header, or Application → Cookies)
+              and paste it below. The scan reuses this session directly and skips login entirely for
+              this role. Note: a target that binds its cookie to the browser/network that earned it
+              (e.g. Cloudflare's bot-challenge cookie) may still reject this if the scan runs from a
+              different machine — this works reliably for ordinary session-cookie auth.
+            </p>
+            <form id="manualSessionForm" class="form-body">
+              <div class="field">
+                <label>Account</label>
+                <select class="select" name="role" id="manualSessionRole"></select>
+              </div>
+              <div class="field">
+                <label>Cookie header <small>name=value; name2=value2</small></label>
+                <textarea name="cookies" rows="3" placeholder="JSESSIONID=abc123; auth_token=xyz789" style="resize: vertical; font-family: var(--mono, monospace); font-size: 13px;"></textarea>
+              </div>
+              <div class="field"><label>Keep valid for <small>hours</small></label><input type="number" name="expires_hours" value="6" min="1" max="72" style="max-width: 120px;" /></div>
+              <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Save session</button>
+                <button type="button" class="btn" id="manualSessionClearBtn">Clear</button>
+              </div>
+            </form>
           </div>
 
           <div class="card" id="scanNewWorkflowField" hidden>
@@ -1279,7 +1388,7 @@
             <div class="card-body scan-new-summary-body">
               <div class="scan-new-summary-row">
                 <span class="scan-new-summary-num" id="scanNewSummaryModules">0</span>
-                <span class="scan-new-summary-label">module<span id="scanNewSummaryModulesPlural">s</span> selected</span>
+                <span class="scan-new-summary-label">module<span id="scanNewSummaryModulesPlural">s</span> enabled</span>
               </div>
               <div class="scan-new-summary-row">
                 <span class="scan-new-summary-num" id="scanNewSummaryTechniques">0</span>
@@ -1289,23 +1398,38 @@
                 <span class="scan-new-summary-num" id="scanNewSummaryWorkflows">0</span>
                 <span class="scan-new-summary-label">workflow<span id="scanNewSummaryWorkflowsPlural">s</span> replayed</span>
               </div>
+              <a href="#/coverage" style="font-size: 12.5px; display: block; margin-top: 2px;">Manage which test cases run →</a>
             </div>
           </div>
 
-          <div class="card">
-            <div class="card-head">
-              <span class="icon-chip blue" aria-hidden="true">✓</span>
-              <h3>Readiness</h3>
-            </div>
-            <div class="card-body" style="padding: 16px 18px; display: flex; flex-direction: column; gap: 14px;">
-              <div>
-                <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">Is STOF itself working correctly? Advisory only — a failing suite doesn't block the scan.</div>
-                <div class="health-check-row" style="margin: 0;">
-                  <button type="button" class="btn" id="healthCheckBtn">Check tool health</button>
-                  <span id="healthCheckStatus" class="meta">not checked this session</span>
-                </div>
+          <div class="card" id="settings-safety">
+            <div class="card-head"><h3>Scan Safety<span class="settings-status" id="scanIntensityStatus">Standard</span></h3><div class="meta">config.json → testing</div></div>
+            <p class="card-desc">
+              How hard this scan pushes against this target. Get this wrong on a fragile or
+              production-like environment and the real, observed failure mode is an account
+              lockout or a WAF ban mid-scan — not a hypothetical.
+            </p>
+            <div class="form-body">
+              <div class="field">
+                <label>Request pace</label>
+                <select class="select" id="scanIntensitySelect">
+                  <option value="cautious">Cautious — 3 concurrent requests, 0.5s apart (production-like / fragile targets)</option>
+                  <option value="standard">Standard — 6 concurrent, no artificial delay (default)</option>
+                  <option value="aggressive">Aggressive — 10 concurrent, no artificial delay (dedicated test environments only)</option>
+                </select>
+              </div>
+              <div class="field">
+                <label style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+                  <span>Allow state-changing probes<small>writes real data — account creation, cache poisoning confirmation, workflow-step probes, password-change probing</small></span>
+                  <label class="switch" style="margin: 0; flex-shrink: 0;"><input type="checkbox" id="probesToggle" /><span class="track"></span></label>
+                </label>
               </div>
             </div>
+          </div>
+
+          <div class="danger-banner" id="probesBanner">
+            <span>⚠</span>
+            <div><b id="probesBannerTitle">State-changing probes are off</b><span>Techniques that write data (account creation, cache poisoning confirmation, workflow-step probes) are skipped until this is turned on for an authorized engagement window.</span></div>
           </div>
         </div>
       </div>
@@ -1373,15 +1497,39 @@
       </div>
     </section>
 
-    <!-- ============================================================ MODULES -->
-    <section class="panel" id="panel-modules" aria-labelledby="h1-modules">
+    <!-- ============================================================ TEST CASES -->
+    <section class="panel" id="panel-coverage" aria-labelledby="h1-coverage">
       <div class="page-head">
         <div>
-          <h1 id="h1-modules">Modules</h1>
-          <p>Enable or disable a technique family before the next scan run. Written straight to <code class="inline">config/config.json</code>.</p>
+          <h1 id="h1-coverage">Test Cases</h1>
+          <p id="coverageSummaryLine">Every technique STOF tests for, grouped by family — reflects exactly what's live in this build today, computed from the real code. Toggle a module off to skip it on every future scan; writes straight to <code class="inline">config/config.json</code>.</p>
         </div>
       </div>
-      <div class="mods-grid" id="modulesGrid"></div>
+
+      <div class="cov-statrow" id="coverageStatRow"></div>
+
+      <div class="search" style="max-width: 420px; margin: 18px 0;">
+        <input type="text" id="coverageSearch" placeholder="Search by name, id, severity, or standard (e.g. OWASP API1, ssrf)…" />
+      </div>
+
+      <div class="cov-table-wrap">
+        <table class="cov-table" id="coverageTable">
+          <thead>
+            <tr>
+              <th class="cov-col-expand"></th>
+              <th>Name</th>
+              <th class="cov-col-id">ID</th>
+              <th class="cov-col-sev">Severity</th>
+              <th class="cov-col-num">Techniques</th>
+              <th>Standard</th>
+              <th class="cov-col-enabled">Enabled</th>
+            </tr>
+          </thead>
+          <tbody id="coverageTableBody">
+            <tr><td colspan="7" class="cov-loading">Loading test cases&hellip;</td></tr>
+          </tbody>
+        </table>
+      </div>
     </section>
 
     <!-- ============================================================ REPORTS -->
@@ -1440,152 +1588,12 @@
       <div class="page-head">
         <div>
           <h1 id="h1-settings">Settings</h1>
-          <p>Target, browser and credential configuration — edits write straight to <code class="inline">config.json</code> / <code class="inline">users.json</code> / <code class="inline">.env</code>.</p>
+          <p>Global, tool-wide configuration — applies to every application you scan. Per-target setup (URL, credentials, scan safety) now lives on <b>New Scan</b>, since one install isn't limited to a single application.</p>
         </div>
-      </div>
-
-      <div class="danger-banner" id="probesBanner">
-        <span>⚠</span>
-        <div><b id="probesBannerTitle">State-changing probes are off</b><span>Techniques that write data (account creation, cache poisoning confirmation, workflow-step probes) are skipped until this is turned on for an authorized engagement window.</span></div>
       </div>
 
       <div class="settings-layout">
         <div class="settings-col">
-
-      <div class="card" id="settings-target" style="max-width: 640px; margin-bottom: 16px;">
-        <div class="card-head"><h3>Target</h3><div class="meta">config.json → target</div></div>
-        <form id="targetForm" class="form-body">
-          <div class="field"><label>Base URL</label><input type="url" name="base_url" required placeholder="https://example.com" /></div>
-          <div class="field"><label>Login page URL</label><input type="url" name="login_url" required placeholder="https://example.com/login" /></div>
-          <p style="margin: 4px 0 0; font-size: 12.5px; color: var(--text-faint); line-height: 1.6;">
-            That's all most targets need — STOF auto-detects the login form's fields on any application (no CSS selectors required). If a particular app's login page is unusual and auto-detect picks the wrong field, either set an exact override below, or use <b>Workflows → Upload a workflow</b> to capture the real login by recording it once with <code class="inline">tools/record_workflow.py</code>.
-          </p>
-          <details style="margin-top: 6px;">
-            <summary style="cursor:pointer; font-size: 13px; font-weight: 600; color: var(--text-muted);">Advanced: manual selector overrides</summary>
-            <div style="display:flex; flex-direction:column; gap:12px; margin-top:12px;">
-              <div class="field"><label>Username field selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="username_selector" placeholder="#username" /></div>
-              <div class="field"><label>Password field selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="password_selector" placeholder="#password" /></div>
-              <div class="field"><label>Submit button selector <small>leave blank to keep auto-detecting</small></label><input type="text" name="submit_selector" placeholder="button[type=submit]" /></div>
-            </div>
-          </details>
-          <!-- Assisted Login is paused (Cloudflare Turnstile flags any
-               CDP-driven browser as a bot regardless of who clicks it --
-               needs a headed-in-Xvfb rework, tracked separately). This
-               field/checkbox stays wired (hidden) so re-enabling later is
-               a one-line UI change, not new plumbing -- and so the
-               requires_assisted_login form field the JS reads always
-               exists, even while hidden. -->
-          <label class="checkbox-row" style="margin-top: 10px; display: flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--text-muted);" hidden>
-            <input type="checkbox" name="requires_assisted_login" id="requiresAssistedLogin" />
-            This target sits behind a bot/CAPTCHA challenge (Cloudflare, etc.)
-          </label>
-          <div class="form-actions"><button type="submit" class="btn btn-primary">Save target</button></div>
-        </form>
-      </div>
-
-      <div class="card" id="settings-credentials" style="max-width: 640px; margin-bottom: 16px;">
-        <div class="card-head"><h3>Credentials</h3><div class="meta">users.json + .env</div></div>
-        <p class="card-desc">
-          Only got one account for this target? Leave the other role's fields blank, or click
-          <b>Remove</b> below if it's already configured — every module and Verify Login already
-          adapt to whatever's actually here, from one account up.
-        </p>
-        <form id="credentialsForm" class="form-body">
-          <div class="field">
-            <label>Admin username <button type="button" class="btn-link-remove" id="removeAdminBtn" hidden>Remove</button></label>
-            <input type="text" name="admin_username" autocomplete="off" placeholder="leave blank if this target has no admin account" />
-          </div>
-          <div class="field">
-            <label>Admin login method</label>
-            <select class="select" name="admin_auth_type" id="adminAuthType">
-              <option value="form_login">Form login (auto-detected, no setup needed)</option>
-              <option value="jwt">API token / JWT (no login form at all)</option>
-            </select>
-          </div>
-          <div class="field"><label id="adminPasswordLabel">Admin password <small>write-only, never shown back</small></label><input type="password" name="admin_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
-          <div class="field">
-            <label>Normal-user username <button type="button" class="btn-link-remove" id="removeNormalBtn" hidden>Remove</button></label>
-            <input type="text" name="normal_username" autocomplete="off" placeholder="leave blank if this target has no normal-user account" />
-          </div>
-          <div class="field">
-            <label>Normal-user login method</label>
-            <select class="select" name="normal_auth_type" id="normalAuthType">
-              <option value="form_login">Form login (auto-detected, no setup needed)</option>
-              <option value="jwt">API token / JWT (no login form at all)</option>
-            </select>
-          </div>
-          <div class="field"><label id="normalPasswordLabel">Normal-user password <small>write-only, never shown back</small></label><input type="password" name="normal_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
-          <p style="margin: 0; font-size: 12px; color: var(--text-faint);">
-            Neither fits (SSO/OAuth redirect to another domain, or a bot/CAPTCHA challenge)?
-            Skip these fields and use <b>Manual Session Cookies</b> further down instead.
-          </p>
-          <div class="form-actions"><button type="submit" class="btn btn-primary">Save credentials</button></div>
-        </form>
-      </div>
-
-      <div class="card" id="settings-verify" style="max-width: 640px; margin-bottom: 16px;">
-        <div class="card-head"><h3>Verify Login</h3><div class="meta">runs a real login, shows you the result</div></div>
-        <p class="card-desc">
-          Drives a real browser through the login form as the selected account and shows you a
-          screenshot of what it actually reached — works the same whether this console is open on
-          this machine or on another one over the network, since nothing pops up on the server's
-          own screen.
-        </p>
-        <div class="form-body">
-          <div class="field" style="max-width: 260px;" id="verifyLoginRoleField">
-            <label>Account <small id="verifyLoginRoleHint"></small></label>
-            <select class="select" id="verifyLoginRole"></select>
-          </div>
-          <div class="form-actions" style="align-items: center; gap: 12px;">
-            <button type="button" class="btn btn-primary" id="verifyLoginBtn">▶ Verify login</button>
-            <span id="verifyLoginStatus" class="meta">idle</span>
-          </div>
-          <div id="verifyLoginShotWrap" hidden style="margin-top: 4px;">
-            <img id="verifyLoginShot" alt="Screenshot of the page reached after login" style="max-width: 100%; border-radius: 8px; border: 1px solid var(--border); display: block;" />
-          </div>
-        </div>
-      </div>
-
-        </div>
-        <div class="settings-col">
-
-      <div class="card" id="settings-manual-session" style="max-width: 640px; margin-bottom: 16px;">
-        <div class="card-head"><h3>Manual Session Cookies<span class="settings-status" id="manualSessionStatus">Not set</span></h3><div class="meta">for targets STOF can't log into automatically</div></div>
-        <p class="card-desc">
-          Log in as this account in your own real browser, then copy the cookie header from
-          devtools (Network tab → any request → <b>Cookie</b> header, or Application → Cookies)
-          and paste it below. The scan reuses this session directly and skips login entirely for
-          this role. Note: a target that binds its cookie to the browser/network that earned it
-          (e.g. Cloudflare's bot-challenge cookie) may still reject this if the scan runs from a
-          different machine — this works reliably for ordinary session-cookie auth.
-        </p>
-        <form id="manualSessionForm" class="form-body">
-          <div class="field">
-            <label>Account</label>
-            <select class="select" name="role" id="manualSessionRole"></select>
-          </div>
-          <div class="field">
-            <label>Cookie header <small>name=value; name2=value2</small></label>
-            <textarea name="cookies" rows="3" placeholder="JSESSIONID=abc123; auth_token=xyz789" style="resize: vertical; font-family: var(--mono, monospace); font-size: 13px;"></textarea>
-          </div>
-          <div class="field"><label>Keep valid for <small>hours</small></label><input type="number" name="expires_hours" value="6" min="1" max="72" style="max-width: 120px;" /></div>
-          <div class="form-actions">
-            <button type="submit" class="btn btn-primary">Save session</button>
-            <button type="button" class="btn" id="manualSessionClearBtn">Clear</button>
-          </div>
-        </form>
-      </div>
-
-      <div class="card" id="settings-oob" style="max-width: 640px; margin-bottom: 16px;">
-        <div class="card-head"><h3>Out-of-band testing</h3><div class="meta">config.json → burp.collaborator_url</div></div>
-        <form id="oobForm" class="form-body">
-          <p style="margin: 0; font-size: 13px; color: var(--text-muted); line-height: 1.6;">
-            Point this at your own OOB collaborator (Burp Collaborator, interactsh, or any equivalent host you control) to enable <code class="inline">ssrf_tests</code>' TC-137.6 — it sends a unique callback URL per candidate parameter; STOF doesn't poll for the callback itself, so check your collaborator's own dashboard for a hit.
-          </p>
-          <div class="field"><label>Collaborator host</label><input type="text" name="collaborator_url" placeholder="e.g. abc123.oastify.com or https://your-collaborator.example" /></div>
-          <div class="form-actions"><button type="submit" class="btn btn-primary">Save</button></div>
-        </form>
-      </div>
 
       <div class="card" id="settings-burp" style="max-width: 640px; margin-bottom: 16px;">
         <div class="card-head"><h3>Burp Suite Pro integration<span class="settings-status" id="burpStatus">Not set</span></h3><div class="meta">config.json → burp</div></div>
@@ -1623,10 +1631,58 @@
         </form>
       </div>
 
+      <div class="card" id="settings-oob" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head"><h3>Out-of-band testing</h3><div class="meta">config.json → burp.collaborator_url</div></div>
+        <form id="oobForm" class="form-body">
+          <p style="margin: 0; font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+            Point this at your own OOB collaborator (Burp Collaborator, interactsh, or any equivalent host you control) to enable <code class="inline">ssrf_tests</code>' TC-137.6 — it sends a unique callback URL per candidate parameter; STOF doesn't poll for the callback itself, so check your collaborator's own dashboard for a hit. One collaborator serves every application, so this stays here rather than on a per-target page.
+          </p>
+          <div class="field"><label>Collaborator host</label><input type="text" name="collaborator_url" placeholder="e.g. abc123.oastify.com or https://your-collaborator.example" /></div>
+          <div class="form-actions"><button type="submit" class="btn btn-primary">Save</button></div>
+        </form>
+      </div>
+
+        </div>
+        <div class="settings-col">
+
+      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head">
+          <span class="icon-chip blue" aria-hidden="true">✓</span>
+          <h3>Tool health</h3>
+          <div class="meta">is STOF itself working correctly</div>
+        </div>
+        <div class="card-body" style="padding: 16px 18px; display: flex; flex-direction: column; gap: 14px;">
+          <div>
+            <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 8px;">Runs STOF's own unit test suite. Advisory only — a failing suite doesn't block a scan, but is worth checking before testing a real target.</div>
+            <div class="health-check-row" style="margin: 0;">
+              <button type="button" class="btn" id="healthCheckBtn">Check tool health</button>
+              <span id="healthCheckStatus" class="meta">not checked this session</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="max-width: 640px; margin-bottom: 16px;">
+        <div class="card-head">
+          <span class="icon-chip teal" aria-hidden="true">✓</span>
+          <h3>Test Cases</h3>
+          <div class="meta">what STOF tests for, and what's enabled</div>
+        </div>
+        <div class="card-body" style="padding: 16px 18px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+            A plain-English rundown of every test case STOF implements, mapped to OWASP/CWE — the page to open
+            when a client asks "what does this tool actually test for?" Also where module selection now lives
+            (moved off New Scan, since it applies to every future scan, not just one).
+          </div>
+          <div class="form-actions" style="margin: 0;">
+            <a href="#/coverage" class="btn btn-primary">View test cases →</a>
+          </div>
+        </div>
+      </div>
+
       <div class="settings-grid" id="settings-general">
         <div class="setting-row"><div class="k">Browser<small>Playwright headless mode</small></div><label class="switch"><input type="checkbox" id="headlessToggle" /><span class="track"></span></label></div>
         <div class="setting-row"><div class="k">Report output<small>Where HTML/JSON/Excel land</small></div><div class="v" id="settingsReportsDir">&mdash;</div></div>
-        <div class="setting-row"><div class="k">Allow state-changing probes<small>Required for write-verb techniques (TC-135/136, etc.)</small></div><label class="switch"><input type="checkbox" id="probesToggle" /><span class="track"></span></label></div>
       </div>
 
         </div>
@@ -1975,10 +2031,10 @@
   // action sets it, and the `hashchange` listener is the only place that
   // actually mutates panel/modal visibility -- this avoids the click-
   // handler-vs-listener double-mutation bugs a naive router gets wrong.
-  var VALID_PANELS = ["dashboard", "scans", "scan-new", "findings", "reports", "modules", "workflows", "settings"];
+  var VALID_PANELS = ["dashboard", "scans", "scan-new", "findings", "reports", "coverage", "workflows", "settings"];
   var PANEL_TITLES = {
     dashboard: "Dashboard", scans: "Scans", "scan-new": "New Scan", findings: "Findings", reports: "Reports",
-    modules: "Modules", workflows: "Workflows", settings: "Settings",
+    coverage: "Test Cases", workflows: "Workflows", settings: "Settings",
   };
   function setRoute(hash) {
     if (location.hash === hash) { handleRouteChange(); return; }
@@ -2001,6 +2057,7 @@
     }
 
     if (route.panel === "scan-new") openNewScanPage();
+    if (route.panel === "coverage" && !state.testCatalogLoaded) loadTestCatalog();
 
     if (route.panel === "findings" && route.parts[1] && route.parts[2]) {
       var scanId = route.parts[1], findingId = route.parts[2];
@@ -2098,17 +2155,9 @@ async function loadHealth() {
     try {
       var cfg = await api("/api/config");
       document.getElementById("targetUrl").textContent = (cfg.target && cfg.target.base_url) || "not configured";
-      var tf = document.getElementById("targetForm");
-      tf.base_url.value = (cfg.target && cfg.target.base_url) || "";
-      tf.login_url.value = (cfg.target && cfg.target.login_url) || "";
-      tf.username_selector.value = (cfg.target && cfg.target.username_selector) || "";
-      tf.password_selector.value = (cfg.target && cfg.target.password_selector) || "";
-      tf.submit_selector.value = (cfg.target && cfg.target.submit_selector) || "";
-      tf.requires_assisted_login.checked = !!(cfg.target && cfg.target.requires_assisted_login);
       document.getElementById("headlessToggle").checked = !!(cfg.browser && cfg.browser.headless);
       document.getElementById("settingsReportsDir").textContent = (cfg.output && cfg.output.reports_dir) || "—";
       document.getElementById("oobForm").collaborator_url.value = (cfg.burp && cfg.burp.collaborator_url) || "";
-      document.getElementById("scanNewTarget").textContent = "Target: " + ((cfg.target && cfg.target.base_url) || "not configured");
     } catch (e) {
       toast("Could not load config.json: " + e.message, true);
     }
@@ -2182,23 +2231,141 @@ async function loadHealth() {
     }
   });
 
+  // ---------------------------------------------------------------- Target Profiles
+  // The console's multi-application layer (stof/ui/targets.py) -- a saved
+  // profile per application, switchable from New Scan. Activating a
+  // profile writes it into config.json/users.json, so every endpoint
+  // below (Verify Login, Manual Session, /api/scans, the CLI itself)
+  // keeps working unchanged; they only ever see whichever profile is
+  // currently active.
+  // `activeTargetId` is the server's real active profile (config.json/
+  // users.json currently reflect it) -- used by Credentials/Scan Safety,
+  // which always act on whatever's ACTUALLY active. `targetFormEditingId`
+  // is which profile the Application & Login form is showing right now,
+  // used ONLY to decide create-vs-update on submit -- these two diverge
+  // exactly once: while "+ New application…" is selected, the form is in
+  // create mode without having deactivated the real active target on the
+  // server (selecting an EXISTING different profile activates it
+  // immediately instead, so the two stay in lockstep in every other case).
+  var activeTargetId = null;
+  var targetFormEditingId = null;
+
+  function targetProfileOptionLabel(t) {
+    return (t.name || t.id) + " — " + (t.base_url || "not configured");
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+
+  function fillTargetForm(profile) {
+    targetFormEditingId = profile ? profile.id : null;
+    var tf = document.getElementById("targetForm");
+    tf.reset();
+    tf.name.value = profile ? profile.name : "";
+    tf.app_type.value = profile ? profile.app_type : "web";
+    tf.base_url.value = profile ? profile.base_url : "";
+    tf.login_url.value = profile ? profile.login_url : "";
+    tf.username_selector.value = (profile && profile.username_selector) || "";
+    tf.password_selector.value = (profile && profile.password_selector) || "";
+    tf.submit_selector.value = (profile && profile.submit_selector) || "";
+    tf.requires_assisted_login.checked = !!(profile && profile.requires_assisted_login);
+    document.getElementById("targetFormTitle").textContent = profile ? "Application & Login" : "New application";
+    document.getElementById("targetFormSubmit").textContent = profile ? "Save target" : "Create & activate target";
+    document.getElementById("targetDeleteBtn").hidden = !profile;
+    document.getElementById("scanNewTarget").textContent = profile
+      ? "Target: " + profile.name + " (" + profile.base_url + ")"
+      : "Target: not configured — add one below";
+  }
+
+  async function loadTargetProfiles() {
+    try {
+      var data = await api("/api/targets");
+      // Captured BEFORE reassigning targetFormEditingId below -- the
+      // profile the form was showing up to this point, compared against
+      // the server's active id AFTER this refresh to decide whether the
+      // active profile actually changed. Deliberately NOT compared
+      // against the <select>'s own DOM value: a browser already updates
+      // a <select>'s value to the clicked option before firing "change",
+      // so that comparison always reads "unchanged" and would silently
+      // skip re-rendering on every real switch (caught live: switching
+      // targets left every field showing the PREVIOUS target's data).
+      var previousEditingId = targetFormEditingId;
+      activeTargetId = data.active_target_id;
+      var sel = document.getElementById("targetProfileSelect");
+      sel.innerHTML = '<option value="">+ New application…</option>' + data.targets.map(function (t) {
+        return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(targetProfileOptionLabel(t)) + "</option>";
+      }).join("");
+      sel.value = activeTargetId || "";
+      var active = data.targets.find(function (t) { return t.id === activeTargetId; }) || null;
+      // Only re-render the form from scratch when the active profile
+      // actually changed (switch, create, delete) -- not on every
+      // refresh after a same-profile edit, or the operator's in-progress
+      // typing in an unrelated field would get discarded mid-edit.
+      if (previousEditingId !== activeTargetId) {
+        fillTargetForm(active);
+      } else if (active) {
+        document.getElementById("scanNewTarget").textContent = "Target: " + active.name + " (" + active.base_url + ")";
+      }
+    } catch (e) {
+      toast("Could not load target profiles: " + e.message, true);
+    }
+  }
+  loadTargetProfiles();
+
+  document.getElementById("targetProfileSelect").addEventListener("change", async function (e) {
+    var id = e.target.value;
+    if (!id) {
+      fillTargetForm(null);
+      return;
+    }
+    try {
+      await api("/api/targets/" + id + "/activate", { method: "POST" });
+      toast("Switched target application");
+      await Promise.all([loadConfig(), loadTesting(), loadCredentialsFields(), loadVerifyLoginRoles(), loadManualSessionRoles(), loadTargetProfiles()]);
+    } catch (err) {
+      toast("Could not switch target: " + err.message, true);
+    }
+  });
+
+  document.getElementById("targetDeleteBtn").addEventListener("click", async function () {
+    if (!activeTargetId) return;
+    var ok = await askConfirm(
+      "Delete this target application?",
+      "Its saved URL, credentials and scan safety settings are removed from this console. Reports already generated from past scans against it are unaffected.",
+      true
+    );
+    if (!ok) return;
+    try {
+      await api("/api/targets/" + activeTargetId, { method: "DELETE" });
+      toast("Target application deleted");
+      await Promise.all([loadConfig(), loadTesting(), loadCredentialsFields(), loadVerifyLoginRoles(), loadManualSessionRoles(), loadTargetProfiles()]);
+    } catch (err) {
+      toast("Could not delete target: " + err.message, true);
+    }
+  });
+
   document.getElementById("targetForm").addEventListener("submit", async function (e) {
     e.preventDefault();
     var f = e.target;
+    var payload = {
+      name: f.name.value.trim(),
+      app_type: f.app_type.value,
+      base_url: f.base_url.value.trim(),
+      login_url: f.login_url.value.trim(),
+      username_selector: f.username_selector.value.trim() || null,
+      password_selector: f.password_selector.value.trim() || null,
+      submit_selector: f.submit_selector.value.trim() || null,
+      requires_assisted_login: f.requires_assisted_login.checked,
+    };
     try {
-      await api("/api/config/target", {
-        method: "PUT",
-        body: JSON.stringify({
-          base_url: f.base_url.value.trim(),
-          login_url: f.login_url.value.trim(),
-          username_selector: f.username_selector.value.trim() || null,
-          password_selector: f.password_selector.value.trim() || null,
-          submit_selector: f.submit_selector.value.trim() || null,
-          requires_assisted_login: f.requires_assisted_login.checked,
-        }),
-      });
+      if (targetFormEditingId) {
+        await api("/api/targets/" + targetFormEditingId, { method: "PUT", body: JSON.stringify(payload) });
+      } else {
+        await api("/api/targets", { method: "POST", body: JSON.stringify(payload) });
+      }
       toast("Target saved");
-      loadConfig();
+      await Promise.all([loadConfig(), loadTesting(), loadCredentialsFields(), loadVerifyLoginRoles(), loadManualSessionRoles(), loadTargetProfiles()]);
     } catch (err) {
       toast("Could not save target: " + err.message, true);
     }
@@ -2206,9 +2373,10 @@ async function loadHealth() {
 
   document.getElementById("credentialsForm").addEventListener("submit", async function (e) {
     e.preventDefault();
+    if (!activeTargetId) { toast("Select or create a target application first", true); return; }
     var f = e.target;
     try {
-      await api("/api/credentials", {
+      await api("/api/targets/" + activeTargetId, {
         method: "PUT",
         body: JSON.stringify({
           admin_username: f.admin_username.value.trim() || null,
@@ -2271,6 +2439,7 @@ async function loadHealth() {
   document.getElementById("adminAuthType").addEventListener("change", updateCredentialPasswordLabels);
   document.getElementById("normalAuthType").addEventListener("change", updateCredentialPasswordLabels);
   async function removeCredentialRole(role) {
+    if (!activeTargetId) return;
     var ok = await askConfirm(
       "Remove '" + role + "' account?",
       "This target will then only be tested with whatever account(s) remain. You can re-add it later by filling in the fields again.",
@@ -2278,7 +2447,9 @@ async function loadHealth() {
     );
     if (!ok) return;
     try {
-      await api("/api/credentials/" + role, { method: "DELETE" });
+      var payload = {};
+      payload[role + "_username"] = "";
+      await api("/api/targets/" + activeTargetId, { method: "PUT", body: JSON.stringify(payload) });
       toast("'" + role + "' account removed");
       document.getElementById("credentialsForm")[role + "_username"].value = "";
       loadCredentialsFields();
@@ -2489,10 +2660,12 @@ async function loadHealth() {
     }
   });
 
+  var SCAN_INTENSITY_LABELS = { cautious: "Cautious", standard: "Standard", aggressive: "Aggressive" };
   async function loadTesting() {
     try {
       var t = await api("/api/testing");
       setProbesUI(t.allow_state_changing_probes);
+      setScanIntensityUI(t.scan_intensity || "standard");
     } catch (e) {
       toast("Could not load testing flag: " + e.message, true);
     }
@@ -2505,10 +2678,15 @@ async function loadHealth() {
       ? "State-changing probes are ON for this window"
       : "State-changing probes are off";
   }
+  function setScanIntensityUI(intensity) {
+    document.getElementById("scanIntensitySelect").value = intensity;
+    document.getElementById("scanIntensityStatus").textContent = SCAN_INTENSITY_LABELS[intensity] || intensity;
+  }
   document.getElementById("probesToggle").addEventListener("change", async function (e) {
     var on = e.target.checked;
+    if (!activeTargetId) { e.target.checked = !on; toast("Select or create a target application first", true); return; }
     try {
-      await api("/api/testing", { method: "PUT", body: JSON.stringify({ allow_state_changing_probes: on }) });
+      await api("/api/targets/" + activeTargetId, { method: "PUT", body: JSON.stringify({ allow_state_changing_probes: on }) });
       setProbesUI(on);
       toast(on ? "State-changing probes enabled" : "State-changing probes disabled");
     } catch (err) {
@@ -2516,81 +2694,216 @@ async function loadHealth() {
       toast("Could not update setting: " + err.message, true);
     }
   });
+  document.getElementById("scanIntensitySelect").addEventListener("change", async function (e) {
+    var intensity = e.target.value;
+    if (!activeTargetId) { loadTesting(); toast("Select or create a target application first", true); return; }
+    try {
+      await api("/api/targets/" + activeTargetId, { method: "PUT", body: JSON.stringify({ scan_intensity: intensity }) });
+      setScanIntensityUI(intensity);
+      toast("Scan pace set to " + (SCAN_INTENSITY_LABELS[intensity] || intensity));
+    } catch (err) {
+      loadTesting(); // reload the real value from the server rather than guess what to revert the <select> to
+      toast("Could not update scan pace: " + err.message, true);
+    }
+  });
 
   // ---------------------------------------------------------------- modules
   async function loadModules() {
     try {
       state.modules = await api("/api/modules");
-      renderModules();
       document.getElementById("navModulesCount").textContent = state.modules.filter(function (m) { return m.enabled; }).length;
     } catch (e) {
       toast("Could not load modules: " + e.message, true);
     }
   }
-  function renderModules() {
-    var grid = document.getElementById("modulesGrid");
-    grid.innerHTML = "";
-    state.modules.forEach(function (m) {
-      var card = document.createElement("details");
-      card.className = "mod-card";
-      card.innerHTML =
-        '<summary class="mod-card-top">' +
-          '<div><h4>' + m.name + '</h4><div class="layer">' + m.id + '</div></div>' +
-        '</summary>' +
-        '<label class="switch mod-card-switch"><input type="checkbox" ' + (m.enabled ? "checked" : "") + ' ' + (m.locked ? "disabled" : "") + ' data-mod="' + m.id + '" /><span class="track"></span></label>' +
-        '<div class="mod-card-foot"><span class="tc-count">' + m.technique_count + ' technique' + (m.technique_count === 1 ? "" : "s") + ' — click to show test cases</span></div>' +
-        '<div class="mod-tc-list" data-tc-list></div>';
-      grid.appendChild(card);
-      card.addEventListener("toggle", function () {
-        if (card.open) loadModuleTestcases(m.id, card.querySelector("[data-tc-list]"));
-      }, { once: true });
-    });
-    grid.querySelectorAll("input[data-mod]").forEach(function (input) {
-      input.addEventListener("change", async function () {
-        var id = input.dataset.mod;
-        try {
-          await api("/api/modules/" + id, { method: "PUT", body: JSON.stringify({ enabled: input.checked }) });
-          var m = state.modules.find(function (x) { return x.id === id; });
-          if (m) m.enabled = input.checked;
-          document.getElementById("navModulesCount").textContent = state.modules.filter(function (x) { return x.enabled; }).length;
-          toast((input.checked ? "Enabled " : "Disabled ") + id);
-        } catch (err) {
-          input.checked = !input.checked;
-          toast("Could not update module: " + err.message, true);
-        }
-      });
-    });
-  }
 
-  async function loadModuleTestcases(modId, container) {
-    container.innerHTML = '<div style="padding:10px 0; font-size:12.5px; color:var(--text-faint);">Loading…</div>';
+  // ---------------------------------------------------------------- test cases
+  // The single, consolidated surface for "what does STOF test for, and
+  // which of it runs" -- replaces what used to be three separate things
+  // (a plain Modules enable/disable grid, a read-only Test Coverage
+  // catalog, and New Scan's own per-scan module picker). Module
+  // selection is purely global now (same /api/modules PUT this always
+  // used): every future scan runs whatever's enabled here. Individual
+  // test cases (TC-ids) are informational rows, not independently
+  // toggleable -- the real, wired granularity stops at the module,
+  // exactly like it already did before this page existed.
+  var MODULE_FAMILIES = [
+    { label: "Authentication & Session", ids: ["auth_tests", "jwt_tests", "csrf_tests"] },
+    { label: "Access Control", ids: ["idor_tests"] },
+    { label: "Injection", ids: ["sqli_tests", "xss_tests", "injection_variants_tests", "ssrf_tests", "deserialization_tests", "graphql_tests"] },
+    { label: "Business Logic", ids: ["business_logic_tests", "file_upload_tests"] },
+    { label: "Configuration & Disclosure", ids: ["configuration_tests", "disclosure_tests", "cache_tests"] },
+  ];
+  var coverageItemsByModule = {};
+  var coverageCollapsed = {};
+
+  async function loadTestCatalog() {
+    var body = document.getElementById("coverageTableBody");
     try {
-      var testcases = await api("/api/modules/" + modId + "/testcases");
-      if (!testcases.length) {
-        container.innerHTML = '<div style="padding:10px 0; font-size:12.5px; color:var(--text-faint);">No registered test cases found for this module.</div>';
-        return;
-      }
-      container.innerHTML = "";
-      testcases.forEach(function (tc) {
-        var row = document.createElement("div");
-        row.className = "mod-tc-row";
-        row.innerHTML =
-          '<div class="mod-tc-head"><span class="tc-id"></span><span class="finding-name"></span><span class="sev"></span></div>' +
-          '<p class="mod-tc-desc"></p>' +
-          '<div class="mod-tc-compliance"></div>';
-        row.querySelector(".tc-id").textContent = tc.id;
-        row.querySelector(".finding-name").textContent = tc.name || "";
-        var sev = row.querySelector(".sev");
-        sev.textContent = tc.severity || "Info";
-        sev.className = "sev " + (tc.severity || "Info");
-        row.querySelector(".mod-tc-desc").textContent = tc.description || "";
-        row.querySelector(".mod-tc-compliance").textContent = [tc.compliance, tc.cwe_id].filter(Boolean).join(" · ");
-        container.appendChild(row);
+      if (!state.modules || !state.modules.length) await loadModules();
+      var data = await api("/api/test-catalog");
+      state.testCatalogLoaded = true;
+      coverageItemsByModule = {};
+      data.items.forEach(function (item) {
+        (coverageItemsByModule[item.module_id] = coverageItemsByModule[item.module_id] || []).push(item);
       });
+      renderCoverageStatRow(data.summary);
+      document.getElementById("coverageSummaryLine").textContent =
+        "STOF implements " + data.summary.test_case_count + " test cases (" + data.summary.technique_count +
+        " individual attack techniques) across " + data.summary.module_count +
+        " technique families — this reflects exactly what's live in this build today, computed from the real code. " +
+        "Toggle a module off to skip it on every future scan; writes straight to config/config.json.";
+      renderCoverageTable();
     } catch (e) {
-      container.innerHTML = '<div style="padding:10px 0; font-size:12.5px; color:var(--critical);">Could not load test cases: ' + e.message + '</div>';
+      body.innerHTML = '<tr><td colspan="7" class="cov-loading">Could not load test cases: ' + e.message + "</td></tr>";
     }
   }
+
+  function renderCoverageStatRow(summary) {
+    var row = document.getElementById("coverageStatRow");
+    row.innerHTML = [
+      { sl: "Test cases", sv: summary.test_case_count },
+      { sl: "Techniques", sv: summary.technique_count },
+      { sl: "Families", sv: summary.module_count },
+    ].map(function (s) {
+      return '<div class="cov-stat"><span class="cov-stat-label">' + s.sl + '</span><span class="cov-stat-value">' + s.sv + "</span></div>";
+    }).join("");
+  }
+
+  function coverageComplianceLine(item) {
+    // item.compliance occasionally already embeds the CWE id inline
+    // (e.g. TC-137's own testcases.json entry is "OWASP WSTG-INPV-19;
+    // CWE-918") -- skip appending cwe_id again when that's the case,
+    // rather than showing "CWE-918 · CWE-918".
+    var parts = [item.compliance];
+    if (item.cwe_id && (!item.compliance || item.compliance.indexOf(item.cwe_id) === -1)) parts.push(item.cwe_id);
+    return parts.filter(Boolean).join(" · ");
+  }
+
+  function coverageTcRowHtml(item, moduleId) {
+    var haystack = (item.id + " " + item.name + " " + item.severity + " " + (item.compliance || "") + " " + (item.summary || "")).toLowerCase();
+    return (
+      '<tr class="cov-tc-row" data-parent="' + moduleId + '" data-search="' + escapeHtml(haystack) + '">' +
+        "<td></td>" +
+        '<td class="cov-tc-name"><span class="cov-tc-connector" aria-hidden="true">&#9492;</span>' + escapeHtml(item.name || "") +
+          '<p class="cov-tc-summary">' + escapeHtml(item.summary || "") + "</p></td>" +
+        '<td class="mono cov-col-id">' + item.id + "</td>" +
+        '<td class="cov-col-sev"><span class="sev ' + item.severity + '">' + item.severity + "</span></td>" +
+        '<td class="mono cov-col-num">' + item.technique_count + "</td>" +
+        '<td class="mono cov-standard">' + escapeHtml(coverageComplianceLine(item)) + "</td>" +
+        "<td></td>" +
+      "</tr>"
+    );
+  }
+
+  function coverageModuleRowHtml(m, familyLabel) {
+    var items = coverageItemsByModule[m.id] || [];
+    var techniqueTotal = items.reduce(function (sum, it) { return sum + it.technique_count; }, 0);
+    var collapsed = !!coverageCollapsed[m.id];
+    var haystack = (m.name + " " + m.id).toLowerCase();
+    return (
+      '<tr class="cov-module-row' + (m.enabled ? "" : " is-disabled") + '" data-module="' + m.id + '" data-family="' +
+        escapeHtml(familyLabel) + '" data-search="' + escapeHtml(haystack) + '">' +
+        '<td class="cov-col-expand">' + (items.length
+          ? '<button type="button" class="cov-expand-btn" data-expand="' + m.id + '" aria-expanded="' + (!collapsed) + '">' + (collapsed ? "&#9656;" : "&#9662;") + "</button>"
+          : "") + "</td>" +
+        '<td class="cov-module-name">' + escapeHtml(m.name) + "</td>" +
+        '<td class="mono cov-col-id">' + m.id + "</td>" +
+        "<td></td>" +
+        '<td class="mono cov-col-num">' + techniqueTotal + "</td>" +
+        "<td></td>" +
+        '<td class="cov-col-enabled"><label class="switch"><input type="checkbox" data-mod="' + m.id + '" ' +
+          (m.enabled ? "checked " : "") + (m.locked ? "disabled " : "") + '/><span class="track"></span></label></td>' +
+      "</tr>" +
+      items.map(function (item) { return coverageTcRowHtml(item, m.id); }).join("")
+    );
+  }
+
+  function renderCoverageTable() {
+    var body = document.getElementById("coverageTableBody");
+    var placed = {};
+    var html = "";
+    MODULE_FAMILIES.forEach(function (family) {
+      var members = state.modules.filter(function (m) { return family.ids.indexOf(m.id) !== -1 && (coverageItemsByModule[m.id] || []).length; });
+      if (!members.length) return;
+      members.forEach(function (m) { placed[m.id] = true; });
+      html += '<tr class="cov-family-row" data-family="' + escapeHtml(family.label) + '"><td colspan="7">' + escapeHtml(family.label) + "</td></tr>";
+      html += members.map(function (m) { return coverageModuleRowHtml(m, family.label); }).join("");
+    });
+    var leftover = state.modules.filter(function (m) { return !placed[m.id] && (coverageItemsByModule[m.id] || []).length; });
+    if (leftover.length) {
+      html += '<tr class="cov-family-row" data-family="Other"><td colspan="7">Other</td></tr>';
+      html += leftover.map(function (m) { return coverageModuleRowHtml(m, "Other"); }).join("");
+    }
+    html += '<tr id="coverageNoMatch" hidden><td colspan="7" class="cov-loading">No test cases match your search.</td></tr>';
+    body.innerHTML = html || '<tr><td colspan="7" class="cov-loading">No test cases found.</td></tr>';
+    applyCoverageVisibility();
+  }
+
+  // Recomputes visibility for every row from BOTH the manual
+  // expand/collapse state and the search query together, in one pass --
+  // rather than two separate handlers each mutating `hidden` on their
+  // own, which would fight each other (e.g. a search clearing while a
+  // module is manually collapsed). A query always force-expands every
+  // module so a matching child row is never hidden by a stale collapse.
+  function applyCoverageVisibility() {
+    var query = (document.getElementById("coverageSearch").value || "").trim().toLowerCase();
+    var familyHasVisible = {};
+    var anyVisible = false;
+    document.querySelectorAll(".cov-module-row").forEach(function (modRow) {
+      var modId = modRow.dataset.module;
+      var modMatches = !query || modRow.dataset.search.indexOf(query) !== -1;
+      var childRows = document.querySelectorAll('.cov-tc-row[data-parent="' + modId + '"]');
+      var collapsed = !query && !!coverageCollapsed[modId];
+      var anyChildMatches = false;
+      childRows.forEach(function (childRow) {
+        var childMatches = !query || childRow.dataset.search.indexOf(query) !== -1;
+        if (childMatches) anyChildMatches = true;
+        childRow.hidden = collapsed || !(modMatches || childMatches);
+      });
+      var visible = modMatches || anyChildMatches;
+      modRow.hidden = !visible;
+      if (visible) { anyVisible = true; familyHasVisible[modRow.dataset.family] = true; }
+      var btn = modRow.querySelector(".cov-expand-btn");
+      if (btn) {
+        btn.setAttribute("aria-expanded", String(!collapsed));
+        btn.innerHTML = collapsed ? "&#9656;" : "&#9662;";
+      }
+    });
+    document.querySelectorAll(".cov-family-row").forEach(function (familyRow) {
+      familyRow.hidden = !familyHasVisible[familyRow.dataset.family];
+    });
+    var noMatch = document.getElementById("coverageNoMatch");
+    if (noMatch) noMatch.hidden = anyVisible || !query;
+  }
+
+  document.getElementById("coverageSearch").addEventListener("input", applyCoverageVisibility);
+
+  document.getElementById("coverageTableBody").addEventListener("click", function (e) {
+    var btn = e.target.closest(".cov-expand-btn");
+    if (!btn) return;
+    var modId = btn.dataset.expand;
+    coverageCollapsed[modId] = !coverageCollapsed[modId];
+    applyCoverageVisibility();
+  });
+
+  document.getElementById("coverageTableBody").addEventListener("change", async function (e) {
+    var input = e.target.closest("input[data-mod]");
+    if (!input) return;
+    var id = input.dataset.mod;
+    try {
+      await api("/api/modules/" + id, { method: "PUT", body: JSON.stringify({ enabled: input.checked }) });
+      var m = state.modules.find(function (x) { return x.id === id; });
+      if (m) m.enabled = input.checked;
+      document.getElementById("navModulesCount").textContent = state.modules.filter(function (x) { return x.enabled; }).length;
+      var row = document.querySelector('.cov-module-row[data-module="' + id + '"]');
+      if (row) row.classList.toggle("is-disabled", !input.checked);
+      toast((input.checked ? "Enabled " : "Disabled ") + id);
+    } catch (err) {
+      input.checked = !input.checked;
+      toast("Could not update module: " + err.message, true);
+    }
+  });
 
   // ---------------------------------------------------------------- generic prompt/confirm modal
   // Replaces window.prompt()/window.confirm() -- native browser dialogs
@@ -2652,122 +2965,21 @@ async function loadHealth() {
   // "new scan" flow) use a dedicated page for, not a cramped modal.
   var scanNewConfirm = document.getElementById("scanNewConfirm");
   var scanNewStart = document.getElementById("scanNewStart");
-  // module id -> technique_count, populated by renderScanNewModuleList()
-  // -- updateScanNewSummary() reads this instead of re-parsing state.modules
-  // on every checkbox change, so the live "Scan scope" panel stays cheap.
-  var scanNewTechniqueCounts = {};
-  // Grouping modules into their real technique families -- the single
-  // biggest thing separating "a settings form with checkboxes" from an
-  // actual scan-configuration surface. Order here is also render order;
-  // families a target has no modules for simply don't appear.
-  var SCAN_NEW_MODULE_FAMILIES = [
-    { label: "Authentication & Session", ids: ["auth_tests", "jwt_tests", "csrf_tests"] },
-    { label: "Access Control", ids: ["idor_tests"] },
-    { label: "Injection", ids: ["sqli_tests", "xss_tests", "injection_variants_tests", "ssrf_tests", "deserialization_tests", "graphql_tests"] },
-    { label: "Business Logic", ids: ["business_logic_tests", "file_upload_tests"] },
-    { label: "Configuration & Disclosure", ids: ["configuration_tests", "disclosure_tests", "cache_tests"] },
-  ];
-  function scanNewModuleCardHtml(m) {
-    // Search matches against both the display name AND the raw module
-    // id -- "xss" typed naturally matches "xss_tests" even though the
-    // display label "Cross-Site Scripting" has no literal "xss" in it.
-    var haystack = (m.name + " " + m.id).toLowerCase().replace(/"/g, "&quot;");
-    return '<label data-mod-name="' + haystack + '"><input type="checkbox" value="' + m.id + '"' + (m.enabled ? " checked" : "") + ' />' +
-      '<span><span class="mod-name">' + m.name + '</span>' +
-      '<span class="mod-tc-count">' + (m.technique_count || 0) + " technique" + (m.technique_count === 1 ? "" : "s") + "</span></span></label>";
-  }
-  // Renders the FULL grouped list exactly once per page visit -- every
-  // module's checkbox stays in the DOM permanently after this. Search
-  // filtering (applyScanNewModuleFilter, below) only ever toggles
-  // [hidden] on top of these same nodes; it never re-renders, so a
-  // checked-then-filtered-out module can never silently lose its
-  // checked state the way rebuilding innerHTML from a filtered list
-  // would.
-  function renderScanNewModuleList() {
-    var list = document.getElementById("scanNewModuleList");
-    var runnable = state.modules.filter(function (m) { return !m.locked; }); // crawler always runs, not a choice
-    scanNewTechniqueCounts = {};
-    runnable.forEach(function (m) { scanNewTechniqueCounts[m.id] = m.technique_count || 0; });
-    if (!runnable.length) {
-      list.innerHTML = '<div class="card-empty">No modules configured for this target yet — check Modules in the sidebar.</div>';
-      updateScanNewSummary();
-      return;
-    }
-    var byId = {};
-    runnable.forEach(function (m) { byId[m.id] = m; });
-    var placed = {};
-    var html = "";
-    SCAN_NEW_MODULE_FAMILIES.forEach(function (family) {
-      var members = family.ids.map(function (id) { return byId[id]; }).filter(Boolean);
-      if (!members.length) return;
-      members.forEach(function (m) { placed[m.id] = true; });
-      html += '<div class="scan-new-module-family" data-family="' + family.label + '"><div class="scan-new-module-family-label">' + family.label +
-        ' <span class="n">(' + members.length + ')</span></div><div class="scan-new-module-grid">' +
-        members.map(scanNewModuleCardHtml).join("") + "</div></div>";
-    });
-    // Any module not covered by SCAN_NEW_MODULE_FAMILIES above (a new
-    // module added later without updating this list) still shows up,
-    // under a generic catch-all, rather than silently vanishing from
-    // the page -- the same "never silently drop real coverage" rule
-    // this project applies to its own vuln-detection logic.
-    var leftover = runnable.filter(function (m) { return !placed[m.id]; });
-    if (leftover.length) {
-      html += '<div class="scan-new-module-family" data-family="Other"><div class="scan-new-module-family-label">Other <span class="n">(' + leftover.length + ')</span></div>' +
-        '<div class="scan-new-module-grid">' + leftover.map(scanNewModuleCardHtml).join("") + "</div></div>";
-    }
-    list.innerHTML = html;
-    updateScanNewSummary();
-    list.querySelectorAll("input").forEach(function (cb) { cb.addEventListener("change", updateScanNewSummary); });
-    applyScanNewModuleFilter();
-  }
-  // Toggles [hidden] on individual module cards and whole family
-  // sections (a family with nothing matching hides its own header too,
-  // rather than showing an empty "Injection (3)" label above nothing).
-  function applyScanNewModuleFilter() {
-    var query = (document.getElementById("scanNewModuleSearch").value || "").trim().toLowerCase();
-    var list = document.getElementById("scanNewModuleList");
-    var anyVisible = false;
-    list.querySelectorAll(".scan-new-module-family").forEach(function (family) {
-      var visibleInFamily = 0;
-      family.querySelectorAll("label[data-mod-name]").forEach(function (label) {
-        var matches = !query || label.dataset.modName.indexOf(query) !== -1;
-        label.hidden = !matches;
-        if (matches) visibleInFamily++;
-      });
-      family.hidden = visibleInFamily === 0;
-      if (visibleInFamily > 0) anyVisible = true;
-    });
-    var noMatch = document.getElementById("scanNewModuleNoMatch");
-    if (!anyVisible && query) {
-      if (!noMatch) {
-        noMatch = document.createElement("div");
-        noMatch.className = "scan-new-module-no-match";
-        noMatch.id = "scanNewModuleNoMatch";
-        list.appendChild(noMatch);
-      }
-      noMatch.textContent = 'No modules match "' + query + '".';
-    } else if (noMatch) {
-      noMatch.remove();
-    }
-  }
-  // Drives both the compact "N / M selected" count next to the Modules
-  // card head AND the live "Scan scope" sidebar panel -- one source of
-  // truth (the checked boxes in the DOM right now) for both, so they can
-  // never drift out of sync with each other or with what Start will
-  // actually submit.
+  // Module selection is global now (managed on the Test Cases page,
+  // #/coverage) -- this summary is read-only, sourced straight from
+  // state.modules (the same data Test Cases itself renders from), not
+  // from any checkbox state on this page. Every future scan runs
+  // whatever's enabled there.
   function updateScanNewSummary() {
-    var boxes = document.querySelectorAll("#scanNewModuleList input");
-    var checkedBoxes = Array.from(document.querySelectorAll("#scanNewModuleList input:checked"));
-    document.getElementById("scanNewModuleCount").textContent = checkedBoxes.length + " / " + boxes.length + " selected";
-
-    var techniqueTotal = checkedBoxes.reduce(function (sum, cb) { return sum + (scanNewTechniqueCounts[cb.value] || 0); }, 0);
-    document.getElementById("scanNewSummaryModules").textContent = checkedBoxes.length;
-    document.getElementById("scanNewSummaryModulesPlural").textContent = checkedBoxes.length === 1 ? "" : "s";
+    var enabledModules = (state.modules || []).filter(function (m) { return m.enabled && !m.locked; });
+    var techniqueTotal = enabledModules.reduce(function (sum, m) { return sum + (m.technique_count || 0); }, 0);
+    document.getElementById("scanNewSummaryModules").textContent = enabledModules.length;
+    document.getElementById("scanNewSummaryModulesPlural").textContent = enabledModules.length === 1 ? "" : "s";
     document.getElementById("scanNewSummaryTechniques").textContent = techniqueTotal;
     document.getElementById("scanNewSummaryTechniquesPlural").textContent = techniqueTotal === 1 ? "" : "s";
     document.querySelectorAll(".scan-new-summary-row").forEach(function (row, i) {
       if (i > 1) return; // the workflows row toggles its own visibility separately
-      row.classList.toggle("is-empty", i === 0 ? checkedBoxes.length === 0 : techniqueTotal === 0);
+      row.classList.toggle("is-empty", i === 0 ? enabledModules.length === 0 : techniqueTotal === 0);
     });
 
     var workflowChecked = document.querySelectorAll("#scanNewWorkflowList input:checked").length;
@@ -2796,27 +3008,22 @@ async function loadHealth() {
   }
   async function openNewScanPage() {
     document.getElementById("scanNewName").value = "";
-    document.getElementById("scanNewModuleSearch").value = "";
     scanNewConfirm.checked = false;
     scanNewStart.disabled = true;
     if (!state.modules || !state.modules.length) await loadModules();
-    renderScanNewModuleList();
+    updateScanNewSummary();
     renderScanNewWorkflowList();
+    // Fetched fresh every time this page opens, not read off whatever a
+    // previous visit rendered -- an operator who switched target/safety
+    // settings elsewhere this session must see what will ACTUALLY apply
+    // to the scan they're about to start, not a stale value.
+    await Promise.all([loadTargetProfiles(), loadConfig(), loadTesting(), loadCredentialsFields(), loadVerifyLoginRoles(), loadManualSessionRoles()]);
   }
-  document.getElementById("scanNewModuleSearch").addEventListener("input", applyScanNewModuleFilter);
   function goToScans() { setRoute("#/scans"); }
   document.getElementById("newScanBtn").addEventListener("click", function () { setRoute("#/scan-new"); });
   document.querySelectorAll("[data-runscan]").forEach(function (b) { b.addEventListener("click", function () { setRoute("#/scan-new"); }); });
   document.getElementById("scanNewCancel").addEventListener("click", goToScans);
   document.getElementById("scanNewCancel2").addEventListener("click", goToScans);
-  document.getElementById("scanNewModulesAll").addEventListener("click", function () {
-    document.querySelectorAll("#scanNewModuleList input").forEach(function (cb) { cb.checked = true; });
-    updateScanNewSummary();
-  });
-  document.getElementById("scanNewModulesNone").addEventListener("click", function () {
-    document.querySelectorAll("#scanNewModuleList input").forEach(function (cb) { cb.checked = false; });
-    updateScanNewSummary();
-  });
   scanNewConfirm.addEventListener("change", function () { scanNewStart.disabled = !scanNewConfirm.checked; });
 
   // ---------------------------------------------------------------- tool health check
@@ -2932,13 +3139,16 @@ async function loadHealth() {
   scanNewStart.addEventListener("click", async function () {
     scanNewStart.disabled = true;
     try {
-      var selectedModules = Array.from(document.querySelectorAll("#scanNewModuleList input:checked")).map(function (cb) { return cb.value; });
       var selectedWorkflows = Array.from(document.querySelectorAll("#scanNewWorkflowList input:checked")).map(function (cb) { return cb.value; });
       var scanName = document.getElementById("scanNewName").value.trim();
+      // No `modules` key -- module selection is global now (Test Cases
+      // page), so the scan runs whatever's currently enabled in
+      // config.json, the same way stof.main's own --module-less default
+      // already worked before New Scan had its own per-scan picker.
       var result = await api("/api/scans", {
         method: "POST",
         body: JSON.stringify({
-          modules: selectedModules, name: scanName || null,
+          name: scanName || null,
           workflow_ids: selectedWorkflows.length ? selectedWorkflows : null,
           confirm_authorized: true,
         }),
@@ -3381,8 +3591,13 @@ async function loadHealth() {
       loadScans();
     } else if (event.event === "module_toggled") {
       var m = state.modules.find(function (x) { return x.id === event.id; });
-      if (m) { m.enabled = event.enabled; renderModules(); }
+      if (m) m.enabled = event.enabled;
       document.getElementById("navModulesCount").textContent = state.modules.filter(function (x) { return x.enabled; }).length;
+      // Only re-render the table if it's actually been loaded this
+      // session (its data structures are populated lazily on first
+      // visit to #/coverage) -- otherwise there's nothing on screen
+      // this event needs to update.
+      if (state.testCatalogLoaded) renderCoverageTable();
     } else if (event.event === "testing_changed") {
       setProbesUI(event.allow_state_changing_probes);
     } else if (event.event === "workflow_saved" || event.event === "workflow_deleted") {

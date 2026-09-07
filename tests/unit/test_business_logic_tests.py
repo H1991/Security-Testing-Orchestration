@@ -234,7 +234,7 @@ async def test_self_assigned_privilege_fails_when_role_honored():
 
     assert result.status == FAIL
     assert result.finding is not None
-    assert result.finding.severity == "Critical"
+    assert result.finding.severity == "High"  # cvss_score=8.6 -- High per the CVSS v3.1 scale (7.0-8.9)
 
 
 @pytest.mark.asyncio
@@ -286,7 +286,7 @@ async def test_workflow_step_skipping_fails_when_later_step_reachable_directly()
 
     assert result.status == FAIL
     assert result.finding is not None
-    assert result.finding.severity == "High"
+    assert result.finding.severity == "Medium"  # cvss_score=6.5 -- Medium per the CVSS v3.1 scale (4.0-6.9)
 
 
 @pytest.mark.asyncio
@@ -580,7 +580,7 @@ async def test_workflow_state_skip_fails_when_late_stage_value_is_accepted_and_e
 
     assert result.status == FAIL
     assert result.finding is not None
-    assert result.finding.severity == "High"
+    assert result.finding.severity == "Medium"  # cvss_score=6.5 -- Medium per the CVSS v3.1 scale (4.0-6.9)
     assert result.finding.vuln_type == "Business Logic -- Workflow State Field Accepted Out of Sequence"
     assert "published" in result.finding.description  # the first late-stage candidate tried
 

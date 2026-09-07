@@ -77,13 +77,16 @@ class FindingDB:
                     scanner_source TEXT NOT NULL,
                     technique_id TEXT,
                     cwe TEXT,
-                    owasp_category TEXT
+                    owasp_category TEXT,
+                    confidence TEXT,
+                    cvss_vector TEXT,
+                    confirmed_role TEXT
                 )
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_findings_scan_id ON findings(scan_id)")
             # Additive migration for a `findings` table created before
-            # these three columns existed -- `CREATE TABLE IF NOT EXISTS`
+            # these columns existed -- `CREATE TABLE IF NOT EXISTS`
             # above is a no-op against an already-created table, so an
             # older on-disk data/stof.db needs them added explicitly.
             # Never actually hit in production yet (this table has no
@@ -91,7 +94,7 @@ class FindingDB:
             # but a stale local test DB from earlier development could
             # still have the old shape.
             existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(findings)")}
-            for column in ("technique_id", "cwe", "owasp_category"):
+            for column in ("technique_id", "cwe", "owasp_category", "confidence", "cvss_vector", "confirmed_role"):
                 if column not in existing_cols:
                     conn.execute(f"ALTER TABLE findings ADD COLUMN {column} TEXT")
 
@@ -102,11 +105,13 @@ class FindingDB:
                 INSERT INTO findings (scan_id, finding_id, module_id, vuln_type, severity,
                                        cvss_score, endpoint, user_role, request_raw, response_raw,
                                        evidence_refs, description, recommendation, discovered_at,
-                                       scanner_source, technique_id, cwe, owasp_category)
+                                       scanner_source, technique_id, cwe, owasp_category, confidence, cvss_vector,
+                                       confirmed_role)
                 VALUES (:scan_id, :finding_id, :module_id, :vuln_type, :severity,
                          :cvss_score, :endpoint, :user_role, :request_raw, :response_raw,
                          :evidence_refs, :description, :recommendation, :discovered_at,
-                         :scanner_source, :technique_id, :cwe, :owasp_category)
+                         :scanner_source, :technique_id, :cwe, :owasp_category, :confidence, :cvss_vector,
+                         :confirmed_role)
                 """,
                 [{"scan_id": scan_id, **f.to_row()} for f in findings],
             )

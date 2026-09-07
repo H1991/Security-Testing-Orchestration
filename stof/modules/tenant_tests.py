@@ -34,7 +34,14 @@ from __future__ import annotations
 from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
-from ._idor_shared import _content_fingerprint, _method_request_fn, _set_query_param, _tenant_scope_endpoints
+from ._idor_shared import (
+    _content_fingerprint,
+    _control_fingerprint_body_field,
+    _exclude_control_fingerprint,
+    _method_request_fn,
+    _set_query_param,
+    _tenant_scope_endpoints,
+)
 from .results import FAIL, PASS, SKIPPED, TestCaseResult
 
 _log = get_logger("modules.tenant_tests")
@@ -77,7 +84,7 @@ class TenantTechniquesMixin:
 
         if endpoint.method.upper() == "GET":
             url_for = lambda cid, e=endpoint, p=param: _set_query_param(e.url, p, cid)  # same lambda-closure shape idor_tests.py's own techniques use
-            responses, statuses = await self._probe_candidates(context, self.config.candidate_ids, url_for)
+            responses, statuses, _control_fp = await self._probe_candidates(context, self.config.candidate_ids, url_for)
         else:
             responses, statuses = await self._probe_tenant_scope_post(context, endpoint, param)
 
@@ -91,7 +98,7 @@ class TenantTechniquesMixin:
 
         sample_ids = list(responses.keys())[:3]
         finding = Finding(
-            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=8.1,
+            module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.1,
             endpoint=endpoint, user_role=self.high_priv_role,
             request_raw="\n".join(f"{endpoint.method} {endpoint.url} [{param}={cid}]" for cid in sample_ids),
             response_raw="\n".join(f"[{param}={cid}] HTTP {statuses.get(cid)}, {len(responses[cid])} bytes" for cid in sample_ids),
@@ -124,7 +131,10 @@ class TenantTechniquesMixin:
         JSON body rather than a query string, matching how a real
         tenant-scoped POST endpoint (e.g. `POST /bugs.json` with an
         `organization_id` body field, per this project's own knowledge
-        base) actually carries the parameter."""
+        base) actually carries the parameter. Filters out any candidate
+        indistinguishable from a control/baseline probe
+        (`_control_fingerprint_body_field`), the same false-positive
+        guard `_probe_candidates` applies for the GET case above."""
         import json as json_module
 
         responses: dict[str, str] = {}
@@ -141,7 +151,8 @@ class TenantTechniquesMixin:
             statuses[candidate] = resp.status
             if resp.status == 200 and len(body) >= self.config.min_content_length:
                 responses[candidate] = body
-        return responses, statuses
+        control_fp = await _control_fingerprint_body_field(method_fn, endpoint.url, param, self.config.min_content_length)
+        return _exclude_control_fingerprint(responses, control_fp), statuses
 
     async def _techniques_tc131(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
         return await self._safe(self._technique_tenant_scope_substitution(endpoints, session_manager, session_pool, target_url, evidence))
