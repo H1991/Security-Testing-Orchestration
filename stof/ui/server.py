@@ -15,7 +15,7 @@ import re
 import shutil
 import sys
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
@@ -301,13 +301,20 @@ def _test_catalog_entries() -> list[dict]:
 
 
 class ScanRecord:
-    def __init__(self, scan_id: str, target: str, modules: list[str], workflow_ids: list[str] | None = None) -> None:
+    def __init__(
+        self, scan_id: str, target: str, modules: list[str], workflow_ids: list[str] | None = None, status: str = "running",
+    ) -> None:
         self.scan_id = scan_id
         self.target = target
         self.modules = modules
         self.workflow_ids = workflow_ids or []
-        self.status = "running"  # running | complete | failed
+        self.status = status  # queued | running | complete | failed | stopped
         self.exit_code: int | None = None
+        # `started_at` means "queued at" for a scan that begins life
+        # queued -- reset to the real subprocess-launch moment in
+        # `_drain_scan_queue()` once it actually starts, so Duration
+        # (and the Scans table's Started column) reflect real run time,
+        # not time spent waiting behind other scans.
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.finished_at: str | None = None
         # Structured events (see `stof/core/console.py`'s `_emit_event`)
@@ -803,6 +810,7 @@ class TargetProfileRequest(BaseModel):
 
     name: str | None = None
     app_type: Literal["web", "api", "mobile_api", "other"] | None = None
+    environment: Literal["development", "testing", "staging", "qa", "production"] | None = None
     base_url: str | None = None
     login_url: str | None = None
     username_selector: str | None = None
@@ -2155,6 +2163,29 @@ def rename_scan(scan_id: str, body: ScanNameRequest) -> dict:
     return {"scan_id": scan_id, "name": body.name.strip() or None}
 
 
+def _reconstructed_scan_times(report: dict) -> tuple[str | None, str | None]:
+    """(started_at, finished_at) for a scan reconstructed from its report
+    JSON alone (this server process never launched it, or a restart
+    dropped the in-memory record). `generated_at` is the report's real
+    completion timestamp -- genuinely `finished_at` -- but using it for
+    BOTH fields (as this used to) makes every such scan's Duration
+    column read 0s. `duration_seconds` is real too (computed once, at
+    scan completion, same value the Avg scan duration KPI already
+    trusts), so `started_at` is derived by subtracting it back out
+    rather than guessing "now" the way replaying an events.jsonl's
+    ScanRecord() constructor would (see get_scan()'s own comment)."""
+    finished_at = report.get("generated_at")
+    duration = report.get("duration_seconds")
+    if not finished_at or not isinstance(duration, (int, float)):
+        return finished_at, finished_at
+    try:
+        finished_dt = datetime.fromisoformat(finished_at)
+    except ValueError:
+        return finished_at, finished_at
+    started_at = (finished_dt - timedelta(seconds=duration)).isoformat()
+    return started_at, finished_at
+
+
 @app.get("/api/scans")
 def list_scans() -> list[dict]:
     names = _load_scan_names()
@@ -2175,10 +2206,11 @@ def list_scans() -> list[dict]:
             if not m or m.group(1) in live:
                 continue
             report = _read_json(path) or {}
+            started_at, finished_at = _reconstructed_scan_times(report)
             out.append({
                 "scan_id": m.group(1), "name": names.get(m.group(1)), "target": report.get("target", "unknown"),
                 "modules": report.get("modules_run", []), "status": "complete", "exit_code": 0,
-                "started_at": report.get("generated_at"), "finished_at": report.get("generated_at"),
+                "started_at": started_at, "finished_at": finished_at,
             })
     # One consistent "most recent first" ordering regardless of source
     # (in-memory vs. disk-recovered) -- the Dashboard's default scan
@@ -2224,10 +2256,11 @@ def get_scan(scan_id: str) -> dict:
                 continue
             replay.events.append(event)
             _apply_event_to_state(replay, event)
+    started_at, finished_at = _reconstructed_scan_times(report)
     return {
         "scan_id": scan_id, "name": _load_scan_names().get(scan_id), "target": report.get("target", "unknown"),
         "modules": report.get("modules_run", []), "status": "complete", "exit_code": 0,
-        "started_at": report.get("generated_at"), "finished_at": report.get("generated_at"),
+        "started_at": started_at, "finished_at": finished_at,
         "current_phase": replay.current_phase, "modules_state": replay.modules_state,
         "live_findings": replay.live_findings, "events": replay.events, "crawl": replay.crawl,
     }
@@ -2422,6 +2455,81 @@ def _duration_stats(reports: list[dict]) -> dict | None:
     return {"avg": round(sum(durations) / len(durations), 1), "min": round(min(durations), 1), "max": round(max(durations), 1), "count": len(durations)}
 
 
+def _scans_30d_trend(reports: list[dict]) -> dict:
+    """Real 30-day scan volume + period-over-period change, for the
+    Executive Overview KPI strip's "Scans" cell -- computed from each
+    report's own `generated_at`, not an estimate. `change_pct` is None
+    (not 0) when the prior period had zero scans, since "0 -> N" isn't
+    expressible as a percentage without implying a fake baseline."""
+    now = datetime.now(timezone.utc)
+
+    def _parse(ts: str | None) -> datetime | None:
+        if not ts:
+            return None
+        try:
+            return datetime.fromisoformat(ts)
+        except ValueError:
+            return None
+
+    last_30d = 0
+    prior_30d = 0
+    for r in reports:
+        gen = _parse(r.get("generated_at"))
+        if gen is None:
+            continue
+        age_days = (now - gen).total_seconds() / 86400
+        if 0 <= age_days <= 30:
+            last_30d += 1
+        elif 30 < age_days <= 60:
+            prior_30d += 1
+    change_pct = round((last_30d - prior_30d) / prior_30d * 100) if prior_30d else None
+    return {"last_30d": last_30d, "prior_30d": prior_30d, "change_pct": change_pct}
+
+
+def _confirmed_with_evidence(report: dict, severity: str) -> int:
+    """How many of `report`'s findings at `severity` are both
+    confidence="confirmed" (Finding.confidence, see findings/models.py)
+    AND have at least one real evidence file captured -- the Executive
+    Overview's "Critical" KPI cell sub-label. Real per-finding data
+    already loaded in `report` for this same request; no extra I/O."""
+    return sum(
+        1
+        for f in report.get("findings", [])
+        if f.get("severity") == severity
+        and (f.get("confidence") or "confirmed") == "confirmed"
+        and f.get("evidence_refs")
+    )
+
+
+def _portfolio_unique_severity_counts(reports: list[dict], severities: tuple[str, ...]) -> dict[str, dict[str, int]]:
+    """Executive Overview's Critical/High KPI cells, portfolio-wide (every
+    completed scan, not just the latest) with duplicates collapsed --
+    the same real vulnerability re-appearing across several historical
+    scans of the same target (a re-run, a retest) must count once, not
+    once per scan. Dedup key is (target, vuln_type, endpoint URL): the
+    closest real signal to "the same issue" available without a stable
+    cross-scan finding identity. `confirmed_with_evidence` is counted on
+    the SAME deduped keys (true if ANY occurrence of that unique issue
+    was confirmed+evidenced), so the KPI cell's headline and its
+    sub-label are always on the same accounting basis -- never a
+    deduped number with a non-deduped sub-count next to it."""
+    seen: dict[str, set[tuple]] = {sev: set() for sev in severities}
+    confirmed: dict[str, set[tuple]] = {sev: set() for sev in severities}
+    for r in reports:
+        target = r.get("target") or ""
+        for f in r.get("findings", []):
+            sev = f.get("severity")
+            if sev not in seen:
+                continue
+            endpoint = f.get("endpoint")
+            endpoint_url = endpoint.get("url") if isinstance(endpoint, dict) else (endpoint or "")
+            key = (target, f.get("vuln_type"), endpoint_url)
+            seen[sev].add(key)
+            if (f.get("confidence") or "confirmed") == "confirmed" and f.get("evidence_refs"):
+                confirmed[sev].add(key)
+    return {sev: {"total": len(seen[sev]), "confirmed_with_evidence": len(confirmed[sev])} for sev in severities}
+
+
 @app.get("/api/dashboard/summary")
 def get_dashboard_summary() -> dict:
     """Aggregates across every completed scan's report JSON on disk --
@@ -2445,22 +2553,37 @@ def get_dashboard_summary() -> dict:
     # completed scans.
     endpoints_on_disk = _read_json(ENDPOINTS_PATH)
     attack_surface = _attack_surface_summary(endpoints_on_disk) if isinstance(endpoints_on_disk, list) else None
+    apps_total = len(_load_targets_doc()["targets"])
 
     if not reports:
         return {
             "total_scans": 0, "latest": None, "trend": [], "top_modules": [],
             "coverage": {"modules_with_findings": 0, "modules_total": len(_KNOWN_MODULES) - 1},
             "owasp_totals": [], "duration_stats": None, "attack_surface": attack_surface,
-            "by_target": [],
+            "by_target": [], "apps_total": apps_total, "scans_30d": _scans_30d_trend([]),
+            "portfolio_severity": {"Critical": {"total": 0, "confirmed_with_evidence": 0}, "High": {"total": 0, "confirmed_with_evidence": 0}},
+            "total_findings": 0,
         }
 
+    # Last 6 scans PER application, not last 12 overall -- a flat "last
+    # 12 reports" window under-represents any app that scans less
+    # often than its portfolio-mates (confirmed live: one target's own
+    # 14 scans would crowd out every other application's trend
+    # entirely). Sorted back into chronological order afterward so the
+    # dashboard's per-app trend chart reads left-to-right as real time,
+    # not grouped by application.
+    _trend_per_target: dict[str, list[dict]] = {}
+    for r in reports:
+        _trend_per_target.setdefault(r.get("target") or "unknown", []).append(r)
+    trend_reports = [r for target_reports in _trend_per_target.values() for r in target_reports[-6:]]
+    trend_reports.sort(key=lambda r: r.get("generated_at") or "")
     trend = [
         {
             "scan_id": r.get("scan_id"), "target": r.get("target"), "generated_at": r.get("generated_at"),
             "by_severity": r.get("summary", {}).get("by_severity", {}),
             "total": r.get("summary", {}).get("total_findings", 0),
         }
-        for r in reports[-12:]  # last 12 scans -- enough for a trend read, not a wall of bars
+        for r in trend_reports
     ]
 
     module_counts: dict[str, dict[str, int]] = {}
@@ -2492,6 +2615,9 @@ def get_dashboard_summary() -> dict:
             # this specific scan (stof/main.py's _coverage_funnel()) --
             # None for a report generated before that existed.
             "endpoint_coverage": latest.get("coverage"),
+            # Executive Overview's "Critical" KPI sub-label -- real count,
+            # not a fixed fraction of the headline number.
+            "critical_confirmed_with_evidence": _confirmed_with_evidence(latest, "Critical"),
         },
         "trend": trend,
         "top_modules": top_modules,
@@ -2503,6 +2629,19 @@ def get_dashboard_summary() -> dict:
         "duration_stats": duration_stats,
         "attack_surface": attack_surface,
         "by_target": _group_by_target(reports),
+        # Real total target-profile count (config/targets.json), not just
+        # "apps that happen to have a scan report" -- by_target's own
+        # length is that latter, narrower count.
+        "apps_total": apps_total,
+        "scans_30d": _scans_30d_trend(reports),
+        "portfolio_severity": _portfolio_unique_severity_counts(reports, ("Critical", "High")),
+        # Real total across every completed scan's report -- lets the nav
+        # sidebar's Findings badge show the right number at boot without
+        # the client fetching every scan's /findings individually (that
+        # per-row storm was the dashboard-load slowness fixed earlier;
+        # the badge went stale at "0" until the Findings panel was first
+        # visited as a side effect of that fix -- this closes the gap).
+        "total_findings": sum(entry["total"] for entry in module_counts.values()),
     }
 
 

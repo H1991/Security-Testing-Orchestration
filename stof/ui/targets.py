@@ -103,6 +103,11 @@ def load(path: Path) -> dict:
         return default_store()
     doc.setdefault("targets", [])
     doc.setdefault("active_target_id", None)
+    # Additive migration for a targets.json written before "environment"
+    # existed -- same convention findings/store.py's own schema
+    # migration uses for an on-disk file predating a newer field.
+    for profile in doc["targets"]:
+        profile.setdefault("environment", "production")
     return doc
 
 
@@ -125,6 +130,14 @@ def new_profile(target_id: str, name: str) -> dict:
         "id": target_id,
         "name": name,
         "app_type": "web",
+        # Pure metadata, same as app_type -- never read by the scan
+        # engine or by any technique's own logic. Exists so an operator
+        # running STOF against several real deployments of the same
+        # application (staging vs. production) can tell them apart on
+        # the Applications/Scans pages, the same environment tagging
+        # every enterprise DAST console (Acunetix, AppScan, Invicti)
+        # already shows next to a target's name.
+        "environment": "production",
         "base_url": "",
         "login_url": "",
         "username_selector": None,
@@ -152,7 +165,7 @@ def apply_fields(profile: dict, updates: dict) -> None:
     `/api/credentials` in `stof/ui/server.py`): a field absent from
     `updates` (or explicitly `None`) is left untouched; `""` on a
     clearable selector field resets it back to auto-detect."""
-    for field in ("name", "app_type", "base_url", "login_url", "scan_intensity"):
+    for field in ("name", "app_type", "environment", "base_url", "login_url", "scan_intensity"):
         value = updates.get(field)
         if value:
             profile[field] = value

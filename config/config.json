@@ -1,13 +1,8 @@
 {
   "target": {
-    "base_url": "https://test.kapturekm.com/kauthor/login",
-    "login_url": "https://test.kapturekm.com/kauthor/login",
-    "requires_assisted_login": false,
-    "crawler_exclude_patterns": [
-      "content=inside_",
-      "survey_questions",
-      "privacypolicy"
-    ]
+    "base_url": "http://192.168.1.73:3001",
+    "login_url": "http://192.168.1.73:3001/#/login",
+    "requires_assisted_login": false
   },
   "browser": {
     "headless": true,
@@ -46,10 +41,10 @@
     "poll_interval_s": 5,
     "collaborator_url": "2tw3c9zy0lcf4vj0ceo1lvkh88e02p.burpcollaborator.net",
     "proxy_url": "http://192.168.1.69:8080",
-    "run_active_scan": false
+    "run_active_scan": true
   },
   "testing": {
-    "allow_state_changing_probes": true,
+    "allow_state_changing_probes": false,
     "scan_intensity": "standard"
   }
 }

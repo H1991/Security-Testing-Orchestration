@@ -179,3 +179,44 @@ def test_normalize_burp_issue_empty_dict_does_not_crash():
 
 def test_normalize_burp_issues_empty_list():
     assert normalize_burp_issues([]) == []
+
+
+# ---------------------------------------------------------------------------
+# Regression: a real Burp Suite Pro instance returned request/response as a
+# LIST of base64 chunks (not a single string, as PortSwigger's own docs
+# imply) -- confirmed live, this crashed base64.b64decode() and took down
+# the entire scan process post-completion, discarding every finding from
+# that run with no report written. See burp_normalizer.py's own comments.
+# ---------------------------------------------------------------------------
+
+
+def test_decode_evidence_handles_list_shaped_request_response():
+    # Simplest real case: a single-element list wrapping one base64
+    # string, the shape confirmed live against a real Burp instance.
+    request_raw, response_raw = _decode_evidence([{"request_response": {
+        "request": [_b64("GET /rest/products/1 HTTP/1.1\r\n")],
+        "response": _b64("HTTP/1.1 200 OK"),
+    }}])
+
+    assert request_raw == "GET /rest/products/1 HTTP/1.1\r\n"
+    assert response_raw == "HTTP/1.1 200 OK"
+
+
+def test_normalize_burp_issue_does_not_crash_on_list_shaped_evidence():
+    issue = _issue(evidence=[{"request_response": {"request": [_b64("GET / HTTP/1.1")], "response": [_b64("HTTP/1.1 200 OK")]}}])
+    finding = normalize_burp_issue(issue)
+    assert finding.vuln_type == "SQL injection"
+
+
+def test_normalize_burp_issues_skips_one_malformed_issue_without_losing_the_rest():
+    # `evidence` itself is documented as a list of dicts -- a string
+    # here makes `_decode_evidence`'s `item.get(...)` raise
+    # AttributeError (str has no .get), a shape no inner fallback
+    # catches, exercising normalize_burp_issues()'s own per-issue guard.
+    good_a = _issue(name="A")
+    malformed = _issue(name="Malformed", evidence="not-a-list")
+    good_b = _issue(name="B")
+
+    findings = normalize_burp_issues([good_a, malformed, good_b])
+
+    assert [f.vuln_type for f in findings] == ["A", "B"]

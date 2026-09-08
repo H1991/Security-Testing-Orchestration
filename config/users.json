@@ -3,16 +3,9 @@
     {
       "id": "admin-01",
       "role": "admin",
-      "username": "vapt_publish@yopmail.com",
+      "username": "admin@juice-sh.op",
       "password": "{{env:ADMIN_PASSWORD}}",
-      "auth_type": "form_login"
-    },
-    {
-      "id": "user-01",
-      "role": "normal",
-      "username": "vapt_write@yopmail.com",
-      "password": "{{env:USER_PASSWORD}}",
-      "auth_type": "form_login"
+      "auth_type": "jwt"
     }
   ]
 }

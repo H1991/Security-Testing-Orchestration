@@ -87,11 +87,21 @@ def test_find_returns_matching_profile():
 def test_new_profile_defaults():
     profile = targets.new_profile("acme", "Acme")
     assert profile["app_type"] == "web"
+    assert profile["environment"] == "production"
     assert profile["scan_intensity"] == "standard"
     assert profile["allow_state_changing_probes"] is False
     assert profile["admin_password_set"] is False
     assert profile["normal_password_set"] is False
     assert profile["created_at"] == profile["updated_at"]
+
+
+def test_load_backfills_environment_for_a_profile_saved_before_the_field_existed(tmp_path):
+    path = tmp_path / "targets.json"
+    profile = targets.new_profile("acme", "Acme")
+    del profile["environment"]  # simulates targets.json written before this field existed
+    path.write_text(json.dumps({"targets": [profile], "active_target_id": "acme"}), encoding="utf-8")
+    loaded = targets.load(path)
+    assert loaded["targets"][0]["environment"] == "production"
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +122,12 @@ def test_apply_fields_leaves_omitted_fields_untouched():
     profile["base_url"] = "https://existing.example"
     targets.apply_fields(profile, {"app_type": "api"})
     assert profile["base_url"] == "https://existing.example"
+
+
+def test_apply_fields_sets_environment():
+    profile = targets.new_profile("acme", "Acme")
+    targets.apply_fields(profile, {"environment": "staging"})
+    assert profile["environment"] == "staging"
 
 
 def test_apply_fields_none_never_overwrites():

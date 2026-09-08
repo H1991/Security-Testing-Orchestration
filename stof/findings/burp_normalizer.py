@@ -27,9 +27,12 @@ import html
 import re
 from typing import Any
 
+from stof.core.logger import get_logger
 from stof.crawler.endpoint_store import Endpoint
 
 from .models import Finding
+
+_log = get_logger("findings.burp_normalizer")
 
 _SEVERITY_MAP = {
     "high": "High",
@@ -59,10 +62,18 @@ def _strip_html(markup: str) -> str:
     return html.unescape(_TAG_RE.sub("", markup)).strip()
 
 
-def _decode_base64(value: str) -> str:
+def _decode_base64(value: str | list[Any]) -> str:
+    """`value` is documented by Burp's own REST API as a base64 string,
+    but confirmed live: a real Burp Suite Pro instance can return a
+    LIST of base64 chunks for `request`/`response` instead (evidence
+    split across multiple fragments) -- joined here before decoding
+    rather than crashing `base64.b64decode()`, which only accepts a
+    str/bytes-like argument."""
+    if isinstance(value, list):
+        value = "".join(str(chunk) for chunk in value)
     try:
         return base64.b64decode(value).decode("utf-8", errors="replace")
-    except (binascii.Error, ValueError):
+    except (binascii.Error, ValueError, TypeError):
         return ""
 
 
@@ -113,4 +124,21 @@ def normalize_burp_issue(issue: dict[str, Any]) -> Finding:
 
 
 def normalize_burp_issues(issues: list[dict[str, Any]]) -> list[Finding]:
-    return [normalize_burp_issue(issue) for issue in issues]
+    """One malformed Burp issue (an unexpected field shape Burp's own
+    REST API wasn't confirmed against, see module docstring) must never
+    discard every OTHER issue -- let alone the whole scan's real STOF
+    findings, gathered well before this normalization step runs at the
+    very end. Confirmed live: before this guard, a single issue with a
+    list-shaped `request`/`response` raised and crashed the entire scan
+    process post-completion, losing all findings with no report written
+    -- the exact "one test's exception abort its siblings" failure mode
+    this project's own modules are built to avoid (see CLAUDE.md /
+    stof-enterprise-dev's transient-error handling). Skipped issues are
+    logged, not silently dropped."""
+    findings = []
+    for issue in issues:
+        try:
+            findings.append(normalize_burp_issue(issue))
+        except Exception as exc:
+            _log.warning(f"skipping one Burp issue that failed to normalize ({issue.get('name', 'unknown')!r}): {exc}")
+    return findings
