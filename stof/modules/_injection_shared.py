@@ -274,6 +274,88 @@ def looks_json_authenticated(payload_body: str, baseline_body: str) -> bool:
     return not _dict_has_auth_token_key(baseline_json, depth=0)
 
 
+async def measure_similarity_noise_floor(
+    context, endpoint: "Endpoint", param: str, location: str,
+) -> "float | None":
+    """Fires the SAME benign placeholder value twice and returns the
+    similarity between the two responses -- the endpoint's own natural
+    noise floor (timestamps, nonces, per-request ids, ad rotation) with
+    no injected payload involved at all. `None` if either probe fails.
+
+    Used to calibrate the boolean-blind differential instead of trusting
+    a fixed similarity threshold: on a very dynamic page, two genuinely
+    IDENTICAL requests can already read as only, say, 60% similar, in
+    which case a fixed 0.15 true/false delta is far too sensitive and
+    will false-positive on noise alone. On a stable page the noise floor
+    will be ~1.0 and the calibrated threshold collapses back to the
+    original fixed behavior -- this never makes a stable target's
+    detection weaker, only a noisy target's detection more honest."""
+    first = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
+    if first is None:
+        return None
+    second = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
+    if second is None:
+        return None
+    return response_similarity(first[1], second[1])
+
+
+async def measure_interleaved_timing_delta(
+    context, endpoint: "Endpoint", param: str, location: str, payload: str,
+) -> "tuple[float, float] | None":
+    """Baseline, payload, baseline -- interleaved, not a single baseline
+    measured once before the payload. A server that's simply warming up
+    (DB connection pool, JIT, cold cache) produces a monotonically
+    *increasing* latency across sequential requests that looks exactly
+    like a repeatable injected delay to a baseline-then-payload-once
+    measurement. Bracketing the payload probe with two independent
+    baseline samples gives both a truer baseline (their average) and a
+    real per-endpoint jitter estimate (their absolute difference) instead
+    of assuming the single baseline sample was representative.
+
+    Returns `(payload_delta, jitter)`:
+      - `payload_delta` = payload's elapsed time minus the average of the
+        two baseline samples.
+      - `jitter` = the absolute difference between the two baseline
+        samples -- this endpoint's own natural timing noise under
+        current load, to be used as a per-target confirmation floor
+        instead of (or alongside) a fixed delta threshold.
+
+    `None` if any of the three probes failed."""
+    first_baseline = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
+    if first_baseline is None:
+        return None
+    payload_probe = await send_probe(context, endpoint, build_params(endpoint, param, payload), location)
+    if payload_probe is None:
+        return None
+    second_baseline = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
+    if second_baseline is None:
+        return None
+    baseline_avg = (first_baseline[2] + second_baseline[2]) / 2
+    jitter = abs(first_baseline[2] - second_baseline[2])
+    return payload_probe[2] - baseline_avg, jitter
+
+
+def build_collaborator_callback_url(collaborator_url: str, marker: str) -> str:
+    """One unique-per-probe out-of-band callback URL from an
+    operator-configured collaborator host (`config.json`'s
+    `burp.collaborator_url` -- Burp Collaborator, interactsh, or any
+    equivalent DNS/HTTP callback service) and a marker unique to this
+    probe. Promoted from `ssrf_tests.py`'s own `_technique_oob_callback`
+    (TC-137.6, the first module to close this project's OOB-confirmation
+    gap) so any technique needing a genuine blind/OOB confirmation --
+    blind XSS, blind command injection, OOB-XXE -- builds the identical
+    callback-URL shape rather than a slightly different one per module.
+    STOF only ever SENDS this URL; it never polls the collaborator's own
+    API for a received callback (that's a separate, real integration
+    this project hasn't built -- Burp's REST API or interactsh's client
+    protocol), so every caller reports the sent marker(s) as a SKIPPED
+    "check the collaborator's dashboard yourself" result, never a FAIL/
+    PASS it can't actually back up -- see `ssrf_tests.py`'s own
+    `_technique_oob_callback` docstring for that same discipline."""
+    collaborator_host = collaborator_url.split("://", 1)[-1].strip("/")
+    return f"http://{marker}.{collaborator_host}/"
+
+
 def response_similarity(a: str, b: str) -> float:
     """0..1 similarity ratio between two response bodies.
 

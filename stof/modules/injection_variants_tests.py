@@ -125,6 +125,7 @@ from ._injection_shared import (
     build_params,
     injectable_endpoints,
     looks_json_authenticated,
+    measure_interleaved_timing_delta,
     placeholder_value,
     response_similarity,
     send_probe,
@@ -566,18 +567,15 @@ class InjectionVariantsTestsModule(VulnModule):
             vuln_type, role=self.config.high_priv_role,
         )
 
-    async def _cmd_injection_candidate(self, endpoint: "Endpoint", param: str, location: str, context, payload: str) -> "float | None":
-        """One (endpoint, param, payload)'s baseline-then-payload timing
-        delta, or `None` if either probe failed. Same shape as
-        `sqli_tests.py`'s `_time_based_candidate`, extracted the same
-        way so `_technique_command_injection` stays orchestration only."""
-        baseline = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
-        if baseline is None:
-            return None
-        probe = await send_probe(context, endpoint, build_params(endpoint, param, payload), location)
-        if probe is None:
-            return None
-        return probe[2] - baseline[2]
+    async def _cmd_injection_candidate(self, endpoint: "Endpoint", param: str, location: str, context, payload: str) -> "tuple[float, float] | None":
+        """One (endpoint, param, payload)'s interleaved (baseline,
+        payload, baseline) timing delta and jitter, or `None` if any
+        probe failed. Same shape as `sqli_tests.py`'s
+        `_time_based_candidate` -- both call the shared
+        `measure_interleaved_timing_delta` rather than each keeping its
+        own baseline-then-payload-once measurement, so a fix to the
+        interleaving/jitter logic lands in one place for both."""
+        return await measure_interleaved_timing_delta(context, endpoint, param, location, payload)
 
     async def _technique_command_injection(
         self, endpoints: "list[Endpoint]", session_manager: "SessionManager", session_pool: "SessionPool", evidence: "EvidenceCollector | None",
@@ -599,22 +597,35 @@ class InjectionVariantsTestsModule(VulnModule):
             param = endpoint.parameters[0]
             location = endpoint.location_for(param)
             for payload in payloads:
-                delta = await self._cmd_injection_candidate(endpoint, param, location, context, payload)
-                if delta is None or delta < _CMD_INJECTION_DELTA_THRESHOLD_S:
+                measured = await self._cmd_injection_candidate(endpoint, param, location, context, payload)
+                if measured is None:
+                    continue
+                delta, jitter = measured
+                # Calibrated per-endpoint, same rationale as
+                # sqli_tests.py's TC-127.3: the delay must clear both
+                # the fixed safety threshold AND a multiple of this
+                # endpoint's own measured baseline jitter.
+                required_delta = max(_CMD_INJECTION_DELTA_THRESHOLD_S, jitter * 3)
+                if delta < required_delta:
                     continue
                 # Require the delay to repeat once before reporting --
                 # same "not one-off network jitter" discipline
                 # sqli_tests.py's TC-127.3 already established.
-                confirm_delta = await self._cmd_injection_candidate(endpoint, param, location, context, payload)
-                if confirm_delta is None or confirm_delta < _CMD_INJECTION_DELTA_THRESHOLD_S:
+                confirmed = await self._cmd_injection_candidate(endpoint, param, location, context, payload)
+                if confirmed is None:
+                    continue
+                confirm_delta, confirm_jitter = confirmed
+                confirm_required_delta = max(_CMD_INJECTION_DELTA_THRESHOLD_S, confirm_jitter * 3)
+                if confirm_delta < confirm_required_delta:
                     continue
                 description = (
                     f"Injecting a bounded {_CMD_INJECTION_DELAY_S:.0f}s shell sleep payload ('{payload}') into "
                     f"parameter '{param}' ({location}) on {endpoint.method} {endpoint.url} added a repeatable "
-                    f"~{min(delta, confirm_delta):.2f}s of response latency compared to a baseline request -- a "
-                    "timing signal consistent with the injected value reaching an OS shell/exec call. This is a "
-                    "candidate signal only: no command output was read, and the sleep payload used is capped and "
-                    "was never repeated beyond this one confirmation."
+                    f"~{min(delta, confirm_delta):.2f}s of response latency compared to an interleaved baseline "
+                    f"(endpoint's own measured jitter: {max(jitter, confirm_jitter):.2f}s) -- a timing signal "
+                    "consistent with the injected value reaching an OS shell/exec call. This is a candidate "
+                    "signal only: no command output was read, and the sleep payload used is capped and was "
+                    "never repeated beyond this one confirmation."
                 )
                 finding = Finding(
                     module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.1,

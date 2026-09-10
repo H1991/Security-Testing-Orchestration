@@ -79,6 +79,21 @@ def test_build_summary_confidence_defaults_to_confirmed():
     summary = build_summary([_finding("Critical")])
     assert summary["critical_high_confirmed"] == 1
     assert summary["critical_high_likely"] == 0
+    assert summary["critical_high_tentative"] == 0
+
+
+def test_build_summary_counts_tentative_confidence_separately():
+    """A bare single-signal fingerprint match (no baseline-absence check
+    behind it) is weaker than a "likely" timing/differential signal --
+    it must show up in its own bucket, not silently vanish from the
+    critical/high confidence breakdown or get folded into "likely"."""
+    findings = [_finding("Critical", confidence="tentative"), _finding("High", confidence="likely")]
+
+    summary = build_summary(findings)
+
+    assert summary["critical_high_tentative"] == 1
+    assert summary["critical_high_likely"] == 1
+    assert summary["critical_high_confirmed"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +174,19 @@ def test_build_report_includes_module_notes_from_metadata():
     report = build_report([], {"module_notes": notes})
 
     assert report["module_notes"] == notes
+
+
+def test_build_report_includes_skipped_techniques_from_metadata():
+    skipped = [{"technique_id": "TC-128.4", "technique": "Stored XSS", "module_id": "xss_tests", "reason": "allow_state_changing_probes is disabled"}]
+
+    report = build_report([], {"skipped_techniques": skipped})
+
+    assert report["skipped_techniques"] == skipped
+
+
+def test_build_report_skipped_techniques_defaults_to_empty_list():
+    report = build_report([], {})
+    assert report["skipped_techniques"] == []
 
 
 def test_write_persists_recon_report(tmp_path):

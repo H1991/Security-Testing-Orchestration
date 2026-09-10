@@ -69,7 +69,7 @@ from stof.modules.graphql_tests import GraphQLTestConfig, GraphQLTestsModule
 from stof.modules.idor_tests import IdorTestConfig, IdorTestsModule
 from stof.modules.injection_variants_tests import InjectionVariantsTestConfig, InjectionVariantsTestsModule
 from stof.modules.jwt_tests import JwtTestConfig, JwtTestsModule
-from stof.modules.results import ERROR, TestCaseResult, extract_findings, summarize
+from stof.modules.results import ERROR, TestCaseResult, extract_findings, skipped_techniques, summarize
 from stof.modules.sqli_tests import SqliTestConfig, SqliTestsModule
 from stof.modules.ssrf_tests import SsrfTestConfig, SsrfTestsModule
 from stof.modules.xss_tests import XssTestConfig, XssTestsModule
@@ -226,6 +226,7 @@ def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict, ta
         "xss_tests": lambda: XssTestsModule(config=XssTestConfig(
             low_priv_role=low_priv_role or "normal", high_priv_role=high_priv_role or "admin",
             allow_state_changing_probes=allow_state_changing_probes,
+            collaborator_url=config.burp.collaborator_url,
         )),
         "ssrf_tests": lambda: SsrfTestsModule(config=SsrfTestConfig(
             low_priv_role=low_priv_role or "normal", collaborator_url=config.burp.collaborator_url,
@@ -1459,6 +1460,7 @@ async def _run_test(
             "module_notes": module_notes,
             "duration_seconds": duration,
             "coverage": coverage,
+            "skipped_techniques": skipped_techniques(vuln_results),
         }
         report_paths = generate_reports(
             all_findings, scan_metadata, output_dir=reports_dir,

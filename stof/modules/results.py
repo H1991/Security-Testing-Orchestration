@@ -184,3 +184,20 @@ def summarize(results: list[TestCaseResult]) -> dict[str, int]:
     for r in results:
         counts[r.status] = counts.get(r.status, 0) + 1
     return counts
+
+
+def skipped_techniques(results: list[TestCaseResult]) -> list[dict[str, str]]:
+    """Every technique that never ran, with why -- for report visibility,
+    not a security judgment. `summarize()`'s counts are already CLI-only
+    (`main.py`'s console output); this is the list form the HTML/JSON
+    reports thread through so a reader isn't left to infer "0 findings"
+    means "every technique ran". A technique gated behind
+    `allow_state_changing_probes` (the plant-then-verify family: stored
+    XSS, second-order SQLi, CSV injection, ...) is the single most common
+    reason a clean-looking report is missing real coverage -- an external
+    review specifically flagged that this was previously invisible
+    outside the scan's own transient stdout."""
+    return [
+        {"technique_id": r.technique_id, "technique": r.technique, "module_id": r.module_id, "reason": r.detail}
+        for r in results if r.status == SKIPPED
+    ]

@@ -5,7 +5,18 @@ design). Run with:
     uvicorn stof.ui.server:app --reload --port 8787
 
 or `python -m stof.ui.server`.
-"""
+
+Binds to 127.0.0.1 by default (both the `uvicorn.run(...)` call below
+and the documented manual command above, since uvicorn's own default
+host is also 127.0.0.1) -- loopback-only is a real but partial
+mitigation: it stops nothing once the console is reached via a
+port-forward, a shared/flat network, or an operator explicitly passing
+`--host 0.0.0.0`, at which point every `/api/scans` call is reachable
+with no auth at all and spawns a real OS subprocess against whatever
+target is currently active. Set `STOF_CONSOLE_API_KEY` in the
+environment to require a matching `X-STOF-API-Key` header on every
+`/api/*` request (see `_require_api_key` below) -- unset by default,
+byte-identical behavior to every prior release."""
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -931,6 +942,27 @@ class StartRecordingRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 app = FastAPI(title="STOF Console API")
+
+# Opt-in only -- blank/unset means every request passes through
+# unchanged, exactly as before this existed. See the module docstring
+# above for why loopback-only binding alone isn't sufficient, and why
+# this is scoped to /api/* rather than the static console UI itself
+# (gating the UI's own JS/HTML would break the page before it could
+# ever prompt for a key).
+_CONSOLE_API_KEY = os.environ.get("STOF_CONSOLE_API_KEY", "").strip()
+
+
+@app.middleware("http")
+async def _require_api_key(request: Request, call_next):
+    """When `STOF_CONSOLE_API_KEY` is set, every `/api/*` request must
+    carry a matching `X-STOF-API-Key` header -- except `/api/health`,
+    which monitoring/orchestration tooling needs to reach
+    unconditionally and which reveals nothing sensitive (just
+    `{"ok": true, "max_concurrent_scans": ...}`)."""
+    gated = _CONSOLE_API_KEY and request.url.path.startswith("/api/") and request.url.path != "/api/health"
+    if gated and request.headers.get("X-STOF-API-Key") != _CONSOLE_API_KEY:
+        return JSONResponse(status_code=401, content={"detail": "missing or invalid X-STOF-API-Key header"})
+    return await call_next(request)
 
 
 @app.get("/api/health")

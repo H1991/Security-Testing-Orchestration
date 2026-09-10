@@ -187,7 +187,7 @@ async def test_run_techniques_skipped_when_no_injectable_endpoints(tmp_path):
     results = await module.run_techniques(endpoints, session_manager, pool)
 
     by_id = _by_id(results)
-    assert len(by_id) == 9
+    assert len(by_id) == 10
     assert all(r.status == SKIPPED for r in by_id.values())
 
 
@@ -269,6 +269,92 @@ async def test_attribute_breakout_technique_fails_independently_of_html_body_tec
     assert by_id["TC-128.2"].status == FAIL
     assert by_id["TC-128.1"].status == PASS
     assert by_id["TC-128.3"].status == PASS
+
+
+@pytest.mark.asyncio
+async def test_reflected_xss_confidence_upgrades_to_confirmed_when_dialog_actually_fires():
+    """Unencoded reflection alone only proves confidence="likely" --
+    when the chained real-browser navigation (TC-128.5's own
+    `page.on('dialog')` proof, reused here) actually triggers a
+    confirm() dialog carrying this run's own marker, confidence must
+    upgrade to "confirmed"."""
+    endpoint = Endpoint(url="https://x/search", method="GET", endpoint_type="page", parameters=["q"])
+    module = XssTestsModule()
+    payload = module._payload_for("TC-128.1")
+
+    def fake_get(url, params=None, max_redirects=0):
+        q = (params or {}).get("q", "")
+        if q == payload:
+            return _response(200, f"<html><body>results for {q}</body></html>")
+        return _response(200, "<html><body>no results</body></html>")
+
+    context = _fake_context(get_side_effect=fake_get)
+    context.new_page = AsyncMock(return_value=_FakePage(dialog_message=module._marker))
+
+    result = await module._technique_reflection(
+        "TC-128.1", "Reflected XSS in raw HTML body context", "an unescaped HTML body position",
+        [(endpoint, "q", "query")], context, evidence=None,
+    )
+
+    assert result.status == FAIL
+    assert result.finding.confidence == "confirmed"
+    assert "confirm() dialog" in result.finding.description
+
+
+@pytest.mark.asyncio
+async def test_reflected_xss_stays_likely_when_browser_check_runs_but_no_dialog_fires():
+    """When the chained browser check runs but no dialog fires (e.g. a
+    CSP blocking inline script, or the reflection landed in an inert
+    position), confidence stays at "likely" -- the finding is still
+    reported, never suppressed just because execution wasn't confirmed."""
+    endpoint = Endpoint(url="https://x/search", method="GET", endpoint_type="page", parameters=["q"])
+    module = XssTestsModule()
+    payload = module._payload_for("TC-128.1")
+
+    def fake_get(url, params=None, max_redirects=0):
+        q = (params or {}).get("q", "")
+        if q == payload:
+            return _response(200, f"<html><body>results for {q}</body></html>")
+        return _response(200, "<html><body>no results</body></html>")
+
+    context = _fake_context(get_side_effect=fake_get)
+    context.new_page = AsyncMock(return_value=_FakePage())
+
+    result = await module._technique_reflection(
+        "TC-128.1", "Reflected XSS in raw HTML body context", "an unescaped HTML body position",
+        [(endpoint, "q", "query")], context, evidence=None,
+    )
+
+    assert result.status == FAIL
+    assert result.finding.confidence == "likely"
+
+
+@pytest.mark.asyncio
+async def test_reflected_xss_skips_browser_confirmation_for_post_candidates():
+    """A POST-body reflected candidate can't be reproduced by
+    navigating a bare URL -- browser confirmation must be skipped
+    entirely (no context.new_page() call at all), not attempted and
+    silently failed."""
+    endpoint = Endpoint(url="https://x/comment", method="POST", endpoint_type="form", parameters=["body"], param_locations={"body": "body"})
+    module = XssTestsModule()
+    payload = module._payload_for("TC-128.1")
+
+    def fake_post(url, form=None, max_redirects=0):
+        body = (form or {}).get("body", "")
+        if body == payload:
+            return _response(200, f"<html><body>{body}</body></html>")
+        return _response(200, "<html><body>ok</body></html>")
+
+    context = _fake_context(post_side_effect=fake_post)
+
+    result = await module._technique_reflection(
+        "TC-128.1", "Reflected XSS in raw HTML body context", "an unescaped HTML body position",
+        [(endpoint, "body", "body")], context, evidence=None,
+    )
+
+    assert result.status == FAIL
+    assert result.finding.confidence == "likely"
+    context.new_page.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -463,6 +549,78 @@ async def test_stored_xss_skipped_when_no_free_text_field_discovered(tmp_path):
     result = await module._technique_stored_xss(endpoints, session_manager, pool, evidence=None)
 
     assert result.status == SKIPPED
+
+
+# ---------------------------------------------------------------------------
+# TC-128.10 Blind XSS via out-of-band collaborator callback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_blind_xss_oob_skipped_when_state_changing_probes_disabled(tmp_path):
+    endpoints = _stored_xss_endpoints()
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = XssTestsModule(config=XssTestConfig(collaborator_url="oast.example.com"))  # allow_state_changing_probes defaults False
+
+    result = await module._technique_blind_xss_oob(endpoints, session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "allow_state_changing_probes" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_blind_xss_oob_skipped_when_no_collaborator_configured(tmp_path):
+    endpoints = _stored_xss_endpoints()
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = XssTestsModule(config=XssTestConfig(allow_state_changing_probes=True))  # collaborator_url defaults ""
+
+    result = await module._technique_blind_xss_oob(endpoints, session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "collaborator" in result.detail.lower()
+
+
+@pytest.mark.asyncio
+async def test_blind_xss_oob_skipped_when_no_free_text_field_discovered(tmp_path):
+    endpoints = [Endpoint(url="https://x/admin/admin.jsp", method="GET", endpoint_type="page")]
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    pool = _pool_with_context(_fake_context())
+    module = XssTestsModule(config=XssTestConfig(allow_state_changing_probes=True, collaborator_url="oast.example.com"))
+
+    result = await module._technique_blind_xss_oob(endpoints, session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+
+
+@pytest.mark.asyncio
+async def test_blind_xss_oob_plants_callback_beacon_and_reports_skipped_with_instructions(tmp_path):
+    """Same discipline as `ssrf_tests.py`'s TC-137.6: this technique
+    only ever SENDS the collaborator-tagged beacon and reports SKIPPED,
+    never FAIL/PASS, since STOF cannot itself poll the collaborator for
+    a received callback."""
+    endpoints = _stored_xss_endpoints()
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+
+    sent_bodies = []
+
+    def fake_post(url, form=None, max_redirects=0):
+        sent_bodies.append(form or {})
+        return _response(200, "Thank you for your feedback")
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = XssTestsModule(config=XssTestConfig(allow_state_changing_probes=True, collaborator_url="oast.example.com"))
+
+    result = await module._technique_blind_xss_oob(endpoints, session_manager, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert sent_bodies, "the plant POST must actually have been sent"
+    planted_value = next(v for v in sent_bodies[0].values() if "oast.example.com" in v)
+    assert "<script src=" in planted_value
+    assert "stofbxss" in planted_value
+    assert "collaborator's own dashboard" in result.detail.lower() or "check its dashboard" in result.detail.lower()
 
 
 # ---------------------------------------------------------------------------

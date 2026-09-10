@@ -262,3 +262,32 @@ def test_write_shows_clean_state_when_no_priority_findings(tmp_path):
 
     html = path.read_text(encoding="utf-8")
     assert "No Critical or High severity findings" in html
+
+
+def test_write_shows_tentative_badge_for_tentative_confidence_findings(tmp_path):
+    findings = [_finding(confidence="tentative", vuln_type="Bare Fingerprint Signal")]
+
+    path = write(findings, {}, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "Low-Confidence Signal" in html
+
+
+def test_write_includes_skipped_techniques_section(tmp_path):
+    metadata = {"skipped_techniques": [
+        {"technique_id": "TC-128.4", "technique": "Stored Cross-Site Scripting", "module_id": "xss_tests", "reason": "allow_state_changing_probes is disabled"},
+    ]}
+
+    path = write([], metadata, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "Techniques Not Run" in html
+    assert "TC-128.4" in html
+    assert "allow_state_changing_probes is disabled" in html
+
+
+def test_write_omits_skipped_techniques_section_when_none_skipped(tmp_path):
+    path = write([], {}, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "Techniques Not Run" not in html

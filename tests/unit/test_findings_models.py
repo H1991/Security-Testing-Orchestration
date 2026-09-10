@@ -169,3 +169,20 @@ def test_finding_severity_validation_skipped_for_burp_scanner_source():
     classification, so validation only applies to scanner_source=="stof"."""
     finding = _finding(severity="Critical", cvss_score=0.0, scanner_source="burp")
     assert finding.severity == "Critical"
+
+
+# ---------------------------------------------------------------------------
+# confidence validation -- same "fail the call site's own unit test
+# immediately" discipline as the severity/CVSS check above.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("confidence", ["confirmed", "likely", "tentative"])
+def test_finding_construction_accepts_every_valid_confidence_tier(confidence):
+    finding = _finding(confidence=confidence)
+    assert finding.confidence == confidence
+
+
+def test_finding_construction_raises_on_invalid_confidence():
+    with pytest.raises(ValueError, match="confirmed.*likely.*tentative|tentative.*likely.*confirmed"):
+        _finding(confidence="probably")

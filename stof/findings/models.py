@@ -94,15 +94,23 @@ class Finding:
     # without content verification, a proven precondition for a
     # vulnerability class STOF can't independently confirm exists (e.g. a
     # CSV/Excel export), or an accepted-but-unconfirmable password change
-    # (no login endpoint configured to verify it took effect). Was
-    # previously only ever expressed as free-text prose buried inside
-    # `description` -- e.g. "CONFIRMED: ..." vs "Unconfirmed via
-    # re-login..." -- with no way for a human triager or the report layer
-    # to filter on it. Every one of the ~15 call sites across this
-    # project's modules that already had this distinction in prose now
-    # also sets this field explicitly; every other call site keeps the
-    # "confirmed" default unchanged.
+    # (no login endpoint configured to verify it took effect). "tentative"
+    # -- the weakest tier: a single-signal oracle with no differential or
+    # cross-check behind it at all (a bare substring/error-fingerprint
+    # match against the payload response only, with no baseline-absence
+    # check backing it) -- the kind of signal an external review flagged
+    # as needing to be visibly weaker than a differential or timing-based
+    # "likely" finding, not just described as weaker in prose a report
+    # reader has to notice on their own. Was previously only ever
+    # expressed as free-text prose buried inside `description` -- e.g.
+    # "CONFIRMED: ..." vs "Unconfirmed via re-login..." -- with no way for
+    # a human triager or the report layer to filter on it. Every one of
+    # the ~15 call sites across this project's modules that already had
+    # this distinction in prose now also sets this field explicitly;
+    # every other call site keeps the "confirmed" default unchanged.
     confidence: str = "confirmed"
+
+    _VALID_CONFIDENCE = ("confirmed", "likely", "tentative")
     # The full CVSS v3.1 vector (`CVSS:3.1/AV:N/AC:L/...`) `cvss_score`
     # was computed from -- stamped centrally by `extract_findings()`
     # (see `stof.findings.cvss.cvss_vector_for_finding`), never set
@@ -146,6 +154,16 @@ class Finding:
                     "these must match for a STOF-generated finding. Fix the severity= argument "
                     "at the Finding(...) call site (see severity_for_score())."
                 )
+        # Same discipline as the severity/CVSS check above: an invalid
+        # confidence value is exactly the kind of bug (a typo, a stale
+        # copy-pasted string) that should fail the call site's own unit
+        # test immediately, not silently produce a finding the report
+        # layer's confidence filter/badge can't recognize.
+        if self.confidence not in self._VALID_CONFIDENCE:
+            raise ValueError(
+                f"Finding(vuln_type={self.vuln_type!r}) has confidence={self.confidence!r}, "
+                f"expected one of {self._VALID_CONFIDENCE!r}."
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {

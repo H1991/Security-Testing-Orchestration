@@ -102,7 +102,7 @@ from typing import TYPE_CHECKING
 from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
-from ._injection_shared import build_params, injectable_endpoints, response_similarity, send_probe
+from ._injection_shared import build_collaborator_callback_url, build_params, injectable_endpoints, response_similarity, send_probe
 from .base import VulnModule
 from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
@@ -496,14 +496,9 @@ class SsrfTestsModule(VulnModule):
             )
 
         sent: list[tuple[Endpoint, str, str]] = []
-        # Strip any scheme the operator included -- the marker subdomain
-        # goes in front of the bare host either way, so `https://
-        # abc.oast.example` and `abc.oast.example` both build the same
-        # shape of callback URL.
-        collaborator_host = self.config.collaborator_url.split("://", 1)[-1].strip("/")
         for endpoint, param, location in candidates:
             marker = f"stof-{uuid.uuid4().hex[:12]}"
-            callback_url = f"http://{marker}.{collaborator_host}/"
+            callback_url = build_collaborator_callback_url(self.config.collaborator_url, marker)
             probe = await send_probe(context, endpoint, build_params(endpoint, param, callback_url), location)
             if probe is not None:
                 sent.append((endpoint, param, callback_url))

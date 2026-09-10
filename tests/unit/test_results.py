@@ -3,7 +3,7 @@ import pytest
 
 from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
-from stof.modules.results import ERROR, FAIL, NOT_IMPLEMENTED, PASS, SKIPPED, TestCaseResult, extract_findings, summarize
+from stof.modules.results import ERROR, FAIL, NOT_IMPLEMENTED, PASS, SKIPPED, TestCaseResult, extract_findings, skipped_techniques, summarize
 
 
 def _finding(url: str = "https://x/api/orders/5") -> Finding:
@@ -206,3 +206,25 @@ def test_summarize_counts_every_status():
 def test_summarize_empty_list_yields_zero_counts():
     counts = summarize([])
     assert all(v == 0 for v in counts.values())
+
+
+def test_skipped_techniques_lists_only_skipped_results_with_their_reason():
+    """Report visibility fix: a clean scan report must not silently omit
+    that a technique never ran (e.g. gated behind
+    allow_state_changing_probes) -- this is the list the HTML/JSON
+    reports thread through for that "Techniques Not Run" section."""
+    skipped_result = _result(SKIPPED, technique_id="TC-134.4")
+    results = [_result(PASS), _result(FAIL, finding=_finding()), skipped_result, _result(NOT_IMPLEMENTED)]
+
+    listed = skipped_techniques(results)
+
+    assert listed == [{
+        "technique_id": "TC-134.4",
+        "technique": skipped_result.technique,
+        "module_id": skipped_result.module_id,
+        "reason": skipped_result.detail,
+    }]
+
+
+def test_skipped_techniques_empty_when_nothing_was_skipped():
+    assert skipped_techniques([_result(PASS), _result(FAIL, finding=_finding())]) == []

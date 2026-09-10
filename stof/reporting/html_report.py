@@ -135,6 +135,7 @@ def write(
         other_findings=other_findings,
         recon=_summarize_recon(recon_report),
         module_notes=scan_metadata.get("module_notes", []),
+        skipped_techniques=scan_metadata.get("skipped_techniques", []),
     )
     path.write_text(html, encoding="utf-8")
     _log.info(f"wrote HTML report ({len(findings)} finding(s)) -> {path}")

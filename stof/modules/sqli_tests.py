@@ -103,6 +103,8 @@ from ._injection_shared import (
     injectable_endpoints,
     looks_json_authenticated,
     looks_like_sql_error,
+    measure_interleaved_timing_delta,
+    measure_similarity_noise_floor,
     placeholder_value,
     response_similarity,
     send_probe,
@@ -331,11 +333,13 @@ class SqliTestsModule(VulnModule):
     def _finding(
         self, endpoint: "Endpoint", vuln_type: str, param: str, description: str,
         request_preview: str, response_preview: str, severity: str = "Critical", cvss_score: float = 9.1,
+        confidence: str = "confirmed",
     ) -> Finding:
         return Finding(
             module_id=self.module_id, vuln_type=vuln_type, severity=severity, cvss_score=cvss_score,
             endpoint=endpoint, user_role=self.config.low_priv_role,
             request_raw=request_preview, response_raw=response_preview[:300],
+            confidence=confidence,
             description=description,
             recommendation="Use parameterized queries/prepared statements for every database call; never build SQL from unsanitized request input.",
         )
@@ -351,18 +355,30 @@ class SqliTestsModule(VulnModule):
         payloads = self._error_based_payloads()
         bounded = candidates[: self.config.max_probe_targets]
         for endpoint, param, location in bounded:
+            # Baseline-absence check, once per candidate: a bare
+            # fingerprint match against the payload response ALONE is
+            # exactly the false-positive shape an external review
+            # flagged -- a crawled page that legitimately mentions
+            # database errors (a status page, a debug route already
+            # reachable without any payload) would otherwise fire on
+            # every probe. Requiring the SAME fingerprint to be absent
+            # from a benign baseline first turns this into a real
+            # differential, not a single-signal substring check.
+            baseline = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
+            baseline_fingerprint = looks_like_sql_error(baseline[1]) if baseline is not None else None
             for payload_value in payloads:
                 probe = await send_probe(context, endpoint, build_params(endpoint, param, payload_value), location)
                 if probe is None:
                     continue
                 status, body, _elapsed, _headers = probe
                 fingerprint = looks_like_sql_error(body)
-                if fingerprint is None:
+                if fingerprint is None or fingerprint == baseline_fingerprint:
                     continue
                 description = (
                     f"Injecting {payload_value!r} into parameter '{param}' ({location}) on "
                     f"{endpoint.method} {endpoint.url} produced a database-error fingerprint "
-                    f"('{fingerprint}') in the response (HTTP {status}) -- the injected value "
+                    f"('{fingerprint}') in the response (HTTP {status}) that a benign baseline "
+                    "request to the same endpoint/parameter does not -- the injected value "
                     "reached the SQL layer unsanitized. This is a candidate signal only: no "
                     "data was extracted or altered."
                 )
@@ -379,17 +395,24 @@ class SqliTestsModule(VulnModule):
         )
 
     async def _boolean_blind_candidate(self, endpoint: "Endpoint", param: str, location: str, context, true_payload: str, false_payload: str):
-        """One (endpoint, param)'s baseline/true/false probe triple --
-        extracted so `_technique_boolean_blind` stays orchestration
-        only. Returns `None` if any of the three probes failed
-        (unprobeable candidate, try the next one), else `(baseline_body,
-        true_body, false_body, true_status)`."""
+        """One (endpoint, param)'s baseline/true/false probe triple, plus
+        a calibrated noise floor (two identical benign requests) so the
+        caller can judge the true/false differential against this
+        endpoint's own natural variability instead of a fixed threshold
+        -- see `measure_similarity_noise_floor`'s docstring. Extracted so
+        `_technique_boolean_blind` stays orchestration only. Returns
+        `None` if any probe failed (unprobeable candidate, try the next
+        one), else `(baseline_body, true_body, false_body, true_status,
+        noise_floor)`."""
+        noise_floor = await measure_similarity_noise_floor(context, endpoint, param, location)
+        if noise_floor is None:
+            return None
         baseline = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
         true_probe = await send_probe(context, endpoint, build_params(endpoint, param, true_payload), location)
         false_probe = await send_probe(context, endpoint, build_params(endpoint, param, false_payload), location)
         if baseline is None or true_probe is None or false_probe is None:
             return None
-        return baseline[1], true_probe[1], false_probe[1], true_probe[0]
+        return baseline[1], true_probe[1], false_probe[1], true_probe[0], noise_floor
 
     async def _technique_boolean_blind(
         self, candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
@@ -405,7 +428,7 @@ class SqliTestsModule(VulnModule):
             probed = await self._boolean_blind_candidate(endpoint, param, location, context, true_payload, false_payload)
             if probed is None:
                 continue
-            baseline_body, true_body, false_body, true_status = probed
+            baseline_body, true_body, false_body, true_status, noise_floor = probed
             sim_true = response_similarity(baseline_body, true_body)
             sim_false = response_similarity(baseline_body, false_body)
             # The differential oracle: a TRUE condition should read
@@ -414,14 +437,28 @@ class SqliTestsModule(VulnModule):
             # meaningfully differently (an empty/error result) -- see
             # `response_similarity`'s own docstring for why a graded
             # ratio, not exact-hash equality, is the right comparison.
-            if sim_true >= 0.90 and (sim_true - sim_false) >= 0.15:
+            #
+            # Both bars are calibrated against `noise_floor` (the
+            # similarity between two IDENTICAL benign requests) rather
+            # than fixed constants: on a stable page noise_floor is
+            # ~1.0 and these collapse to the original 0.90/0.15
+            # thresholds unchanged; on a highly dynamic page (ads,
+            # per-request ids) a fixed 0.15 delta is well within the
+            # app's own natural noise and would false-positive on
+            # every candidate -- requiring a delta bigger than the
+            # observed noise itself fixes that without weakening
+            # detection on ordinary targets.
+            required_true_similarity = min(0.90, max(0.0, noise_floor - 0.05))
+            required_delta = max(0.15, 1.0 - noise_floor)
+            if sim_true >= required_true_similarity and (sim_true - sim_false) >= required_delta:
                 description = (
                     f"Parameter '{param}' ({location}) on {endpoint.method} {endpoint.url}: a "
                     f"true-condition SQLi payload's response was {sim_true:.0%} similar to the "
                     f"unmodified baseline, while a false-condition payload's response was only "
-                    f"{sim_false:.0%} similar (HTTP {true_status} on the true-condition probe) -- "
-                    "a response differential consistent with the injected condition reaching the "
-                    "SQL WHERE clause. This is a candidate signal only: no data was extracted."
+                    f"{sim_false:.0%} similar (HTTP {true_status} on the true-condition probe; "
+                    f"endpoint's own measured noise floor {noise_floor:.0%}) -- a response "
+                    "differential consistent with the injected condition reaching the SQL WHERE "
+                    "clause. This is a candidate signal only: no data was extracted."
                 )
                 finding = self._finding(
                     endpoint, vuln_type, param, description,
@@ -436,17 +473,14 @@ class SqliTestsModule(VulnModule):
             role=self.config.low_priv_role,
         )
 
-    async def _time_based_candidate(self, endpoint: "Endpoint", param: str, location: str, context) -> "float | None":
-        """One (endpoint, param)'s baseline-then-payload timing delta,
-        or `None` if either probe failed. Extracted so
+    async def _time_based_candidate(self, endpoint: "Endpoint", param: str, location: str, context) -> "tuple[float, float] | None":
+        """One (endpoint, param)'s interleaved (baseline, payload,
+        baseline) timing delta and jitter -- see
+        `measure_interleaved_timing_delta`'s docstring for why
+        interleaved measurement beats a single baseline-then-payload
+        sample. `None` if any probe failed. Extracted so
         `_technique_time_based` stays orchestration only."""
-        baseline = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
-        if baseline is None:
-            return None
-        payload_probe = await send_probe(context, endpoint, build_params(endpoint, param, _TIME_BASED_PAYLOAD), location)
-        if payload_probe is None:
-            return None
-        return payload_probe[2] - baseline[2]
+        return await measure_interleaved_timing_delta(context, endpoint, param, location, _TIME_BASED_PAYLOAD)
 
     async def _technique_time_based(
         self, candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
@@ -458,24 +492,40 @@ class SqliTestsModule(VulnModule):
 
         bounded = candidates[: self.config.max_time_based_targets]
         for endpoint, param, location in bounded:
-            delta = await self._time_based_candidate(endpoint, param, location, context)
-            if delta is None or delta < _TIME_BASED_DELTA_THRESHOLD_S:
+            measured = await self._time_based_candidate(endpoint, param, location, context)
+            if measured is None:
+                continue
+            delta, jitter = measured
+            # The confirmation floor is calibrated per-endpoint: it must
+            # clear both the fixed safety threshold AND a multiple of
+            # this endpoint's own measured baseline jitter, so a target
+            # under variable load (connection pooling, GC pauses) needs
+            # a bigger, clearer delay before it's trusted -- a fixed
+            # threshold alone can't tell "1.6s injected sleep" from
+            # "1.6s of this endpoint's own normal jitter" on a noisy target.
+            required_delta = max(_TIME_BASED_DELTA_THRESHOLD_S, jitter * 3)
+            if delta < required_delta:
                 continue
             # Require the delay to repeat once before reporting it --
             # a single slow response is exactly as likely to be network
             # jitter as a real injected sleep; see the module docstring
             # for why this technique caps at one bounded payload and
             # one confirmation, not an open-ended retry loop.
-            confirm_delta = await self._time_based_candidate(endpoint, param, location, context)
-            if confirm_delta is None or confirm_delta < _TIME_BASED_DELTA_THRESHOLD_S:
+            confirmed = await self._time_based_candidate(endpoint, param, location, context)
+            if confirmed is None:
+                continue
+            confirm_delta, confirm_jitter = confirmed
+            confirm_required_delta = max(_TIME_BASED_DELTA_THRESHOLD_S, confirm_jitter * 3)
+            if confirm_delta < confirm_required_delta:
                 continue
             description = (
                 f"Injecting a bounded {_TIME_BASED_DELAY_S:.0f}s SQL sleep payload into parameter "
                 f"'{param}' ({location}) on {endpoint.method} {endpoint.url} added a repeatable "
-                f"~{min(delta, confirm_delta):.2f}s of response latency compared to a baseline "
-                "request -- a timing signal consistent with the injected value reaching the "
-                "database layer. This is a candidate signal only: no data was extracted, and the "
-                "sleep payload used is capped and was never repeated beyond this one confirmation."
+                f"~{min(delta, confirm_delta):.2f}s of response latency compared to an interleaved "
+                f"baseline (endpoint's own measured jitter: {max(jitter, confirm_jitter):.2f}s) -- "
+                "a timing signal consistent with the injected value reaching the database layer. "
+                "This is a candidate signal only: no data was extracted, and the sleep payload used "
+                "is capped and was never repeated beyond this one confirmation."
             )
             finding = self._finding(
                 endpoint, vuln_type, param, description,

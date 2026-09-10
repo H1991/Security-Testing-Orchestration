@@ -329,10 +329,14 @@ async def test_time_based_fails_on_a_repeatable_delay():
     context = _fake_context(get_side_effect=fake_get)
     candidates = [(endpoint, "q", "query")]
 
-    # 2 send_probe() calls per _time_based_candidate() invocation (baseline,
-    # payload), each reading time.monotonic() twice (start, elapsed) -- 4
-    # readings per invocation, x2 invocations (first attempt + confirm).
-    timestamps = iter([0.0, 0.1, 0.2, 2.3, 2.4, 2.5, 2.6, 4.8])
+    # 3 send_probe() calls per _time_based_candidate() invocation
+    # (interleaved baseline, payload, baseline), each reading
+    # time.monotonic() twice (start, elapsed) -- 6 readings per
+    # invocation, x2 invocations (first attempt + confirm). Both
+    # baselines read 0.1s elapsed (zero jitter) and the payload reads
+    # 2.1s elapsed, so delta = 2.1 - avg(0.1, 0.1) = 2.0s, clearing the
+    # fixed 1.5s threshold with no jitter multiplier involved.
+    timestamps = iter([0.0, 0.1, 0.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 4.9, 5.0, 5.1])
     with patch("stof.modules._injection_shared.time.monotonic", side_effect=lambda: next(timestamps)):
         result = await module._technique_time_based(candidates, context, evidence=None)
 
@@ -353,9 +357,11 @@ async def test_time_based_passes_when_delay_does_not_repeat():
     context = _fake_context(get_side_effect=fake_get)
     candidates = [(endpoint, "q", "query")]
 
-    # First attempt looks like a hit (delta 2.0s); confirmation attempt
-    # does not (delta 0.1s) -- must not be reported as FAIL.
-    timestamps = iter([0.0, 0.1, 0.2, 2.3, 2.4, 2.5, 2.6, 2.7])
+    # First attempt looks like a hit (delta 2.0s, zero jitter); the
+    # confirmation attempt's payload reads the same as its own baselines
+    # (delta 0.0s) -- must not be reported as FAIL. See the previous
+    # test for the interleaved-measurement reading-count rationale.
+    timestamps = iter([0.0, 0.1, 0.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 3.0, 3.1])
     with patch("stof.modules._injection_shared.time.monotonic", side_effect=lambda: next(timestamps)):
         result = await module._technique_time_based(candidates, context, evidence=None)
 

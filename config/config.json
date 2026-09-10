@@ -1,11 +1,12 @@
 {
   "target": {
-    "base_url": "http://demo.testfire.net",
-    "login_url": "http://demo.testfire.net/login.jsp",
+    "base_url": "https://test.kapturekm.com/kauthor/login",
+    "login_url": "https://test.kapturekm.com/kauthor/login",
     "requires_assisted_login": false,
     "crawler_exclude_patterns": [
-      "feedback.jsp",
-      "disclaimer.htm"
+      "content=inside_",
+      "survey_questions",
+      "privacypolicy"
     ]
   },
   "browser": {
@@ -48,7 +49,7 @@
     "run_active_scan": true
   },
   "testing": {
-    "allow_state_changing_probes": false,
+    "allow_state_changing_probes": true,
     "scan_intensity": "standard"
   }
 }

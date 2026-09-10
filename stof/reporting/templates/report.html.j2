@@ -67,6 +67,11 @@
   .section-title.secondary { margin-top: 46px; }
   .section-clean { background: var(--card); border: 1px solid var(--border); border-left: 6px solid var(--low); border-radius: 8px; padding: 16px 20px; margin-bottom: 18px; color: var(--muted); font-size: 13.5px; }
   .badge.confidence-likely { background: #fff3e0; color: #8a5300; border: 1px solid #f0c987; margin-left: 8px; }
+  .badge.confidence-tentative { background: #fdeaea; color: #8a1f1f; border: 1px solid #f0a5a5; margin-left: 8px; }
+  .skipped-techniques { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .skipped-technique { background: var(--card); border: 1px solid var(--border); border-left: 6px solid var(--muted); border-radius: 8px; padding: 10px 16px; font-size: 13px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .skipped-technique .id { font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .skipped-technique .reason { color: var(--muted); font-size: 12.5px; width: 100%; }
   code.inline { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; background: #eef2f7; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
 </style>
 </head>
@@ -111,6 +116,7 @@
         <h2>{{ f.vuln_type }}</h2>
         <span class="badge sev-{{ f.severity | lower }}">{{ f.severity }} &middot; Severity Score {{ f.cvss_score }}*</span>
         {% if f.confidence == "likely" %}<span class="badge confidence-likely">Needs Manual Confirmation</span>{% endif %}
+        {% if f.confidence == "tentative" %}<span class="badge confidence-tentative">Low-Confidence Signal &mdash; Verify Manually</span>{% endif %}
       </div>
       <dl>
         <dt>Endpoint</dt><dd>{{ f.endpoint.method }} {{ f.endpoint.url }}</dd>
@@ -161,6 +167,26 @@
       <span class="name">{{ m.module }}</span>
       <span class="count">{{ m.finding_count }} finding(s)</span>
       {% if m.note %}<span class="note">{{ m.note }}</span>{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if skipped_techniques %}
+  <h2 class="section-title">Techniques Not Run ({{ skipped_techniques | length }})</h2>
+  <div class="section-clean" style="margin-bottom: 10px;">
+    A clean scan does not mean every technique in the catalog ran. The techniques below were
+    skipped -- most commonly because a state-changing probe was disabled for this target, or the
+    discovered attack surface had no applicable precondition (e.g. no configured role, no
+    discovered login form) -- and produced no result either way. Enable the relevant setting and
+    re-scan to cover them.
+  </div>
+  <div class="skipped-techniques">
+    {% for s in skipped_techniques %}
+    <div class="skipped-technique">
+      <span class="id">{{ s.technique_id }}</span>
+      <span>{{ s.technique }}</span>
+      <span class="reason">{{ s.reason }}</span>
     </div>
     {% endfor %}
   </div>

@@ -37,7 +37,11 @@ def _critical_high_confidence_counts(findings: list["Finding"]) -> dict[str, int
     See `Finding.confidence`'s own docstring."""
     critical_high = [f for f in findings if f.severity in ("Critical", "High")]
     counts = Counter(f.confidence for f in critical_high)
-    return {"confirmed": counts.get("confirmed", 0), "likely": counts.get("likely", 0)}
+    return {
+        "confirmed": counts.get("confirmed", 0),
+        "likely": counts.get("likely", 0),
+        "tentative": counts.get("tentative", 0),
+    }
 
 
 def build_summary(findings: list["Finding"]) -> dict[str, Any]:
@@ -53,6 +57,7 @@ def build_summary(findings: list["Finding"]) -> dict[str, Any]:
         "by_source": by_source,
         "critical_high_confirmed": critical_high_confidence["confirmed"],
         "critical_high_likely": critical_high_confidence["likely"],
+        "critical_high_tentative": critical_high_confidence["tentative"],
     }
 
 
@@ -70,6 +75,7 @@ def build_report(
         "duration_seconds": scan_metadata.get("duration_seconds"),
         "summary": build_summary(findings),
         "coverage": scan_metadata.get("coverage"),
+        "skipped_techniques": scan_metadata.get("skipped_techniques", []),
         "findings": [f.to_dict() for f in findings],
     }
     if recon_report is not None:
