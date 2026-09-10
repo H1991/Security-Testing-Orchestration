@@ -648,6 +648,7 @@
   .status-badge.failed { background: var(--critical-soft); color: var(--critical); }
   .status-badge.complete { background: var(--low-soft); color: var(--pass); }
   .status-badge.stopped { background: var(--medium-soft); color: var(--medium); }
+  .status-badge.queued { background: var(--surface-3); color: var(--text-muted); }
   /* Findings table Confidence column -- Finding.confidence is real
      (idor_tests etc. set "confirmed" vs "likely", see models.py), just
      reusing the same status-badge pill language the rest of the app
@@ -1124,6 +1125,12 @@
   }
   @media (max-width: 1100px) { .statrow { grid-template-columns: repeat(3, 1fr); } }
   @media (max-width: 640px) { .statrow { grid-template-columns: repeat(2, 1fr); } }
+  /* Scans page stat row has one more cell (Queued) than every other
+     .statrow use -- own column count rather than widening the shared
+     6-up default everywhere else uses. */
+  #scansStatRow { grid-template-columns: repeat(7, 1fr); }
+  @media (max-width: 1100px) { #scansStatRow { grid-template-columns: repeat(4, 1fr); } }
+  @media (max-width: 640px) { #scansStatRow { grid-template-columns: repeat(2, 1fr); } }
   .statrow .st { background: var(--surface); padding: 14px 16px; }
   .statrow .st .sl { font-size: 10px; text-transform: uppercase; letter-spacing: .7px; color: var(--text-faint); font-weight: 700; white-space: nowrap; }
   .statrow .st .sv { font-size: 22px; font-weight: 800; margin-top: 5px; letter-spacing: -.3px; font-family: var(--mono); }
@@ -1202,6 +1209,7 @@
   .scan-progress-fill.complete { background: var(--pass); width: 100%; }
   .scan-progress-fill.running { background: var(--accent); width: 45%; animation: scan-progress-pulse 1.4s ease-in-out infinite; }
   .scan-progress-fill.stopped { background: var(--medium); width: 60%; }
+  .scan-progress-fill.queued { background: var(--text-faint); width: 8%; }
   @keyframes scan-progress-pulse { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
   .scan-progress-label { font-size: 11px; color: var(--text-faint); margin-left: 8px; font-family: var(--mono); }
   #scansTable tbody tr { cursor: pointer; }
@@ -1429,6 +1437,7 @@
             <div class="meta" id="attackSurfaceMeta">latest crawl</div>
           </div>
           <div class="grid8" id="attackSurfaceGrid" style="padding: 6px 18px 16px;"></div>
+          <div id="attackSurfaceTech" style="padding: 0 18px 16px;"></div>
         </div>
 
         <div class="card">
@@ -1543,6 +1552,7 @@
         <div class="seg" id="scansStatusFilter">
           <button type="button" class="active" data-status="">All</button>
           <button type="button" data-status="running">Running</button>
+          <button type="button" data-status="queued">Queued</button>
           <button type="button" data-status="complete">Completed</button>
           <button type="button" data-status="failed">Failed</button>
         </div>
@@ -2229,7 +2239,15 @@
     </div>
     <div class="summary-kpis" id="summaryKpis"></div>
     <div class="summary-coverage" id="summaryCoverage"></div>
-    <div class="summary-body">
+    <div class="finding-detail-section" id="summaryFailureSection" hidden style="padding: 0 24px 16px;">
+      <h4>Why this scan failed</h4>
+      <p class="finding-detail-text" id="summaryFailureMessage">&mdash;</p>
+      <div class="finding-raw-block" id="summaryFailureTailWrap" hidden>
+        <div class="kv-label">Last output before the process exited</div>
+        <pre id="summaryFailureTail">&mdash;</pre>
+      </div>
+    </div>
+    <div class="summary-body" id="summaryBody">
       <div>
         <h4>Module breakdown</h4>
         <div id="summaryModules"></div>
@@ -2760,7 +2778,8 @@
   // one-time check before that connection exists.
 async function loadHealth() {
     try {
-      await api("/api/health");
+      var h = await api("/api/health");
+      state.maxConcurrentScans = typeof h.max_concurrent_scans === "number" ? h.max_concurrent_scans : null;
     } catch (e) {
       document.getElementById("healthState").textContent = "backend unreachable";
       document.getElementById("healthState").style.color = "var(--critical)";
@@ -3981,23 +4000,33 @@ async function loadHealth() {
   // scan starts -- rather than its own poll loop.
   var stopScanBtn = document.getElementById("stopScanBtn");
   function syncStopScanButton() {
-    var running = state.scans.find(function (s) { return s.status === "running"; });
-    stopScanBtn.hidden = !running;
-    stopScanBtn.dataset.scanId = running ? running.scan_id : "";
-    // The backend now rejects a second concurrent scan outright (409) --
-    // disabling every "Run/New scan" entry point ([data-runscan]) while
-    // one is live surfaces that limit up front instead of letting the
-    // operator fill out the whole New Scan page and only find out on
-    // submit. Also covers scanNewStart itself (the Launch button ON
-    // that page) for the case where a scan starts from elsewhere while
-    // the operator already has the page open.
+    var runningScans = state.scans.filter(function (s) { return s.status === "running"; });
+    // The topbar button only ever names ONE scan -- unambiguous when
+    // there's exactly one running, meaningless once there's more than
+    // one (which of several does it stop?). Hide it at 2+ and let the
+    // Scans table's own per-row Stop button (unambiguous by
+    // construction) carry that case instead.
+    var single = runningScans.length === 1 ? runningScans[0] : null;
+    stopScanBtn.hidden = !single;
+    stopScanBtn.dataset.scanId = single ? single.scan_id : "";
+    // Scans run concurrently now (up to the server's configured
+    // limit); New Scan / Run Scan entry points stay enabled until that
+    // limit is actually hit -- launching beyond it queues automatically
+    // (see POST /api/scans) rather than being rejected, so there's no
+    // reason to block the button early. state.maxConcurrentScans is
+    // populated by loadScans() from the same field the 409 message
+    // would otherwise only surface after a failed submit.
+    var atCapacity = state.maxConcurrentScans != null && runningScans.length >= state.maxConcurrentScans;
+    var capacityMsg = atCapacity
+      ? "All " + state.maxConcurrentScans + " concurrent scan slot(s) are busy -- this will queue and start automatically."
+      : "";
     if (scanNewStart) {
-      scanNewStart.disabled = !!running || !scanNewConfirm.checked;
-      scanNewStart.title = running ? "A scan is already running -- stop it first" : "";
+      scanNewStart.disabled = !scanNewConfirm.checked;
+      scanNewStart.title = capacityMsg;
     }
     document.querySelectorAll("[data-runscan]").forEach(function (b) {
-      b.disabled = !!running;
-      b.title = running ? "A scan is already running -- stop it first" : "";
+      b.disabled = false;
+      b.title = capacityMsg;
     });
   }
   stopScanBtn.addEventListener("click", async function () {
@@ -4045,7 +4074,9 @@ async function loadHealth() {
           confirm_authorized: true,
         }),
       });
-      toast("Scan " + result.scan_id + " started");
+      toast(result.status === "queued"
+        ? "Scan " + result.scan_id + " queued (position " + result.queue_position + ") -- will start automatically when a slot frees"
+        : "Scan " + result.scan_id + " started");
       setRoute("#/dashboard");
       attachToScan(result.scan_id);
       await loadScans();
@@ -4574,10 +4605,11 @@ async function loadHealth() {
     var row = document.getElementById("scansStatRow");
     if (!row) return;
     if (!state.scans.length) { row.innerHTML = ""; return; }
-    var targets = {}; var running = 0; var complete = 0; var failed = 0; var latest = null;
+    var targets = {}; var running = 0; var queued = 0; var complete = 0; var failed = 0; var latest = null;
     state.scans.forEach(function (s) {
       targets[s.target] = true;
       if (s.status === "running") running++;
+      else if (s.status === "queued") queued++;
       else if (s.status === "complete") complete++;
       else if (s.status === "failed") failed++;
       if (!latest || (s.started_at && s.started_at > (latest.started_at || ""))) latest = s;
@@ -4586,6 +4618,7 @@ async function loadHealth() {
       ["Total scans", state.scans.length, ""],
       ["Targets", Object.keys(targets).length, ""],
       ["Running now", running, running ? "in progress" : "none"],
+      ["Queued", queued, queued ? "waiting for a slot" : "none"],
       ["Completed", complete, ""],
       ["Failed", failed, ""],
       ["Most recent", latest ? new Date(latest.started_at).toLocaleDateString() : "—", latest ? latest.target : ""],
@@ -4689,6 +4722,7 @@ async function loadHealth() {
         '<td class="mono duration-cell"></td>' +
         '<td><span class="status-badge"></span></td>' +
         '<td class="actions-cell"><div class="row-actions">' +
+          '<button type="button" class="icon-btn-sm scan-stop-btn" title="Stop scan" hidden>&#9632;</button>' +
           '<div class="dl-menu-wrap"><button type="button" class="icon-btn-sm scan-download-btn" title="Download report"><svg class="icon-sm"><use href="#i-download"/></svg></button><div class="dl-menu"></div></div>' +
           '<button type="button" class="icon-btn-sm scan-delete-btn" title="Delete scan"><svg class="icon-sm"><use href="#i-trash"/></svg></button>' +
         '</div></td>' +
@@ -4713,12 +4747,15 @@ async function loadHealth() {
         progressEl.innerHTML = '<span class="scan-progress-track"><span class="scan-progress-fill running"></span></span><span class="scan-progress-label">running&hellip;</span>';
       } else if (s.status === "stopped") {
         progressEl.innerHTML = '<span class="scan-progress-track"><span class="scan-progress-fill stopped"></span></span><span class="scan-progress-label">stopped</span>';
+      } else if (s.status === "queued") {
+        progressEl.innerHTML = '<span class="scan-progress-track"><span class="scan-progress-fill queued"></span></span><span class="scan-progress-label">queued' +
+          (typeof s.queue_position === "number" ? " (#" + s.queue_position + ")" : "") + "</span>";
       } else {
         progressEl.innerHTML = '<span class="scan-progress-label">&mdash;</span>';
       }
       var sevsEl = rowEl.querySelector(".sevs");
       sevsEl.id = "sevs-" + s.scan_id;
-      sevsEl.innerHTML = s.status === "running" ? '<span class="small" style="color:var(--text-faint)">&mdash;</span> ' : "";
+      sevsEl.innerHTML = (s.status === "running" || s.status === "queued") ? '<span class="small" style="color:var(--text-faint)">&mdash;</span> ' : "";
       rowEl.querySelector(".started-cell").textContent = s.started_at ? new Date(s.started_at).toLocaleString() : "—";
       var hasEnded = s.finished_at && s.status !== "running";
       rowEl.querySelector(".ended-cell").textContent = hasEnded ? new Date(s.finished_at).toLocaleString() : "—";
@@ -4736,8 +4773,38 @@ async function loadHealth() {
         e.stopPropagation();
         toggleDownloadMenu(rowEl.querySelector(".dl-menu"), s.scan_id);
       });
+      // Per-row stop, not just the single topbar button -- with several
+      // scans able to run/queue at once now, "which scan does the ONE
+      // Stop button in the header affect?" stops being answerable once
+      // there's more than one; this is the unambiguous per-row control.
+      var stopBtn = rowEl.querySelector(".scan-stop-btn");
+      if (s.status === "running" || s.status === "queued") {
+        stopBtn.hidden = false;
+        stopBtn.title = s.status === "queued" ? "Cancel queued scan" : "Stop scan";
+        stopBtn.addEventListener("click", async function (e) {
+          e.stopPropagation();
+          var verb = s.status === "queued" ? "Cancel" : "Stop";
+          var ok = await askConfirm(
+            verb + " this scan?",
+            s.status === "queued"
+              ? "scan " + s.scan_id + " will be removed from the queue before it ever starts."
+              : "scan " + s.scan_id + " will be terminated immediately. Findings already discovered are kept; anything still in progress is lost.",
+            true
+          );
+          if (!ok) return;
+          stopBtn.disabled = true;
+          try {
+            await api("/api/scans/" + s.scan_id + "/stop", { method: "POST" });
+            toast(verb + "ing scan " + s.scan_id + "…");
+          } catch (err) {
+            toast("Could not " + verb.toLowerCase() + " scan " + s.scan_id + ": " + err.message, true);
+          } finally {
+            loadScans();
+          }
+        });
+      }
       rowEl.addEventListener("click", function () {
-        if (s.status === "running") { attachToScan(s.scan_id); setRoute("#/dashboard"); }
+        if (s.status === "running" || s.status === "queued") { attachToScan(s.scan_id); setRoute("#/dashboard"); }
         else { setRoute("#/scans/" + s.scan_id); }
       });
       // The real, dominant cause of "dashboard reload is slow": this
@@ -4858,9 +4925,55 @@ async function loadHealth() {
     document.getElementById("summaryModules").innerHTML = "";
     document.getElementById("summaryFindings").innerHTML = "";
     document.getElementById("summaryReports").innerHTML = "";
+    document.getElementById("summaryFailureSection").hidden = true;
+    document.getElementById("summaryFailureTailWrap").hidden = true;
+    document.getElementById("summaryBody").hidden = false;
     try {
       var s = await api("/api/scans/" + scanId);
       document.getElementById("summaryScanName").textContent = s.name || "";
+      document.getElementById("summaryTarget").textContent = s.target;
+      document.getElementById("summaryMeta").textContent =
+        (s.started_at ? new Date(s.started_at).toLocaleString() : "") +
+        (s.finished_at ? " → " + new Date(s.finished_at).toLocaleString() : "") +
+        " · " + s.status;
+
+      // A failed (or operator-stopped) scan never writes a report.json
+      // -- GET /api/scans/{id}/findings 404s for one, which used to
+      // surface as a raw, unhelpful HTTP error in this modal ("no
+      // findings for scan '...' yet") instead of the real reason,
+      // which the server already captured (see _write_failure_record()
+      // in stof/ui/server.py) and returns right here in `s.events`.
+      if (s.status === "failed" || s.status === "stopped") {
+        modalEl.style.setProperty("--sev-accent", s.status === "failed" ? "var(--critical)" : "var(--medium)");
+        document.getElementById("summaryStatusPill").textContent = s.status === "failed" ? "SCAN FAILED" : "SCAN STOPPED";
+        document.getElementById("summaryBody").hidden = true;
+        var exitedEvent = (s.events || []).slice().reverse().find(function (e) { return e.event === "process_exited"; });
+        var errorEvent = (s.events || []).slice().reverse().find(function (e) { return e.event === "error"; });
+        var failSection = document.getElementById("summaryFailureSection");
+        var msgEl = document.getElementById("summaryFailureMessage");
+        var tailWrap = document.getElementById("summaryFailureTailWrap");
+        failSection.hidden = false;
+        if (s.status === "stopped") {
+          msgEl.textContent = "This scan was stopped by an operator before it finished. Findings discovered up to that point are not saved to a report -- only a scan that runs to completion produces one.";
+        } else if (errorEvent && errorEvent.message) {
+          msgEl.textContent = errorEvent.message;
+        } else if (exitedEvent) {
+          msgEl.textContent = "The scan process exited with code " + exitedEvent.exit_code + ".";
+        } else {
+          msgEl.textContent = "This scan failed. No further detail was captured for it.";
+        }
+        var tail = exitedEvent && exitedEvent.error_tail;
+        if (tail) {
+          tailWrap.hidden = false;
+          document.getElementById("summaryFailureTail").textContent = tail;
+        }
+        api("/api/reports").then(function (allReports) {
+          var mine = allReports.filter(function (r) { return r.scan_id === scanId; });
+          document.getElementById("summaryReports").innerHTML = mine.length ? "" : '<div class="card-empty" style="padding:8px 0;">No reports -- this scan did not complete.</div>';
+        }).catch(function () {});
+        return;
+      }
+
       // This scan's findings AND its exported reports, side by side --
       // these were previously two disconnected nav items (Scans,
       // Reports) for what is conceptually one object: a completed scan.
@@ -4891,12 +5004,6 @@ async function loadHealth() {
       modalEl.style.setProperty("--sev-accent", accentVar);
       document.getElementById("summaryStatusPill").textContent = worstSev
         ? worstSev.toUpperCase() + " FINDINGS PRESENT" : "CLEAN SCAN — NO FINDINGS";
-
-      document.getElementById("summaryTarget").textContent = s.target;
-      document.getElementById("summaryMeta").textContent =
-        (s.started_at ? new Date(s.started_at).toLocaleString() : "") +
-        (s.finished_at ? " → " + new Date(s.finished_at).toLocaleString() : "") +
-        " · " + s.status;
 
       var kpis = document.getElementById("summaryKpis");
       var endpointsVal = s.crawl ? s.crawl.endpoint_count : "—";
@@ -5321,7 +5428,7 @@ async function loadHealth() {
       renderTopModules(d.top_modules, d.coverage);
       renderOwaspTotals(d.owasp_totals);
       renderExecCoverageFunnel(d.latest, d.duration_stats);
-      renderAttackSurface(d.attack_surface);
+      renderAttackSurface(d.attack_surface, d.technologies);
       renderAppStrip(d.by_target);
       renderExecStatRow(d);
       document.getElementById("trendMeta").textContent = d.total_scans + " scan" + (d.total_scans === 1 ? "" : "s") + " total";
@@ -5717,10 +5824,12 @@ async function loadHealth() {
   // actually records. A single flat file with no scan-id history (see
   // ENDPOINTS_PATH's own comment), so this is always "as of the latest
   // crawl," not a trend -- labeled that way rather than implying one.
-  function renderAttackSurface(attackSurface) {
+  function renderAttackSurface(attackSurface, technologies) {
     var grid = document.getElementById("attackSurfaceGrid");
+    var techEl = document.getElementById("attackSurfaceTech");
     if (!attackSurface || !attackSurface.endpoints) {
       grid.innerHTML = '<div class="card-empty">No crawl data yet — run a scan to map this target\'s attack surface here.</div>';
+      if (techEl) techEl.innerHTML = "";
       return;
     }
     var tiles = [
@@ -5737,6 +5846,18 @@ async function loadHealth() {
       tileEl.querySelector(".tv").textContent = tiles[i][1];
       tileEl.querySelector(".tl").textContent = tiles[i][0];
     });
+    // Passively fingerprinted during the same crawl (response headers,
+    // page HTML, session cookie names) -- no extra request. Detection
+    // only today; not yet used to change which techniques run (see
+    // stof/crawler/tech_fingerprint.py's own module docstring).
+    if (techEl) {
+      techEl.innerHTML = (technologies && technologies.length)
+        ? '<div class="small" style="color:var(--text-faint); margin-bottom:6px;">Detected technologies</div>' +
+          technologies.map(function (t) {
+            return '<span class="mode-tag" style="margin:0 6px 6px 0;" title="' + escapeHtml(t.evidence) + '">' + escapeHtml(t.name) + "</span>";
+          }).join("")
+        : "";
+    }
   }
 
   // Real per-application rollup (stof/ui/server.py's _group_by_target())

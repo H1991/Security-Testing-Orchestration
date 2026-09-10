@@ -4,10 +4,17 @@
     "sources": [
       "OWASP Web Security Testing Guide -- WSTG-INPV-04 'Testing for HTTP Parameter Pollution'",
       "PortSwigger Web Security Academy -- HTTP Parameter Pollution research (secondary support)",
-      "OWASP CSV Injection Cheat Sheet / CWE-1236 'Improper Neutralization of Formula Elements in a CSV File'"
+      "OWASP CSV Injection Cheat Sheet / CWE-1236 'Improper Neutralization of Formula Elements in a CSV File'",
+      "HackerOne #807961 (8x8) -- Blind OS command injection in a text-to-speech API, confirmed via response-time delay",
+      "HackerOne bug bounty guides (YesWeHack, HackerOne blog 'How To: Command Injections') -- sleep-based blind detection as the standard technique when command output isn't returned",
+      "HackerOne #2573567 (U.S. DoD), #500515 (Starbucks), #312543 (Semrush), #248668 (X/xAI SXMP processor) -- disclosed XXE reports, external entity file disclosure and SSRF via XML parsing (SOAP/sitemap/SXMP endpoints)",
+      "PortSwigger Web Security Academy -- XXE injection tutorial: classic external entity, blind XXE via out-of-band interaction, error-based XXE via a redefined parameter entity",
+      "HackerOne #1104349 (Glovo) -- Server-Side Template Injection via a user-controlled form field",
+      "HackTricks / AppSec Brief SSTI guides -- the {{7*7}}/${7*7}/<%= 7*7 %> arithmetic-evaluation polyglot as the standard, engine-agnostic detection oracle",
+      "HackerOne #1130721, #1130874, #1757676, #1458020 (Rocket.Chat) -- pre-auth and post-auth blind NoSQL injection via MongoDB $regex/$ne operators, escalating to account takeover and RCE"
     ],
     "generated_for": "STOF stof/modules/injection_variants_tests.py",
-    "key_finding": "Two distinct, previously-uncovered injection-variant shapes: (1) HTTP Parameter Pollution, where duplicate parameter names cause different layers of the request-processing stack (WAF vs application logic) to disagree about which value 'wins' -- a genuinely different bug class from the single-value SQLi/XSS injection points sqli_tests.py/xss_tests.py already cover, and (2) CSV/Formula injection, where a stored free-text value beginning with =, +, -, or @ can execute as a formula if the data is later opened in a spreadsheet application -- a precondition STOF can plant and verify (does the value survive unescaped into storage) but cannot itself confirm exploitation of (no spreadsheet export exists to open). Both techniques deliberately hold a conservative evidence bar: HPP requires the differential to diverge from BOTH single-value baselines or reflect both values together, never a bare 'something changed'; CSV injection is framed as a precondition finding, never a confirmed CSV injection."
+    "key_finding": "Six distinct injection-variant shapes bundled into this one module (matching this project's own 'coherent test-case family, not one module per technique' convention): (1) HTTP Parameter Pollution and (2) CSV/Formula Injection (both pre-existing, see their own entries below), plus four newly added ones grounded in real disclosed reports: (3) OS Command Injection, detected the same time-based-blind way disclosed reports document (a sleep delay, since command output is rarely reflected); (4) XXE, detected via a differential external-entity file-read against a low-sensitivity canary file, with a parser-error fingerprint as a lower-confidence fallback (both real, disclosed-report-documented detection paths, distinct from PortSwigger's third path -- out-of-band collaborator confirmation -- which this project's existing SSRF TC-137.6 already establishes as a separate, not-yet-confirming technique); (5) SSTI, detected via the same engine-agnostic arithmetic-polyglot oracle real bug bounty guides converge on, which -- like xss_tests.py's DOM-XSS marker check -- proves evaluation occurred, not mere reflection; (6) NoSQL Injection, detected via the exact MongoDB operator-substitution pattern (`$ne`/`$gt` replacing a string password value) that repeatedly appears across real disclosed Rocket.Chat reports, reusing sqli_tests.py's own login-bypass success oracle (looks_json_authenticated) unchanged. All four new techniques stay within this project's 'candidate-detect, never auto-exploit' line: command injection never reads command output, XXE only ever targets a single low-sensitivity file, SSTI proves evaluation without attempting real code execution, and NoSQL injection confirms an auth bypass without extracting any real stored data."
   },
   "patterns": [
     {
@@ -36,6 +43,62 @@
           "TC-134.2"
         ],
         "notes": "Implemented as injection_variants_tests.py's _technique_csv_formula_injection, reusing _second_order_plant_candidates/_second_order_verify_candidates from _injection_shared.py unchanged (same free-text field heuristics as TC-127.6/TC-128.4). Framed honestly in the Finding description as a precondition only: STOF has no way to confirm a spreadsheet export of the stored data actually exists, so a hit means 'this value would survive into a CSV/Excel export unescaped IF one exists', never a confirmed CSV injection. Gated behind allow_state_changing_probes since the plant phase is a real POST."
+      }
+    },
+    {
+      "id": "os_command_injection",
+      "generalized_transformation": "Inject a bounded shell sleep payload (';sleep 6;', '|sleep 6', '$(sleep 6)', '`sleep 6`') into a discovered parameter and measure response latency against a baseline, requiring the delay to repeat once before reporting -- the exact same 'bounded, repeatable-before-reporting' discipline sqli_tests.py's TC-127.3 already established, applied to shell metacharacters instead of a SQL sleep function.",
+      "abstracted_endpoint_pattern": "Any discovered GET or POST endpoint carrying at least one known parameter -- real disclosed reports (HackerOne #807961) show command injection landing in parameters that reach a shell/exec call server-side (a file-processing, conversion, or system-utility-wrapping endpoint), indistinguishable from any other parameter by name alone.",
+      "real_example": "HackerOne #807961 (8x8): a text-to-speech API's input parameter reached a shell command unsanitized; the disclosed exploitation path used sleep-based timing since command output was never reflected in the response -- the standard technique cited across HackerOne's own 'How To: Command Injections' guide and multiple bug bounty writeups for exactly this blind case.",
+      "evidence_signal": "A repeatable (confirmed twice) response-latency delta at or above the injected sleep duration, compared against an unmodified baseline request -- never a bare 'the response changed' or a single unconfirmed timing sample.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-134.3"
+        ],
+        "notes": "Implemented as injection_variants_tests.py's _technique_command_injection. Tries a short, bounded list of 4 separator styles per candidate endpoint (POSIX chaining, pipe, and both command-substitution forms), stopping at the first repeatable hit -- never summing multiple sleeps at once, the same DoS-risk restraint TC-127.3's own docstring establishes for a real, shared target this project doesn't own. Not gated behind allow_state_changing_probes (a single timing probe isn't gate-worthy, matching every other reflected-style injection technique in this codebase)."
+      }
+    },
+    {
+      "id": "xxe_external_entity",
+      "generalized_transformation": "Re-submit a discovered POST endpoint with Content-Type: application/xml and a DOCTYPE declaring an external SYSTEM entity pointing at a low-sensitivity local file, compared against a structurally identical request with no DOCTYPE/entity at all -- a differential check, not a bare substring search, so an endpoint that just echoes its request body verbatim can never masquerade as a real external-entity read.",
+      "abstracted_endpoint_pattern": "Any discovered POST endpoint, re-submitted with an XML body regardless of its normal Content-Type -- real disclosed XXE reports (Semrush #312543, X/xAI #248668) hit endpoints whose PRIMARY function has nothing to do with XML on the surface (a sitemap-audit feature, an SMS-processing servlet) but whose backend still auto-detects and parses an XML body.",
+      "real_example": "PortSwigger's canonical classic-XXE payload: <!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><foo>&xxe;</foo> -- STOF's version substitutes /etc/hostname (a single, low-sensitivity line) for /etc/passwd, matching this project's 'signal only, never claim to read real sensitive data' restraint. Real disclosed reports (DoD #2573567, Starbucks #500515) confirm the same external-entity-declaration shape against production XML-consuming endpoints.",
+      "evidence_signal": "PRIMARY: the response contains real substituted content at the entity-reference position that a no-entity baseline request does not (proof of external file read). FALLBACK (lower confidence): a real XML/entity-parser error signature (SAXParseException, 'external entity', 'DOCTYPE is not allowed', ...) present in the payload response but absent from the baseline -- PortSwigger's own documented 'error-based XXE' path for when out-of-band/direct read is blocked.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-134.4"
+        ],
+        "notes": "Implemented as injection_variants_tests.py's _technique_xxe. Deliberately does NOT implement PortSwigger's third documented path (out-of-band interaction via a collaborator server) -- this project's existing SSRF TC-137.6 already sends a real OOB probe via burp.collaborator_url but explicitly does not poll for a received callback (see ssrf_tests.py's own docstring); a true blind-XXE-with-confirmed-callback technique is a separate, not-yet-built gap, not silently folded into this one."
+      }
+    },
+    {
+      "id": "ssti_template_injection",
+      "generalized_transformation": "Inject a polyglot arithmetic-expression payload combining multiple template engines' own syntax ({{a*b}} Jinja2/Twig, ${a*b} Freemarker/Thymeleaf/EL, <%= a*b %> ERB) with this run's own random operands, and check whether the computed PRODUCT appears in the response while the raw, un-evaluated payload text does not -- proof of server-side evaluation, never a claim that arbitrary code execution was achieved.",
+      "abstracted_endpoint_pattern": "Any discovered GET or POST endpoint carrying at least one known parameter -- the disclosed Glovo report (#1104349) landed in an ordinary user-facing form field, no different in shape from any other injectable parameter.",
+      "real_example": "The canonical, engine-agnostic SSTI detection payload documented across HackTricks, AppSec Brief, and multiple bug bounty guides: ${7*7}/{{7*7}} returning 49 in the response (rather than the literal, un-evaluated text) is the standard, tool-independent (tplmap and manual testing both use it) proof that user input reached a template engine's expression evaluator.",
+      "evidence_signal": "The literal decimal product of this run's own two random operands appears in the response body, AND the raw payload string itself does not -- both conditions required, so a template engine that merely reflects the payload text verbatim (never evaluating it) can never read as a hit.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-134.5"
+        ],
+        "notes": "Implemented as injection_variants_tests.py's _technique_ssti. Random per-run operands (not a fixed 7*7) mean the expected product can never coincidentally already appear in a page's normal content. Not gated behind allow_state_changing_probes, same reasoning as TC-134.3 -- a single read-oriented probe isn't gate-worthy."
+      }
+    },
+    {
+      "id": "nosql_injection_operator_bypass",
+      "generalized_transformation": "Substitute a JSON login request's password field (a plain string in a legitimate request) with a MongoDB query operator object ({\"$ne\": null} or {\"$gt\": \"\"}) instead -- the exact same shape sqli_tests.py's TC-127.4 uses for SQL login-bypass, just with an operator OBJECT where a string belongs rather than a crafted string value, since NoSQL query languages accept structured operators directly as field values.",
+      "abstracted_endpoint_pattern": "The same discovered POST endpoint find_login_endpoint (stof/modules/base.py) already locates for TC-127.4 -- a username-shaped and password-shaped parameter pair -- reused unchanged for this technique's JSON-body variant.",
+      "real_example": "HackerOne #1130721 (Rocket.Chat): the getPasswordPolicy method's token parameter accepted a raw {\"$regex\": \"^A\"} object, enabling character-by-character blind extraction; #1130874 (also Rocket.Chat) found the same operator-injection shape reachable via the users.list API, both escalating to account takeover and eventually RCE once an admin account was compromised.",
+      "evidence_signal": "An actually-authenticated-looking response (an auth-token-shaped JSON field present where a definitely-wrong-credentials baseline has none, or HTTP status below 400) when the operator payload is submitted -- never a bare non-error status code, since a rejected login can still return 200 with an error body.",
+      "stof_coverage": {
+        "status": "covered",
+        "techniques": [
+          "TC-134.6"
+        ],
+        "notes": "Implemented as injection_variants_tests.py's _technique_nosql_injection. Reuses looks_json_authenticated (_injection_shared.py, already built for TC-127.4/auth_tests.py) unchanged for the success oracle -- the same JSON-API-shaped-success detection this project already validated works against real modern SPA backends (confirmed live against Juice Shop earlier in this project's history)."
       }
     }
   ]

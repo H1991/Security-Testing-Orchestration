@@ -15,6 +15,7 @@ from stof.modules.business_logic_tests import (
     _find_multistep_flow,
     _find_registration_endpoint,
     _find_workflow_state_create_endpoint,
+    _find_workflow_states,
     _looks_like_signup_success,
     _role_like_param,
     _step_value,
@@ -105,6 +106,51 @@ def test_find_multistep_flow_none_when_single_step_only():
 
 
 # ---------------------------------------------------------------------------
+# _find_workflow_states -- TC-135.7's full ordered state-machine
+# ---------------------------------------------------------------------------
+
+
+def test_find_workflow_states_returns_full_ordered_chain():
+    endpoints = [
+        Endpoint(url="https://x/wizard?step=3", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=1", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=5", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=2", method="GET", endpoint_type="page", parameters=[]),
+    ]
+    states = _find_workflow_states(endpoints)
+    assert states is not None
+    assert [step for step, _ in states] == [1, 2, 3, 5]
+
+
+def test_find_workflow_states_dedupes_multiple_urls_for_the_same_step():
+    endpoints = [
+        Endpoint(url="https://x/wizard?step=1", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=1&r=retry", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=2", method="GET", endpoint_type="page", parameters=[]),
+    ]
+    states = _find_workflow_states(endpoints)
+    assert [step for step, _ in states] == [1, 2]
+
+
+def test_find_workflow_states_picks_the_richest_group():
+    endpoints = [
+        Endpoint(url="https://x/a?step=1", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/a?step=2", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/b?stage=1", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/b?stage=2", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/b?stage=3", method="GET", endpoint_type="page", parameters=[]),
+    ]
+    states = _find_workflow_states(endpoints)
+    assert len(states) == 3
+    assert all("/b" in endpoint.url for _, endpoint in states)
+
+
+def test_find_workflow_states_none_when_single_step_only():
+    endpoints = [Endpoint(url="https://x/wizard?step=1", method="GET", endpoint_type="page", parameters=[])]
+    assert _find_workflow_states(endpoints) is None
+
+
+# ---------------------------------------------------------------------------
 # run_techniques() / individual techniques -- async
 # ---------------------------------------------------------------------------
 
@@ -164,7 +210,7 @@ async def test_run_techniques_skipped_when_no_registration_or_flow_discovered():
     results = await module.run_techniques([], None, pool)
 
     by_id = _by_id(results)
-    assert len(by_id) == 6
+    assert len(by_id) == 7
     assert all(r.status == SKIPPED for r in by_id.values())
 
 
@@ -306,6 +352,113 @@ async def test_workflow_step_skipping_passes_when_rejected():
     result = await module._technique_workflow_step_skipping(endpoints, pool, evidence=None)
 
     assert result.status == PASS
+
+
+# ---------------------------------------------------------------------------
+# TC-135.7 — workflow state-machine modeling (every step, not just the last)
+# ---------------------------------------------------------------------------
+
+
+def _four_step_wizard():
+    return [
+        Endpoint(url="https://x/wizard?step=1", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=2", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=3", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=4", method="GET", endpoint_type="page", parameters=[]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_machine_skipped_for_a_2_step_flow():
+    """TC-135.3 already fully covers the 2-step case -- TC-135.7 only
+    adds real information starting at 3 distinct steps."""
+    endpoints = [
+        Endpoint(url="https://x/wizard?step=1", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=2", method="GET", endpoint_type="page", parameters=[]),
+    ]
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+    pool = _pool_with_context(_fake_context())
+
+    result = await module._technique_workflow_state_machine_reachability(endpoints, pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "TC-135.3" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_machine_gated_skip_when_probes_disabled():
+    module = BusinessLogicTestsModule()  # allow_state_changing_probes defaults False
+    pool = _pool_with_context(_fake_context())
+
+    result = await module._technique_workflow_state_machine_reachability(_four_step_wizard(), pool, evidence=None)
+
+    assert result.status == SKIPPED
+    assert "allow_state_changing_probes" in result.detail
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_machine_fails_and_lists_every_reachable_step():
+    # states[1:] = steps 2, 3, 4 -- 3 probes, steps 2 and 4 reachable, 3 rejected.
+    responses = [
+        _response(200, "<html>" + ("Step 2 content " * 10) + "</html>"),
+        _response(200, "Please complete step 1 first"),
+        _response(200, "<html>" + ("Step 4 content " * 10) + "</html>"),
+    ]
+
+    def fake_get(url, max_redirects=0):
+        return responses.pop(0)
+
+    context = _fake_context(get_side_effect=fake_get)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    result = await module._technique_workflow_state_machine_reachability(_four_step_wizard(), pool, evidence=None)
+
+    assert result.status == FAIL
+    assert result.finding is not None
+    assert result.finding.severity == "Medium"
+    assert "step 2" in result.finding.description
+    assert "step 4" in result.finding.description
+    assert "step 3" not in result.finding.description
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_machine_passes_when_every_later_step_rejected():
+    def fake_get(url, max_redirects=0):
+        return _response(200, "Please complete step 1 first")
+
+    context = _fake_context(get_side_effect=fake_get)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    result = await module._technique_workflow_state_machine_reachability(_four_step_wizard(), pool, evidence=None)
+
+    assert result.status == PASS
+
+
+@pytest.mark.asyncio
+async def test_workflow_state_machine_excludes_errored_probes_without_counting_as_reachable():
+    responses_left = [Exception("boom"), _response(200, "Please complete step 1 first")]
+
+    def fake_get(url, max_redirects=0):
+        item = responses_left.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    context = _fake_context(get_side_effect=fake_get)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    endpoints = [
+        Endpoint(url="https://x/wizard?step=1", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=2", method="GET", endpoint_type="page", parameters=[]),
+        Endpoint(url="https://x/wizard?step=3", method="GET", endpoint_type="page", parameters=[]),
+    ]
+    result = await module._technique_workflow_state_machine_reachability(endpoints, pool, evidence=None)
+
+    assert result.status == PASS
+    assert "1 probe(s) errored" in result.detail
 
 
 # ---------------------------------------------------------------------------

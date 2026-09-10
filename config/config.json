@@ -1,8 +1,12 @@
 {
   "target": {
-    "base_url": "http://192.168.1.73:3001",
-    "login_url": "http://192.168.1.73:3001/#/login",
-    "requires_assisted_login": false
+    "base_url": "http://demo.testfire.net",
+    "login_url": "http://demo.testfire.net/login.jsp",
+    "requires_assisted_login": false,
+    "crawler_exclude_patterns": [
+      "feedback.jsp",
+      "disclaimer.htm"
+    ]
   },
   "browser": {
     "headless": true,

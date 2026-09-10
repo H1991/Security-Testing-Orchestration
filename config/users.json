@@ -3,9 +3,16 @@
     {
       "id": "admin-01",
       "role": "admin",
-      "username": "admin@juice-sh.op",
+      "username": "admin",
       "password": "{{env:ADMIN_PASSWORD}}",
-      "auth_type": "jwt"
+      "auth_type": "form_login"
+    },
+    {
+      "id": "user-01",
+      "role": "normal",
+      "username": "jsmith",
+      "password": "{{env:USER_PASSWORD}}",
+      "auth_type": "form_login"
     }
   ]
 }

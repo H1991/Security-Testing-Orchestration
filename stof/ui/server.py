@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import re
 import shutil
 import sys
@@ -62,6 +63,16 @@ FINDINGS_DIR = REPO_ROOT / "data" / "findings"
 # latest crawl, never a trend. Labeled that way in the UI rather than
 # implying a history that doesn't exist.
 ENDPOINTS_PATH = REPO_ROOT / "data" / "endpoints.json"
+# Recon already runs automatically on every `stof scan` (see main.py's
+# "RECONNAISSANCE & ENDPOINT CONTEXT" phase, stof/recon/recon_engine.py)
+# and already detects the tech stack per-page via
+# stof/recon/tech_detector.py -- this was previously computed and
+# written to disk but never read by this server or shown anywhere in
+# the UI. Same "single flat file, most recent scan's recon run" shape
+# as ENDPOINTS_PATH; unlike endpoints.json this one IS scan-id-stamped
+# too (data/recon/scan_<id>.json), but the flat file here is always the
+# most recent, matching how the rest of this "latest crawl" section works.
+RECON_RESULTS_PATH = REPO_ROOT / "data" / "recon_results.json"
 WORKFLOWS_DIR = REPO_ROOT / "data" / "workflows"
 EVIDENCE_DIR = REPO_ROOT / "data" / "evidence"
 RECON_DIR = REPO_ROOT / "data" / "recon"
@@ -343,9 +354,9 @@ class ScanRegistry:
     def __init__(self) -> None:
         self._scans: dict[str, ScanRecord] = {}
 
-    def create(self, target: str, modules: list[str], workflow_ids: list[str] | None = None) -> ScanRecord:
+    def create(self, target: str, modules: list[str], workflow_ids: list[str] | None = None, status: str = "running") -> ScanRecord:
         scan_id = uuid.uuid4().hex[:8]
-        record = ScanRecord(scan_id, target, modules, workflow_ids=workflow_ids)
+        record = ScanRecord(scan_id, target, modules, workflow_ids=workflow_ids, status=status)
         self._scans[scan_id] = record
         return record
 
@@ -361,6 +372,55 @@ class ScanRegistry:
 
 REGISTRY = ScanRegistry()
 _BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+# ---------------------------------------------------------------------------
+# Concurrent-scan queue -- a bounded number of scans run at once on THIS
+# box; anything beyond that waits in `_SCAN_QUEUE` (FIFO of scan_ids)
+# and starts automatically as running slots free up in
+# `_drain_scan_queue()`. Deliberately in-process, no Redis/external
+# queue: every scan subprocess is already safely isolated per scan_id
+# (evidence -> data/evidence/<scan_id>/, its own Burp task_id,
+# config.json read once at launch not mutated mid-scan), so the only
+# thing actually limiting concurrency was this one number -- a
+# distributed task queue only earns its complexity the day scans need
+# to run across MULTIPLE machines, not just multiple slots on one.
+# `STOF_MAX_CONCURRENT_SCANS` lets an operator size this to the box
+# (each concurrent scan runs its own headless Chromium -- budget
+# roughly 500MB-1GB RAM per slot).
+# ---------------------------------------------------------------------------
+MAX_CONCURRENT_SCANS = max(1, int(os.environ.get("STOF_MAX_CONCURRENT_SCANS", "2")))
+_SCAN_QUEUE: list[str] = []
+
+
+def _running_scan_count() -> int:
+    return sum(1 for r in REGISTRY.all() if r.status == "running")
+
+
+def _launch_scan_task(record: ScanRecord, module_names: list[str] | None, workflow_ids: list[str] | None) -> None:
+    """Starts the actual subprocess for a scan that already has a free
+    concurrency slot -- shared by the immediate-start path in
+    `start_scan()` and the queue-drain path below, so both launch a
+    scan exactly the same way."""
+    task = asyncio.create_task(_run_scan_process(record, module_names, workflow_ids=workflow_ids))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+async def _drain_scan_queue() -> None:
+    """Called every time a scan finishes (complete/failed/stopped) --
+    starts the next queued scan(s) if a concurrency slot is now free.
+    A `while` (not `if`) so freeing up more than one slot at once -- two
+    scans finishing back-to-back before this runs -- still drains
+    correctly instead of leaving a slot idle until the next event."""
+    while _SCAN_QUEUE and _running_scan_count() < MAX_CONCURRENT_SCANS:
+        scan_id = _SCAN_QUEUE.pop(0)
+        record = REGISTRY.get(scan_id)
+        if record is None or record.status != "queued":
+            continue  # cancelled while waiting -- see stop_scan()
+        record.status = "running"
+        record.started_at = datetime.now(timezone.utc).isoformat()
+        await _broadcast_event(record, {"event": "scan_started", "scan_id": record.scan_id, "target": record.target, "modules": record.modules})
+        _launch_scan_task(record, record.modules, record.workflow_ids)
 
 # ---------------------------------------------------------------------------
 # Global live channel -- ONE persistent WebSocket per connected browser
@@ -466,6 +526,26 @@ async def _tail_events_file(record: ScanRecord, events_path: Path, stop_event: a
     await _drain_once()
 
 
+def _write_failure_record(record: ScanRecord, error_tail: str, message: str) -> None:
+    """Persists WHY a scan failed to disk, not just to the in-memory
+    `ScanRecord` -- confirmed live as a real, total-loss gap: a failed
+    scan never writes a report.json (only `stof scan`'s own success
+    path does that), so once this server process restarts, the
+    in-memory record (and its `error_tail`) is gone with nothing on
+    disk to reconstruct it from -- `GET /api/scans/{id}` just 404s,
+    same as a scan_id that never existed, and the operator has no way
+    to find out why last night's scan died. This is the durable
+    equivalent of the `process_exited` event's own `error_tail` field,
+    read back by `list_scans()`/`get_scan()`'s disk-fallback branch."""
+    path = LOGS_DIR / f"scan_{record.scan_id}.failure.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "scan_id": record.scan_id, "target": record.target, "modules": record.modules,
+        "started_at": record.started_at, "finished_at": record.finished_at,
+        "exit_code": record.exit_code, "message": message, "error_tail": error_tail,
+    }, indent=2) + "\n", encoding="utf-8")
+
+
 async def _run_scan_process(record: ScanRecord, module_names: list[str] | None, workflow_ids: list[str] | None = None) -> None:
     """Launches `stof scan` as a real subprocess of the same interpreter
     this server runs under -- the CLI's own dependency-check, browser
@@ -498,7 +578,10 @@ async def _run_scan_process(record: ScanRecord, module_names: list[str] | None, 
     except Exception as exc:
         record.status = "failed"
         record.finished_at = datetime.now(timezone.utc).isoformat()
-        await _broadcast_event(record, {"event": "error", "message": f"failed to launch scan process: {exc}"})
+        message = f"failed to launch scan process: {exc}"
+        await _broadcast_event(record, {"event": "error", "message": message})
+        _write_failure_record(record, error_tail="", message=message)
+        await _drain_scan_queue()
         return
 
     record.process = process
@@ -509,9 +592,12 @@ async def _run_scan_process(record: ScanRecord, module_names: list[str] | None, 
     if process.stdout is None:
         record.status = "failed"
         record.finished_at = datetime.now(timezone.utc).isoformat()
-        await _broadcast_event(record, {"event": "error", "message": "scan process started with no stdout pipe"})
+        message = "scan process started with no stdout pipe"
+        await _broadcast_event(record, {"event": "error", "message": message})
+        _write_failure_record(record, error_tail="", message=message)
         stop_event.set()
         await tail_task
+        await _drain_scan_queue()
         return
 
     while True:
@@ -535,7 +621,9 @@ async def _run_scan_process(record: ScanRecord, module_names: list[str] | None, 
     error_tail = None
     if record.status == "failed":
         error_tail = "\n".join(record.raw_lines[-15:])
+        _write_failure_record(record, error_tail=error_tail, message=f"scan process exited with code {exit_code}")
     await _broadcast_event(record, {"event": "process_exited", "exit_code": exit_code, "status": record.status, "error_tail": error_tail})
+    await _drain_scan_queue()
 
 
 # ---------------------------------------------------------------------------
@@ -847,7 +935,7 @@ app = FastAPI(title="STOF Console API")
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True}
+    return {"ok": True, "max_concurrent_scans": MAX_CONCURRENT_SCANS}
 
 
 @app.get("/api/config")
@@ -2119,37 +2207,46 @@ async def start_scan(body: StartScanRequest) -> dict:
             "to test the configured target before a scan (which sends real attack payloads) can start.",
         )
     # A scan is a real subprocess driving a real Playwright browser that
-    # sends real attack payloads -- nothing previously stopped a second
-    # (third, tenth...) POST here from launching another one on top of
-    # an already-running scan, whether from a double-click, a second
-    # browser tab, or a script hitting this endpoint directly. That's
-    # not just wasted resources: it's unbounded, unintended attack
-    # traffic multiplying against the same target. One scan at a time,
+    # sends real attack payloads -- duplicate, unbounded attack traffic
+    # against the SAME target (a double-click, a second browser tab, a
+    # script hitting this endpoint directly) is still blocked outright,
     # same 409 pattern already used for Verify Login and Recording.
-    already_running = next((r for r in REGISTRY.all() if r.status == "running"), None)
-    if already_running is not None:
-        raise HTTPException(
-            409,
-            f"scan '{already_running.scan_id}' is already running against "
-            f"'{already_running.target}' -- stop it first (POST /api/scans/{already_running.scan_id}/stop) "
-            "or wait for it to finish before starting another.",
-        )
+    # Different targets, though, no longer collide: up to
+    # MAX_CONCURRENT_SCANS run at once, each safely isolated per
+    # scan_id (see the _SCAN_QUEUE comment above) -- anything beyond
+    # that queues instead of being rejected.
     doc = _read_json(CONFIG_PATH)
     if doc is None:
         raise HTTPException(404, f"{CONFIG_PATH} not found -- run `stof configure` first")
     target = doc.get("target", {}).get("base_url", "unknown")
 
-    record = REGISTRY.create(target, body.modules or [], workflow_ids=body.workflow_ids)
+    same_target = next((r for r in REGISTRY.all() if r.target == target and r.status in ("running", "queued")), None)
+    if same_target is not None:
+        raise HTTPException(
+            409,
+            f"scan '{same_target.scan_id}' is already {same_target.status} against '{target}' -- stop it first "
+            f"(POST /api/scans/{same_target.scan_id}/stop) or wait for it to finish before starting another "
+            "against the same target.",
+        )
+
+    has_free_slot = _running_scan_count() < MAX_CONCURRENT_SCANS
+    record = REGISTRY.create(target, body.modules or [], workflow_ids=body.workflow_ids, status="running" if has_free_slot else "queued")
     if body.name:
         _save_scan_name(record.scan_id, body.name)
-    task = asyncio.create_task(_run_scan_process(record, body.modules, workflow_ids=body.workflow_ids))
-    _BACKGROUND_TASKS.add(task)
-    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+    if has_free_slot:
+        _launch_scan_task(record, body.modules, body.workflow_ids)
+    else:
+        _SCAN_QUEUE.append(record.scan_id)
+
     await _broadcast_global({
         "event": "scan_created", "scan_id": record.scan_id, "target": target,
-        "modules": record.modules, "started_at": record.started_at,
+        "modules": record.modules, "started_at": record.started_at, "status": record.status,
     })
-    return {"scan_id": record.scan_id, "target": target, "status": record.status}
+    return {
+        "scan_id": record.scan_id, "target": target, "status": record.status,
+        "queue_position": _SCAN_QUEUE.index(record.scan_id) + 1 if record.status == "queued" else None,
+    }
 
 
 @app.patch("/api/scans/{scan_id}/name")
@@ -2186,32 +2283,60 @@ def _reconstructed_scan_times(report: dict) -> tuple[str | None, str | None]:
     return started_at, finished_at
 
 
+def _glob_scan_json(directory: Path, glob_pattern: str, filename_re: str, seen_ids: set[str]) -> list[tuple[str, dict]]:
+    """Glob `directory` for `glob_pattern`, extract the scan_id via
+    `filename_re`'s one capture group, skip any scan_id already in
+    `seen_ids` (adding newly-found ones as it goes), and return each as
+    `(scan_id, parsed_json)` -- the shared mechanics behind
+    `list_scans()`'s two disk-recovery passes (reports, then failure
+    records), which otherwise differ only in what dict shape each builds."""
+    if not directory.is_dir():
+        return []
+    pattern = re.compile(filename_re)
+    found = []
+    for path in sorted(directory.glob(glob_pattern), key=lambda p: p.stat().st_mtime, reverse=True):
+        m = pattern.match(path.name)
+        if not m or m.group(1) in seen_ids:
+            continue
+        seen_ids.add(m.group(1))
+        found.append((m.group(1), _read_json(path) or {}))
+    return found
+
+
 @app.get("/api/scans")
 def list_scans() -> list[dict]:
     names = _load_scan_names()
     live = {r.scan_id: r for r in REGISTRY.all()}
     out = []
+    seen_ids: set[str] = set(live)
     for r in live.values():
         out.append({
             "scan_id": r.scan_id, "name": names.get(r.scan_id), "target": r.target, "modules": r.modules,
             "status": r.status, "exit_code": r.exit_code,
             "started_at": r.started_at, "finished_at": r.finished_at,
+            "queue_position": (_SCAN_QUEUE.index(r.scan_id) + 1) if r.scan_id in _SCAN_QUEUE else None,
         })
     # Also surface past scans this process never launched (e.g. run from
     # the CLI directly, or from a previous server process) by reading
     # whatever report JSON files already exist on disk.
-    if REPORTS_DIR.is_dir():
-        for path in sorted(REPORTS_DIR.glob("scan_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            m = re.match(r"scan_([0-9a-f]+)\.json$", path.name)
-            if not m or m.group(1) in live:
-                continue
-            report = _read_json(path) or {}
-            started_at, finished_at = _reconstructed_scan_times(report)
-            out.append({
-                "scan_id": m.group(1), "name": names.get(m.group(1)), "target": report.get("target", "unknown"),
-                "modules": report.get("modules_run", []), "status": "complete", "exit_code": 0,
-                "started_at": started_at, "finished_at": finished_at,
-            })
+    for scan_id, report in _glob_scan_json(REPORTS_DIR, "scan_*.json", r"scan_([0-9a-f]+)\.json$", seen_ids):
+        started_at, finished_at = _reconstructed_scan_times(report)
+        out.append({
+            "scan_id": scan_id, "name": names.get(scan_id), "target": report.get("target", "unknown"),
+            "modules": report.get("modules_run", []), "status": "complete", "exit_code": 0,
+            "started_at": started_at, "finished_at": finished_at,
+        })
+    # A scan that FAILED never gets a report.json (only the success path
+    # writes one) -- without this, a failed scan from a previous server
+    # process (or this one, after a restart) simply vanished from the
+    # list entirely once its in-memory record was gone. See
+    # _write_failure_record()'s own docstring for the full story.
+    for scan_id, failure in _glob_scan_json(LOGS_DIR, "scan_*.failure.json", r"scan_([0-9a-f]+)\.failure\.json$", seen_ids):
+        out.append({
+            "scan_id": scan_id, "name": names.get(scan_id), "target": failure.get("target", "unknown"),
+            "modules": failure.get("modules", []), "status": "failed", "exit_code": failure.get("exit_code"),
+            "started_at": failure.get("started_at"), "finished_at": failure.get("finished_at"),
+        })
     # One consistent "most recent first" ordering regardless of source
     # (in-memory vs. disk-recovered) -- the Dashboard's default scan
     # picker depends on out[0] actually being the newest.
@@ -2230,10 +2355,26 @@ def get_scan(scan_id: str) -> dict:
             "started_at": record.started_at, "finished_at": record.finished_at,
             "current_phase": record.current_phase, "modules_state": record.modules_state,
             "live_findings": record.live_findings, "events": record.events, "crawl": record.crawl,
+            "queue_position": (_SCAN_QUEUE.index(record.scan_id) + 1) if record.scan_id in _SCAN_QUEUE else None,
         }
     report_path = REPORTS_DIR / f"scan_{scan_id}.json"
     report = _read_json(report_path)
     if report is None:
+        # A failed scan never writes a report.json -- check for the
+        # failure record _write_failure_record() persists instead of
+        # 404ing outright (that used to be indistinguishable from
+        # "this scan_id never existed").
+        failure = _read_json(LOGS_DIR / f"scan_{scan_id}.failure.json")
+        if failure is not None:
+            return {
+                "scan_id": scan_id, "name": _load_scan_names().get(scan_id),
+                "target": failure.get("target", "unknown"), "modules": failure.get("modules", []), "workflow_ids": [],
+                "status": "failed", "exit_code": failure.get("exit_code"),
+                "started_at": failure.get("started_at"), "finished_at": failure.get("finished_at"),
+                "current_phase": None, "modules_state": {}, "live_findings": [],
+                "events": [{"event": "process_exited", "exit_code": failure.get("exit_code"), "status": "failed", "error_tail": failure.get("error_tail")}],
+                "crawl": None, "queue_position": None,
+            }
         raise HTTPException(404, f"no scan '{scan_id}' known to this server and no report on disk")
 
     # This server process never launched this scan (it finished before
@@ -2274,10 +2415,23 @@ async def stop_scan(scan_id: str) -> dict:
     reports `status: "stopped"` rather than `"failed"` once the process
     actually dies -- terminating it here doesn't itself flip the
     status; that still happens exactly once, in the one place that
-    already reads the real exit code."""
+    already reads the real exit code.
+
+    A QUEUED scan (no subprocess yet) is handled separately: just
+    remove it from `_SCAN_QUEUE` and mark it stopped directly --
+    `_drain_scan_queue()` already skips a scan_id whose record isn't
+    still "queued" when it's popped, so a scan cancelled here while
+    waiting never gets launched."""
     record = REGISTRY.get(scan_id)
     if record is None:
-        raise HTTPException(404, f"no running scan '{scan_id}' known to this server")
+        raise HTTPException(404, f"no scan '{scan_id}' known to this server")
+    if record.status == "queued":
+        if scan_id in _SCAN_QUEUE:
+            _SCAN_QUEUE.remove(scan_id)
+        record.status = "stopped"
+        record.finished_at = datetime.now(timezone.utc).isoformat()
+        await _broadcast_event(record, {"event": "process_exited", "exit_code": None, "status": "stopped", "error_tail": None})
+        return {"scan_id": scan_id, "status": "stopped"}
     if record.status != "running":
         raise HTTPException(409, f"scan '{scan_id}' is not running (status: {record.status})")
     if record.process is None or record.process.returncode is not None:
@@ -2333,7 +2487,8 @@ async def delete_scan(scan_id: str) -> dict:
     record = REGISTRY.get(scan_id)
     if record is not None and record.status == "running":
         raise HTTPException(409, "cannot delete a scan that's still running -- wait for it to finish or fail first")
-    if record is None and not any(REPORTS_DIR.glob(f"scan_{scan_id}.*")):
+    failure_path = LOGS_DIR / f"scan_{scan_id}.failure.json"
+    if record is None and not any(REPORTS_DIR.glob(f"scan_{scan_id}.*")) and not failure_path.is_file():
         raise HTTPException(404, f"no scan '{scan_id}' known to this server")
 
     REGISTRY.remove(scan_id)
@@ -2345,6 +2500,7 @@ async def delete_scan(scan_id: str) -> dict:
         path.unlink(missing_ok=True)
         removed.append(path.name)
     for path in (LOGS_DIR / f"scan_{scan_id}.log", LOGS_DIR / f"scan_{scan_id}.events.jsonl",
+                 LOGS_DIR / f"scan_{scan_id}.failure.json",
                  FINDINGS_DIR / f"scan_{scan_id}.json", RECON_DIR / f"scan_{scan_id}.json"):
         if path.is_file():
             path.unlink(missing_ok=True)
@@ -2429,6 +2585,22 @@ def _attack_surface_summary(endpoints: list[dict]) -> dict:
         "api_endpoints": counts["api"],
         "parameters": len(distinct_params),
     }
+
+
+def _technologies_from_recon(recon: dict) -> list[dict]:
+    """Deduped technology inventory from the most recent scan's recon
+    report (`ReconReport.tech_stack`, see stof/recon/recon_engine.py --
+    already computed automatically on every `stof scan`'s "RECONNAISSANCE
+    & ENDPOINT CONTEXT" phase, previously written to disk but never
+    surfaced anywhere in this console). Each `tech_stack` entry is one
+    analyzed page with its own `tech` list (headers/cookies/body
+    signatures matched on that page) -- flattened and deduped by name
+    here, keeping the first page URL seen as evidence for the tooltip."""
+    first_seen_on: dict[str, str] = {}
+    for page in recon.get("tech_stack") or []:
+        for name in page.get("tech") or []:
+            first_seen_on.setdefault(name, page.get("url", ""))
+    return [{"name": name, "evidence": f"seen on {url}"} for name, url in sorted(first_seen_on.items())]
 
 
 def _owasp_totals(reports: list[dict]) -> list[dict]:
@@ -2553,6 +2725,8 @@ def get_dashboard_summary() -> dict:
     # completed scans.
     endpoints_on_disk = _read_json(ENDPOINTS_PATH)
     attack_surface = _attack_surface_summary(endpoints_on_disk) if isinstance(endpoints_on_disk, list) else None
+    recon_on_disk = _read_json(RECON_RESULTS_PATH)
+    technologies = _technologies_from_recon(recon_on_disk) if isinstance(recon_on_disk, dict) else []
     apps_total = len(_load_targets_doc()["targets"])
 
     if not reports:
@@ -2562,7 +2736,7 @@ def get_dashboard_summary() -> dict:
             "owasp_totals": [], "duration_stats": None, "attack_surface": attack_surface,
             "by_target": [], "apps_total": apps_total, "scans_30d": _scans_30d_trend([]),
             "portfolio_severity": {"Critical": {"total": 0, "confirmed_with_evidence": 0}, "High": {"total": 0, "confirmed_with_evidence": 0}},
-            "total_findings": 0,
+            "total_findings": 0, "technologies": technologies,
         }
 
     # Last 6 scans PER application, not last 12 overall -- a flat "last
@@ -2642,6 +2816,10 @@ def get_dashboard_summary() -> dict:
         # the badge went stale at "0" until the Findings panel was first
         # visited as a side effect of that fix -- this closes the gap).
         "total_findings": sum(entry["total"] for entry in module_counts.values()),
+        # Frontend/backend/infra stack detected passively during the
+        # latest crawl (data/technology.json) -- same "latest crawl
+        # only, no history" caveat as attack_surface above.
+        "technologies": technologies,
     }
 
 

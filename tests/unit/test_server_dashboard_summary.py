@@ -3,7 +3,7 @@ GET /api/dashboard/summary in stof/ui/server.py -- extracted out of the
 endpoint itself so the OWASP portfolio breakdown and scan-duration
 stats are testable without spinning up the FastAPI app or touching disk.
 """
-from stof.ui.server import _attack_surface_summary, _duration_stats, _group_by_target, _owasp_totals
+from stof.ui.server import _attack_surface_summary, _duration_stats, _group_by_target, _owasp_totals, _technologies_from_recon
 
 
 def _report(findings=None, duration_seconds=None):
@@ -113,6 +113,54 @@ def test_attack_surface_summary_deduplicates_parameter_names():
 
 def test_attack_surface_summary_empty_for_no_endpoints():
     assert _attack_surface_summary([]) == {"endpoints": 0, "pages": 0, "forms": 0, "api_endpoints": 0, "parameters": 0}
+
+
+# ---------------------------------------------------------------------------
+# _technologies_from_recon -- surfaces stof/recon/recon_engine.py's
+# ReconReport.tech_stack (already computed on every `stof scan`, was
+# never read by this server before) into the Dashboard's "Discovered
+# attack surface" card.
+# ---------------------------------------------------------------------------
+
+
+def test_technologies_from_recon_dedupes_across_pages():
+    recon = {"tech_stack": [
+        {"url": "https://x.test/", "tech": ["nginx", "React"]},
+        {"url": "https://x.test/about", "tech": ["nginx"]},
+    ]}
+
+    result = _technologies_from_recon(recon)
+
+    assert [r["name"] for r in result] == ["React", "nginx"]
+
+
+def test_technologies_from_recon_keeps_first_page_seen_as_evidence():
+    recon = {"tech_stack": [
+        {"url": "https://x.test/first", "tech": ["React"]},
+        {"url": "https://x.test/second", "tech": ["React"]},
+    ]}
+
+    result = _technologies_from_recon(recon)
+
+    assert result[0]["evidence"] == "seen on https://x.test/first"
+
+
+def test_technologies_from_recon_empty_for_no_tech_stack():
+    assert _technologies_from_recon({}) == []
+    assert _technologies_from_recon({"tech_stack": []}) == []
+
+
+def test_technologies_from_recon_handles_page_with_no_tech_detected():
+    recon = {"tech_stack": [{"url": "https://x.test/", "tech": []}]}
+    assert _technologies_from_recon(recon) == []
+
+
+def test_technologies_from_recon_sorted_alphabetically():
+    recon = {"tech_stack": [{"url": "https://x.test/", "tech": ["nginx", "Angular", "jQuery"]}]}
+
+    names = [r["name"] for r in _technologies_from_recon(recon)]
+
+    assert names == sorted(names)
 
 
 # ---------------------------------------------------------------------------

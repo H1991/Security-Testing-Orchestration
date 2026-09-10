@@ -110,6 +110,12 @@ _STEP_PARAM_NAMES: tuple[str, ...] = ("step", "stage", "phase")
 _STEP_PATH_SEGMENT_RE = re.compile(r"^(?:step|stage|wizard)[-_]?(\d+)$", re.IGNORECASE)
 _STEP_QUERY_VALUE_RE = re.compile(r"^\d+$")
 
+# Response-body substrings indicating a step-order rejection -- shared
+# by TC-135.3 (single last-step check) and TC-135.7 (every step),
+# since both ask the identical question ("was this step's content
+# actually served, or did the app push back on out-of-order access?").
+_STEP_ORDER_REJECTION_SIGNATURES: tuple[str, ...] = ("please complete step", "session expired", "start over", "invalid step")
+
 
 # TC-135.4 -- URL-shaped hints for a "should only succeed once per
 # request" endpoint (redeem a code, cast a vote, claim a reward). No
@@ -230,13 +236,11 @@ def _step_value(url: str) -> tuple[str, int] | None:
     return None
 
 
-def _find_multistep_flow(endpoints: list[Endpoint]) -> tuple[Endpoint, Endpoint] | None:
-    """Groups discovered endpoints by their step-stripped prefix; if any
-    group has 2+ distinct step numbers, returns `(earliest, latest)` --
-    the pair TC-135.3 needs to test "can the latest step be reached
-    directly, without going through the earliest one first." Returns
-    `None` if no such multi-step group exists (the honest, expected
-    outcome for a target with no wizard-shaped flow)."""
+def _group_by_step_prefix(endpoints: list[Endpoint]) -> dict[str, list[tuple[int, Endpoint]]]:
+    """Groups discovered endpoints by their step-stripped prefix (see
+    `_step_value`) -- the shared mechanics behind both
+    `_find_multistep_flow` (TC-135.3's "just the endpoints" pair) and
+    `_find_workflow_states` (TC-135.7's full ordered state-machine)."""
     by_prefix: dict[str, list[tuple[int, Endpoint]]] = {}
     for endpoint in endpoints:
         parsed = _step_value(endpoint.url)
@@ -244,11 +248,41 @@ def _find_multistep_flow(endpoints: list[Endpoint]) -> tuple[Endpoint, Endpoint]
             continue
         prefix, step = parsed
         by_prefix.setdefault(prefix, []).append((step, endpoint))
-    for group in by_prefix.values():
+    return by_prefix
+
+
+def _find_multistep_flow(endpoints: list[Endpoint]) -> tuple[Endpoint, Endpoint] | None:
+    """If any step-prefix group has 2+ distinct step numbers, returns
+    `(earliest, latest)` -- the pair TC-135.3 needs to test "can the
+    latest step be reached directly, without going through the earliest
+    one first." Returns `None` if no such multi-step group exists (the
+    honest, expected outcome for a target with no wizard-shaped flow)."""
+    for group in _group_by_step_prefix(endpoints).values():
         if len({step for step, _ in group}) >= 2:
-            group.sort(key=lambda pair: pair[0])
-            return group[0][1], group[-1][1]
+            ordered = sorted(group, key=lambda pair: pair[0])
+            return ordered[0][1], ordered[-1][1]
     return None
+
+
+def _find_workflow_states(endpoints: list[Endpoint]) -> list[tuple[int, Endpoint]] | None:
+    """The full ordered state-machine TC-135.7 needs -- every distinct
+    step in the largest multi-step group found (by member count, so a
+    target with more than one step-shaped flow gets its richest one),
+    sorted by step number, ONE endpoint per distinct step number (first
+    one seen, if the crawler discovered more than one URL for the same
+    step). `None` if no multi-step group exists, same honest-outcome
+    convention as `_find_multistep_flow`."""
+    best: list[tuple[int, Endpoint]] | None = None
+    for group in _group_by_step_prefix(endpoints).values():
+        distinct_steps = {step for step, _ in group}
+        if len(distinct_steps) < 2:
+            continue
+        if best is None or len(distinct_steps) > len({s for s, _ in best}):
+            deduped: dict[int, Endpoint] = {}
+            for step, endpoint in group:
+                deduped.setdefault(step, endpoint)
+            best = sorted(deduped.items(), key=lambda pair: pair[0])
+    return best
 
 
 # TC-135.6 -- field-name hints for a JSON create/update request's own
@@ -440,7 +474,7 @@ class BusinessLogicTestsModule(VulnModule):
             await context.close()
 
         reached_directly = resp.status == 200 and len(body) >= self.config.min_content_length and not any(
-            sig in body.lower() for sig in ("please complete step", "session expired", "start over", "invalid step")
+            sig in body.lower() for sig in _STEP_ORDER_REJECTION_SIGNATURES
         )
         if reached_directly:
             finding = Finding(
@@ -457,6 +491,86 @@ class BusinessLogicTestsModule(VulnModule):
             finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="buslogic-workflow-step-skip") if evidence else []
             return self._result(tid, technique, FAIL, finding.description, endpoint=latest, finding=finding)
         return self._result(tid, technique, PASS, f"'{latest.url}' was not reachable directly ahead of '{earliest.url}' (HTTP {resp.status})")
+
+    async def _probe_state_reachable(self, session_pool, endpoint: Endpoint) -> bool | None:
+        """One state's reachability probe for TC-135.7 -- a fresh,
+        independent anonymous session requests `endpoint` directly (own
+        context, closed immediately after, same isolation as every
+        other probe in this file -- so one state's probe can never
+        leak session state into the next state's probe). Returns `True`
+        if reached without going through earlier steps, `False` if
+        rejected, `None` if the probe itself errored (excluded from the
+        finding either way, not counted as a PASS)."""
+        context = await session_pool.new_anonymous_context()
+        try:
+            method_fn = _method_request_fn(context, endpoint.method.upper())
+            try:
+                resp = await method_fn(endpoint.url, max_redirects=0)
+                body = await resp.text()
+            except Exception as exc:
+                _log.warning(f"state-machine reachability probe failed for {endpoint.url}: {exc}")
+                return None
+        finally:
+            await context.close()
+        return resp.status == 200 and len(body) >= self.config.min_content_length and not any(
+            sig in body.lower() for sig in _STEP_ORDER_REJECTION_SIGNATURES
+        )
+
+    async def _technique_workflow_state_machine_reachability(self, endpoints, session_pool, evidence) -> TestCaseResult:
+        """TC-135.7 -- generalizes TC-135.3 from "can the LAST step be
+        reached directly" into a real state-machine model: every
+        distinct step discovered (`_find_workflow_states`, the full
+        ordered chain -- not just the earliest/latest pair) is probed
+        for direct reachability independently, with its own fresh
+        session. TC-135.3 stays as the fast, cheap single-check
+        heuristic (and this technique deliberately skips flows with
+        only 2 steps, where TC-135.3 already says everything there is
+        to say); this is the deeper pass for a real wizard/approval
+        flow with 3+ steps, reporting exactly WHICH states are exposed
+        rather than a single yes/no on the terminal one -- a 5-step
+        flow with steps 2 and 4 reachable but 3 and 5 properly gated is
+        a materially more actionable finding than "the last step is
+        reachable" alone."""
+        tid, technique = "TC-135.7", "Workflow state-machine modeling -- every intermediate/terminal step's direct reachability (WSTG-BUSL)"
+        vuln_type = "Business Logic -- Workflow State-Machine Reachability"
+        states = _find_workflow_states(endpoints)
+        if states is None:
+            return self._result(tid, technique, SKIPPED, "no multi-step workflow (shared path prefix with a step/stage-shaped query param or path segment) discovered by the crawler")
+        if len(states) < 3:
+            return self._result(tid, technique, SKIPPED, f"only {len(states)} distinct step(s) discovered -- TC-135.3 already covers the 2-step case (earliest vs. latest)")
+        if not self.config.allow_state_changing_probes:
+            return self._gated_skip(tid, technique, "workflow-state-machine probing requests real state-creating endpoints out of sequence and is disabled by default")
+
+        earliest_step, earliest_endpoint = states[0]
+        reachable: list[tuple[int, Endpoint]] = []
+        errored = 0
+        for _step, endpoint in states[1:]:
+            outcome = await self._probe_state_reachable(session_pool, endpoint)
+            if outcome is None:
+                errored += 1
+            elif outcome:
+                reachable.append((_step, endpoint))
+
+        if reachable:
+            listing = "; ".join(f"step {step} ('{endpoint.url}')" for step, endpoint in reachable)
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.5,
+                endpoint=reachable[0][1], user_role="unauthenticated",
+                request_raw="\n".join(f"{endpoint.method} {endpoint.url}" for _, endpoint in reachable),
+                response_raw=f"{len(reachable)} of {len(states) - 1} later step(s) reachable directly, each probed with its own fresh session",
+                description=(
+                    f"Of the {len(states)}-step workflow beginning at '{earliest_endpoint.url}' (step {earliest_step}), "
+                    f"{len(reachable)} later step(s) were each reachable directly with a fresh, unauthenticated-of-that-flow "
+                    f"session, without completing the step(s) before them: {listing}. This flow has no server-side "
+                    "transition enforcement -- step order is only client navigation, never independently verified."
+                ),
+                recommendation="Track workflow progress server-side (a per-session flow-state token, advanced only through the immediately-preceding step's own completion) and reject any request for a step whose prerequisites haven't been completed in that same session.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="buslogic-workflow-state-machine") if evidence else []
+            return self._result(tid, technique, FAIL, finding.description, endpoint=reachable[0][1], finding=finding)
+
+        note = f" ({errored} probe(s) errored and were excluded)" if errored else ""
+        return self._result(tid, technique, PASS, f"'{earliest_endpoint.url}': all {len(states) - 1} later step(s) rejected direct, out-of-order access{note}")
 
     async def _technique_workflow_state_field_skip(self, endpoints, session_manager, session_pool, evidence) -> TestCaseResult:
         """TC-135.6 -- see this module's own docstring for how this
@@ -667,6 +781,7 @@ class BusinessLogicTestsModule(VulnModule):
             ("TC-135.1", "Reserved/privileged username accepted at self-service registration (WSTG-IDNT-02)", self._technique_reserved_username(endpoints, session_pool, evidence)),
             ("TC-135.2", "Self-assigned elevated privilege honored at registration (WSTG-IDNT-01)", self._technique_self_assigned_privilege(endpoints, session_pool, evidence)),
             ("TC-135.3", "Business-logic authorization bypass via workflow step skipping (WSTG-BUSL)", self._technique_workflow_step_skipping(endpoints, session_pool, evidence)),
+            ("TC-135.7", "Workflow state-machine modeling -- every intermediate/terminal step's direct reachability (WSTG-BUSL)", self._technique_workflow_state_machine_reachability(endpoints, session_pool, evidence)),
             ("TC-135.6", "Workflow-state field accepted at late-stage value on a create request, unenforced (WSTG-BUSL)", self._technique_workflow_state_field_skip(endpoints, session_manager, session_pool, evidence)),
             ("TC-135.4", "Concurrent duplicate submission to a limited-use endpoint (race condition)", self._technique_race_condition(endpoints, session_pool, evidence)),
             ("TC-135.5", "Sequential over-limit calls to a limited-use endpoint are not rejected (WSTG-BUSL-05)", self._technique_function_usage_limit(endpoints, session_pool, evidence)),

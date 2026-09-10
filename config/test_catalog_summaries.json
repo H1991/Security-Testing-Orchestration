@@ -16,14 +16,14 @@
   "TC-105": "Scans API and page responses for personal data (emails, card numbers, SSNs), leftover backup/source files, and secrets left in error messages, comments, or browser storage.",
   "TC-116": "For GraphQL targets, checks whether queries and mutations enforce per-field and per-object authorization, and flags an open introspection endpoint separately.",
   "TC-127": "Injects crafted values into every discovered input point (parameters, JSON bodies, headers, cookies) to detect error-based, blind, and time-based SQL injection -- detection only, never real data extraction.",
-  "TC-128": "Injects a unique marker into every input point to check whether it executes as script -- covers reflected, stored, and DOM-based XSS with real in-browser execution confirmation.",
+  "TC-128": "Injects a unique marker into every input point to check whether it executes as script -- 9 techniques covering reflected (3 contexts), stored, and DOM-based XSS (real in-browser execution confirmation), plus DOM open redirect, CSS injection, DOM data manipulation, and HTML injection.",
   "TC-129": "Checks session handling end to end: fixation, missing logout invalidation, no login-attempt rate limiting, insecure cookie flags, predictable session tokens, and unbounded session lifetime.",
   "TC-130": "Confirms that state-changing actions actually require and validate an anti-CSRF token bound to the current session, not just a cookie.",
   "TC-131": "For multi-tenant applications, checks whether swapping the organization/workspace identifier in a request lets one tenant see another tenant's data.",
   "TC-132": "Where a security-question recovery flow exists, flags it if the question is drawn from a well-known list of easily-guessable prompts.",
   "TC-133": "Tries small variations in how a protected URL is requested (case, trailing characters, encoding tricks) to see if any bypass the authentication check entirely.",
-  "TC-134": "Checks whether duplicate request parameters are handled inconsistently, and whether user-supplied text would survive unescaped into a spreadsheet export.",
-  "TC-135": "Tests registration and multi-step workflows for logic gaps -- reserved username takeover, role injection at signup, and skipping directly to a later step in a flow.",
+  "TC-134": "6 techniques: duplicate-parameter handling, CSV/formula injection, time-based blind OS command injection, XXE (external entity file read), SSTI (template-engine evaluation), and NoSQL operator-based auth bypass.",
+  "TC-135": "Tests registration and multi-step workflows for logic gaps -- reserved username takeover, role injection at signup, and out-of-order access to any step of a modeled workflow state machine.",
   "TC-136": "Confirms whether a manipulated request can poison a shared cache for other visitors, or trick the cache into serving a private page as if it were public.",
   "TC-137": "Attempts to make the server fetch attacker-chosen internal or external URLs -- covering cloud metadata endpoints, internal port scanning, alternate-encoding bypasses, and out-of-band confirmation."
 }
