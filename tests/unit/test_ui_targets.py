@@ -193,6 +193,48 @@ def test_mark_password_set():
     assert profile["normal_password_set"] is True
 
 
+def test_set_role_credentials_empty_string_clears_totp_flag_too():
+    """Removing an account removes whatever MFA was configured for it
+    -- a stale totp_secret_set flag with no username behind it would
+    silently keep referencing a .env key for an account that no longer
+    exists in this profile."""
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    profile["admin_totp_secret_set"] = True
+    targets.set_role_credentials(profile, "admin", "", None)
+    assert profile["admin_totp_secret_set"] is False
+
+
+# ---------------------------------------------------------------------------
+# set_role_totp_secret
+# ---------------------------------------------------------------------------
+
+
+def test_set_role_totp_secret_marks_set_for_a_real_value():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_totp_secret(profile, "admin", "JBSWY3DPEHPK3PXP")
+    assert profile["admin_totp_secret_set"] is True
+
+
+def test_set_role_totp_secret_empty_string_clears_the_flag():
+    profile = targets.new_profile("acme", "Acme")
+    profile["admin_totp_secret_set"] = True
+    targets.set_role_totp_secret(profile, "admin", "")
+    assert profile["admin_totp_secret_set"] is False
+
+
+def test_set_role_totp_secret_none_is_a_noop():
+    profile = targets.new_profile("acme", "Acme")
+    profile["admin_totp_secret_set"] = True
+    targets.set_role_totp_secret(profile, "admin", None)
+    assert profile["admin_totp_secret_set"] is True  # untouched, not reset
+
+
+def test_totp_env_key_shape():
+    assert targets.totp_env_key("admin", "kapture-km-staging") == "ADMIN_TOTP_SECRET__KAPTURE_KM_STAGING"
+    assert targets.totp_env_key("normal", "kapture-km-staging") == "USER_TOTP_SECRET__KAPTURE_KM_STAGING"
+
+
 # ---------------------------------------------------------------------------
 # target_block / testing_block / user_entries
 # ---------------------------------------------------------------------------
@@ -282,3 +324,29 @@ def test_user_entries_normal_role_uses_user_password_token():
     entries = targets.user_entries(profile)
     assert entries[0]["password"] == "{{env:USER_PASSWORD}}"
     assert entries[0]["auth_type"] == "jwt"
+
+
+def test_user_entries_includes_totp_secret_token_when_configured():
+    profile = targets.new_profile("acme", "Acme")
+    profile["admin_username"] = "admin@acme.com"
+    profile["admin_totp_secret_set"] = True
+    entries = targets.user_entries(profile)
+    assert entries[0]["totp_secret"] == "{{env:ADMIN_TOTP_SECRET}}"
+
+
+def test_user_entries_omits_totp_secret_key_entirely_when_not_configured():
+    """Matches UserConfig.totp_secret's own None default -- most users
+    have no MFA at all, so the key shouldn't even be present (not a
+    null value) in the generated users.json entry."""
+    profile = targets.new_profile("acme", "Acme")
+    profile["admin_username"] = "admin@acme.com"
+    entries = targets.user_entries(profile)
+    assert "totp_secret" not in entries[0]
+
+
+def test_user_entries_normal_role_totp_uses_user_totp_secret_token():
+    profile = targets.new_profile("acme", "Acme")
+    profile["normal_username"] = "user@acme.com"
+    profile["normal_totp_secret_set"] = True
+    entries = targets.user_entries(profile)
+    assert entries[0]["totp_secret"] == "{{env:USER_TOTP_SECRET}}"

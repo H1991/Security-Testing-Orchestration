@@ -11,6 +11,11 @@ dependencies = [
     "jinja2>=3,<4",
     "openpyxl>=3,<4",
     "pillow>=10,<13",
+    # TOTP (RFC 6238) code generation for the MFA login step
+    # (stof/auth/form_login.py's `_maybe_complete_totp`) -- a core
+    # dependency, not a `ui` extra: MFA login must work for the plain
+    # CLI (`stof scan`), not just the console.
+    "pyotp>=2.9,<3",
 ]
 
 [project.optional-dependencies]
@@ -21,6 +26,25 @@ dev = [
 ui = [
     "fastapi>=0.110,<1",
     "uvicorn[standard]>=0.29,<1",
+    # Real, previously-undeclared gap found while building the release
+    # container: `/api/workflows/upload` (a real FastAPI route since
+    # before this dependency was ever added here) needs this to parse
+    # multipart form bodies -- FastAPI raises at import time without
+    # it. It was only ever working in local dev because some earlier,
+    # unrelated `pip install` pulled it in transitively; a clean `pip
+    # install -e ".[ui]"` (exactly what the Dockerfile does) had no
+    # such luck and crashed the console on startup.
+    "python-multipart>=0.0.9,<1",
+    # Decodes an uploaded 2FA-enrollment QR-code image server-side, so an
+    # operator can upload the QR straight from Settings instead of
+    # copy-typing the base32 secret by hand (stof/ui/server.py's
+    # `/api/auth/totp-qr` route). `cv2.QRCodeDetector` ships its own
+    # decoder with no system `libzbar`/Java dependency, unlike the other
+    # common Python QR libraries -- important for the release Docker
+    # image staying self-contained. UI-only: the CLI's `stof configure`
+    # wizard still just asks for the secret as text, so this isn't a
+    # core dependency.
+    "opencv-python-headless>=4.9,<5",
 ]
 
 [project.scripts]

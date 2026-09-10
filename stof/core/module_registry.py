@@ -49,7 +49,7 @@ NOT_YET_IMPLEMENTED = frozenset({"oauth_tests"})
 # zero-argument `MODULE_FACTORIES`. Documented already in registry.py's
 # own module docstring; listed again here so the consistency check
 # below knows not to flag their absence from MODULE_FACTORIES as a bug.
-SPECIALLY_CONSTRUCTED = frozenset({"jwt_tests", "auth_tests", "csrf_tests"})
+SPECIALLY_CONSTRUCTED = frozenset({"jwt_tests", "auth_tests", "csrf_tests", "mfa_tests"})
 
 # Every module a "run everything enabled" scan or the UI's module list
 # should ever be able to select -- i.e. every declared module minus

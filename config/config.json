@@ -1,13 +1,8 @@
 {
   "target": {
-    "base_url": "https://test.kapturekm.com/kauthor/login",
-    "login_url": "https://test.kapturekm.com/kauthor/login",
-    "requires_assisted_login": false,
-    "crawler_exclude_patterns": [
-      "content=inside_",
-      "survey_questions",
-      "privacypolicy"
-    ]
+    "base_url": "http://192.168.1.73:3001",
+    "login_url": "http://192.168.1.73:3001/#/login",
+    "requires_assisted_login": false
   },
   "browser": {
     "headless": true,

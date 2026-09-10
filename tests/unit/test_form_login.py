@@ -554,3 +554,121 @@ async def test_is_authenticated_false_for_token_only_session_with_no_stored_head
     page = _page("https://app.example.com/dashboard")
 
     assert await provider.is_authenticated(session, page) is False
+
+
+# ---------------------------------------------------------------------------
+# TOTP / MFA second step
+# ---------------------------------------------------------------------------
+
+
+TOTP_SECRET = "JBSWY3DPEHPK3PXP"  # a standard base32 test secret (RFC 4648 alphabet)
+
+
+def _user_with_totp() -> UserConfig:
+    return UserConfig(
+        id="admin-01", role="admin", username="admin", password="s3cr3t",
+        auth_type="form_login", totp_secret=TOTP_SECRET,
+    )
+
+
+def _page_with_selective_locator(url: str, found_selectors: set[str], cookies: list[dict] | None = None) -> AsyncMock:
+    """Like `_page()`, but `page.locator(selector).count()` only reports
+    "found" for selectors in `found_selectors` -- needed to distinguish
+    "the TOTP field showed up" from "every other field showed up too"
+    (the generic `_page()` fixture makes every selector match, which
+    can't tell those two cases apart)."""
+    page = AsyncMock()
+    page.url = url
+    page.context.cookies = AsyncMock(return_value=cookies or [])
+
+    def _locator(selector):
+        loc = AsyncMock()
+        loc.count = AsyncMock(return_value=1 if selector in found_selectors else 0)
+        return loc
+
+    page.locator = MagicMock(side_effect=_locator)
+    page.eval_on_selector = AsyncMock(return_value=None)
+    page.evaluate = AsyncMock(return_value=None)
+    return page
+
+
+@pytest.mark.asyncio
+async def test_totp_code_is_generated_and_submitted_when_mfa_field_appears():
+    import pyotp
+
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn",
+        success_selector="text=Welcome",
+    )
+    page = _page_with_selective_locator(
+        "https://demo.testfire.net/bank/main.jsp",
+        found_selectors={"#uid", "#passw", "#btn", "input[autocomplete='one-time-code']", "text=Welcome"},
+    )
+
+    session = await provider.authenticate(_user_with_totp(), page)
+
+    assert session.user_id == "admin-01"
+    # The exact code STOF computed must be a real, currently-valid TOTP
+    # code for this secret -- not just "some 6-digit string" -- proving
+    # this actually ran the real RFC 6238 algorithm, not a stub.
+    expected_code = pyotp.TOTP(TOTP_SECRET).now()
+    page.fill.assert_any_await("input[autocomplete='one-time-code']", expected_code)
+    # The MFA step's own submit click happened -- same selector as the
+    # primary submit here since the fake page reports both as present;
+    # what matters is fill() was called with the code before this.
+    assert page.click.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_no_totp_step_attempted_when_user_has_no_secret():
+    """The overwhelming common case: a user with no `totp_secret`
+    configured must behave byte-for-byte like before this feature
+    existed -- no polling, no fill() call with any code."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn",
+        success_selector="text=Welcome",
+    )
+    page = _page_with_selective_locator(
+        "https://demo.testfire.net/bank/main.jsp",
+        found_selectors={"#uid", "#passw", "#btn", "text=Welcome"},
+    )
+
+    await provider.authenticate(_user(), page)  # no totp_secret
+
+    filled_selectors = {call.args[0] for call in page.fill.await_args_list}
+    assert "input[autocomplete='one-time-code']" not in filled_selectors
+
+
+@pytest.mark.asyncio
+async def test_totp_secret_configured_but_no_mfa_field_appears_is_a_noop():
+    """A user configured with a totp_secret against a target that
+    (this run, or always) doesn't actually show an MFA step -- must
+    complete the login normally, not hang or raise. `timeout_ms` kept
+    small here so the bounded poll (min(5000, timeout_ms)) doesn't slow
+    the test down."""
+    provider = FormLoginProvider(
+        login_url=LOGIN_URL, username_selector="#uid", password_selector="#passw", submit_selector="#btn",
+        success_selector="text=Welcome", timeout_ms=100,
+    )
+    page = _page_with_selective_locator(
+        "https://demo.testfire.net/bank/main.jsp",
+        found_selectors={"#uid", "#passw", "#btn", "text=Welcome"},  # no TOTP field ever appears
+    )
+
+    session = await provider.authenticate(_user_with_totp(), page)
+
+    assert session.user_id == "admin-01"
+    filled_selectors = {call.args[0] for call in page.fill.await_args_list}
+    assert "input[autocomplete='one-time-code']" not in filled_selectors
+
+
+@pytest.mark.asyncio
+async def test_wait_for_totp_field_returns_none_when_nothing_matches_within_timeout():
+    from stof.auth.form_login import FormLoginProvider as _FLP
+
+    provider = _FLP(login_url=LOGIN_URL)
+    page = _page_with_selective_locator(LOGIN_URL, found_selectors=set())
+
+    result = await provider._wait_for_totp_field(page, timeout_ms=50)
+
+    assert result is None

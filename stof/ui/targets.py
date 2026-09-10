@@ -84,6 +84,16 @@ def env_key(role: str, target_id: str) -> str:
     return f"{prefix}__{suffix}"
 
 
+def totp_env_key(role: str, target_id: str) -> str:
+    """`ADMIN_TOTP_SECRET__KAPTURE_KM_STAGING` / `USER_TOTP_SECRET__...`
+    -- same per-profile `.env` scoping shape as `env_key()`, for the
+    optional TOTP/MFA secret (`stof.config.schema.UserConfig.
+    totp_secret`) instead of the password."""
+    prefix = "ADMIN_TOTP_SECRET" if role == "admin" else "USER_TOTP_SECRET"
+    suffix = _ENV_KEY_RE.sub("_", target_id.upper()).strip("_")
+    return f"{prefix}__{suffix}"
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -149,9 +159,11 @@ def new_profile(target_id: str, name: str) -> dict:
         "admin_username": None,
         "admin_auth_type": "form_login",
         "admin_password_set": False,
+        "admin_totp_secret_set": False,
         "normal_username": None,
         "normal_auth_type": "form_login",
         "normal_password_set": False,
+        "normal_totp_secret_set": False,
         "scan_intensity": "standard",
         "allow_state_changing_probes": False,
         "created_at": now,
@@ -196,6 +208,11 @@ def set_role_credentials(profile: dict, role: str, username: str | None, auth_ty
         profile[f"{role}_username"] = None
         profile[f"{role}_auth_type"] = "form_login"
         profile[f"{role}_password_set"] = False
+        # Removing the account removes whatever MFA was configured for
+        # it too -- a stale totp_secret_set flag with no username
+        # behind it would silently keep referencing a `.env` key for an
+        # account that no longer exists in this profile.
+        profile[f"{role}_totp_secret_set"] = False
         profile["updated_at"] = _now()
         return
     if username is not None:
@@ -207,6 +224,24 @@ def set_role_credentials(profile: dict, role: str, username: str | None, auth_ty
 
 def mark_password_set(profile: dict, role: str) -> None:
     profile[f"{role}_password_set"] = True
+    profile["updated_at"] = _now()
+
+
+def set_role_totp_secret(profile: dict, role: str, totp_secret: str | None) -> None:
+    """Sets/clears `role`'s TOTP-configured flag -- mirrors
+    `mark_password_set`'s shape, but (unlike a password) TOTP is
+    genuinely optional per account, so this also handles turning it
+    back OFF. `totp_secret=None` (omitted from the request) leaves the
+    flag untouched; `""` explicitly clears it (2FA turned off for this
+    test account, or the operator made a mistake and wants to remove
+    it); any other non-empty value marks it set. The caller is still
+    responsible for writing the matching `.env` key via
+    `totp_env_key()` -- this only updates the profile document, same
+    division of responsibility as `set_role_credentials`/
+    `mark_password_set`."""
+    if totp_secret is None:
+        return
+    profile[f"{role}_totp_secret_set"] = bool(totp_secret)
     profile["updated_at"] = _now()
 
 
@@ -250,11 +285,15 @@ def user_entries(profile: dict) -> list[dict]:
         if not username:
             continue
         env_var = "ADMIN_PASSWORD" if role == "admin" else "USER_PASSWORD"
-        entries.append({
+        entry = {
             "id": default_id,
             "role": role,
             "username": username,
             "password": f"{{{{env:{env_var}}}}}",
             "auth_type": profile.get(f"{role}_auth_type", "form_login"),
-        })
+        }
+        if profile.get(f"{role}_totp_secret_set"):
+            totp_var = "ADMIN_TOTP_SECRET" if role == "admin" else "USER_TOTP_SECRET"
+            entry["totp_secret"] = f"{{{{env:{totp_var}}}}}"
+        entries.append(entry)
     return entries

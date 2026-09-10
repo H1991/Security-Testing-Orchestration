@@ -118,11 +118,11 @@ stof/
 │   ├── auth/                   ← Layer 4 — Authentication Manager
 │   │   ├── __init__.py
 │   │   ├── base.py             ← AuthProvider abstract base class
-│   │   ├── form_login.py       ← form-based login (Phase 1)
+│   │   ├── form_login.py       ← form-based login (Phase 1) + TOTP/MFA second step (implemented; see below)
 │   │   ├── jwt_auth.py         ← JWT / API token injection (Phase 1)
 │   │   ├── oauth.py            ← OAuth 2.0 / OIDC (Phase 2 stub)
 │   │   ├── saml.py             ← SAML (Phase 2 stub)
-│   │   └── mfa.py              ← MFA / TOTP (Phase 2 stub)
+│   │   └── mfa.py              ← superseded stub, see its own docstring
 │   │
 │   ├── session/                ← Layer 5 — Session Manager
 │   │   ├── __init__.py
@@ -412,12 +412,42 @@ class AuthProvider(ABC):
 - On expiry, calls the `refresh_url` if configured, else raises
   `AuthExpiredError` for the session manager to handle
 
+### TOTP / MFA (`stof/auth/form_login.py`, not a separate provider)
+Deliberately built as a second step layered onto `FormLoginProvider`,
+not as `mfa.py`'s originally-planned standalone `MFAProvider` -- a real
+TOTP/app-based 2FA code is never a standalone login mechanism, it's
+always entered on a page reached only AFTER primary credentials were
+already submitted and accepted, so a separate provider that could be
+selected instead of `form_login` wouldn't match how any real target
+actually works. `mfa.py` is a superseded stub as of this change (see
+its own docstring) rather than the real home for this feature.
+
+- `UserConfig.totp_secret: str | None` (optional, `{{env:VAR}}`-resolved
+  same as `password`) -- the base32 TOTP secret for a test account with
+  app-based 2FA enrolled. Same shape every commercial DAST tool
+  (Acunetix/Invicti, Fortify WebInspect) documents for this: obtained
+  from the account's own 2FA-enrollment QR code (scan it with a generic
+  QR reader, not an authenticator app, to read the raw
+  `otpauth://totp/...?secret=XXXX` data).
+- After the primary username/password submit, `FormLoginProvider`
+  polls briefly for a one-time-code field. If `totp_secret` is set and
+  one appears, it computes the current valid code (`pyotp`, real RFC
+  6238 math -- the same computation a real authenticator app performs)
+  and submits it before the normal success-detection wait runs.
+- A `None` `totp_secret` (the default -- most users have no MFA at all)
+  or a target with no MFA step at all are both a complete no-op: zero
+  behavior change, zero extra cost beyond one cheap `if` check.
+- Explicitly NOT covered: SMS/push-based MFA (Okta Verify, Duo push,
+  SMS OTP) -- there is no way to automate receiving those, for anyone,
+  commercial tools included; don't attempt to build this.
+
 ### Phase 2 stubs
-`oauth.py`, `saml.py`, `mfa.py` exist as stub files with:
+`oauth.py`, `saml.py` exist as stub files with:
 ```python
 raise NotImplementedError("Phase 2 — not yet implemented")
 ```
 This ensures Phase 2 work has a clear home without polluting Phase 1.
+`mfa.py` is no longer one of these -- see the TOTP/MFA section above.
 
 ### Auth provider registry
 ```python
@@ -718,7 +748,7 @@ These are listed here so stubs are created with correct names:
 | Layer | Addition |
 |---|---|
 | 3C | `engine/burp_controller.py` — Burp REST API integration |
-| 4 | `auth/oauth.py`, `auth/saml.py`, `auth/mfa.py` |
+| 4 | `auth/oauth.py`, `auth/saml.py` (`auth/mfa.py`'s scope shipped already -- see "TOTP / MFA" above, built as a `form_login.py` step, not this file) |
 | 8 | `core/test_orchestrator.py` — config-driven plugin loader |
 | 9 | `modules/oauth_tests.py`, `modules/csrf_tests.py`, `modules/race_tests.py` |
 | 11 | `findings/burp_normalizer.py` — normalize Burp findings into Finding schema |
@@ -755,8 +785,16 @@ These are listed here so stubs are created with correct names:
 8. **CLI is the interface.** Do not add Flask/FastAPI routes, HTML templates
    for a web server, or any HTTP server code in Phase 1.
 
-9. **Phase 1 auth scope is fixed.** Do not implement OAuth, SAML, or MFA in
-   Phase 1 even if asked. Create the stub and note it is Phase 2.
+9. **OAuth and SAML remain out of scope.** Do not implement them even if
+   asked -- create the stub and note it is Phase 2. **TOTP/app-based MFA is
+   no longer in this bucket** -- it's real, implemented, tested (see
+   "TOTP / MFA" under Layer 4 above); this line used to name it alongside
+   OAuth/SAML and that was a deliberate, explicit decision to change
+   (confirmed with the project owner, not a silent scope drift) once app-
+   based TOTP was recognized as a narrow, legitimate, well-understood
+   piece of work every major commercial DAST tool already automates the
+   same way -- unlike OAuth/SAML, which are genuinely bigger, real
+   integration surfaces still worth deferring.
 
 10. **Crawler is Playwright-only.** Do not use `requests`, `httpx`, `scrapy`,
     or any non-browser HTTP library in `stof/crawler/`. The crawler must use

@@ -29,10 +29,14 @@ leaving it unset.
 """
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
+
+import pyotp
 
 from stof.core.logger import get_logger
 from stof.session.models import Session
@@ -97,6 +101,29 @@ GENERIC_SUBMIT_SELECTORS = [
     "button:has-text('Log in')",
     "button:has-text('Sign in')",
     "button:has-text('Login')",
+]
+
+# The common two-step MFA shape: primary credentials submitted and
+# accepted, landing on a SEPARATE "enter your 6-digit code" page/step
+# -- confirmed against how commercial DAST tools describe this same
+# field (Acunetix/Invicti's own docs name it "OTP", scoped per test
+# account/persona, same shape these candidates target). Generic,
+# page-agnostic candidates, same "capped candidate list, not a claim to
+# cover every possible app" convention as GENERIC_USERNAME_SELECTORS
+# above -- `autocomplete='one-time-code'` is the actual HTML standard
+# attribute for this (https://html.spec.whatwg.org/#attr-fe-autocomplete-one-time-code),
+# tried first since it's an unambiguous, purpose-built signal rather
+# than a name/id substring guess.
+GENERIC_TOTP_SELECTORS = [
+    "input[autocomplete='one-time-code']",
+    "input[name*='otp' i]",
+    "input[name*='totp' i]",
+    "input[id*='otp' i]",
+    "input[id*='totp' i]",
+    "input[name='code']",
+    "input[name='token']",
+    "#mfa-code",
+    "#verification-code",
 ]
 
 # Best-effort dismissal of first-load overlays (cookie consent, GDPR
@@ -432,6 +459,14 @@ class FormLoginProvider(AuthProvider):
                 # check; safe here since `_first_matching` already
                 # confirmed this selector is the real submit control.
                 await page.click(submit_sel, force=True)
+            # Checked BEFORE wait_for_login_success, not after: when
+            # `success_selector` is configured, it names something that
+            # only appears once TRULY logged in -- if MFA is required,
+            # that signal is gated behind the code-entry step and would
+            # never appear, so wait_for_login_success would time out and
+            # wrongly report a failed login before ever reaching this
+            # check. See `_maybe_complete_totp`'s own docstring.
+            await self._maybe_complete_totp(page, user)
             try:
                 await wait_for_login_success(page, self._login_url, self._success_selector, self._timeout_ms, user.id)
                 last_exc = None
@@ -458,6 +493,58 @@ class FormLoginProvider(AuthProvider):
             _log.info(f"captured a storage-based bearer token for user '{user.id}' (role={user.role})")
         _log.info(f"authenticated user '{user.id}' (role={user.role}) via form_login, expires_at={expires_at}")
         return session
+
+    async def _wait_for_totp_field(self, page: "Page", timeout_ms: int) -> str | None:
+        """Short, bounded poll (not a hard Playwright `wait_for_selector`,
+        which would raise) for a one-time-code field appearing right
+        after the primary credentials were just submitted -- the common
+        two-step MFA shape. Returns the matching selector, or `None` if
+        nothing appeared within the window. Deliberately a POLL, not a
+        single `count()` check: a real target navigates to the code-entry
+        page after the primary submit, and the field isn't in the DOM
+        yet the instant `page.click()` returns."""
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            for selector in GENERIC_TOTP_SELECTORS:
+                try:
+                    if await page.locator(selector).count() > 0:
+                        return selector
+                except Exception:
+                    continue
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.25)
+
+    async def _maybe_complete_totp(self, page: "Page", user: "UserConfig") -> None:
+        """If `user.totp_secret` is configured AND a one-time-code field
+        actually appears after the primary credentials were submitted,
+        computes the current valid TOTP code (RFC 6238 -- the exact same
+        deterministic math a real authenticator app performs from the
+        same shared secret) and submits it, completing the second login
+        step. A no-op -- not an error -- when either condition doesn't
+        hold: a target with no MFA at all, or a user with no
+        `totp_secret` configured, must behave byte-for-byte like before
+        this method existed. This is also why the bounded poll below is
+        gated behind `if not user.totp_secret: return` FIRST -- a user
+        with no secret configured never pays even the short polling
+        cost, since the overwhelming majority of configured users have
+        no MFA step to check for at all."""
+        if not user.totp_secret:
+            return
+        totp_field = await self._wait_for_totp_field(page, timeout_ms=min(5000, self._timeout_ms))
+        if totp_field is None:
+            return  # no MFA step on this target/page -- nothing to do
+        code = pyotp.TOTP(user.totp_secret).now()
+        await page.fill(totp_field, code)
+        form_scope = await _form_scope_selector(page, totp_field)
+        submit_sel = await _first_matching_scoped(page, form_scope, self._submit_selector, "MFA code submit button")
+        try:
+            await page.click(submit_sel)
+        except Exception:
+            # Same actionability-bypass rationale as the primary submit
+            # click above.
+            await page.click(submit_sel, force=True)
+        _log.info(f"submitted TOTP code for user '{user.id}' (role={user.role})")
 
     async def refresh(self, session: Session, page: "Page") -> Session:
         # Form-based sessions have no refresh endpoint to call -- the

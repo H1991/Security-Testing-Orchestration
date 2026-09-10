@@ -981,7 +981,11 @@ def test_resolve_crawl_roles_no_users_configured_raises():
 
 
 def _configure_input(base_url="https://example.com", login_url="https://example.com/login", wants_jwt="n") -> str:
-    lines = [base_url, login_url, wants_jwt, "admin@example.com", "AdminPass123", "user@example.com", "UserPass123"]
+    lines = [
+        base_url, login_url, wants_jwt,
+        "admin@example.com", "AdminPass123", "n",  # "n" -- admin has no TOTP/2FA
+        "user@example.com", "UserPass123", "n",  # "n" -- normal user has no TOTP/2FA
+    ]
     lines += ["y"] * len(_KNOWN_MODULES)  # one confirm per _KNOWN_MODULES entry
     return "\n".join(lines) + "\n"
 
@@ -1011,6 +1015,38 @@ def test_configure_writes_a_valid_config_users_and_env_from_scratch(tmp_path):
     env_text = env_path.read_text()
     assert "ADMIN_PASSWORD=AdminPass123" in env_text
     assert "USER_PASSWORD=UserPass123" in env_text
+
+
+def test_configure_writes_totp_secret_as_env_token_when_admin_has_mfa(tmp_path):
+    config_path = tmp_path / "config.json"
+    users_path = tmp_path / "users.json"
+    env_path = tmp_path / ".env"
+    runner = CliRunner()
+    lines = [
+        "https://example.com", "https://example.com/login", "n",
+        "admin@example.com", "AdminPass123", "y", "JBSWY3DPEHPK3PXP",  # "y" -- admin HAS TOTP/2FA
+        "user@example.com", "UserPass123", "n",
+    ]
+    lines += ["y"] * len(_KNOWN_MODULES)
+    input_text = "\n".join(lines) + "\n"
+
+    result = runner.invoke(cli, [
+        "configure", "--config", str(config_path), "--users", str(users_path), "--env-file", str(env_path),
+    ], input=input_text)
+
+    assert result.exit_code == 0, result.output
+
+    users_doc = json.loads(users_path.read_text())
+    admin_entry = next(u for u in users_doc["users"] if u["role"] == "admin")
+    normal_entry = next(u for u in users_doc["users"] if u["role"] == "normal")
+    assert admin_entry["totp_secret"] == "{{env:ADMIN_TOTP_SECRET}}"
+    assert "totp_secret" not in normal_entry  # no MFA configured for this role -- key omitted entirely
+
+    env_text = env_path.read_text()
+    assert "ADMIN_TOTP_SECRET=JBSWY3DPEHPK3PXP" in env_text
+    # The secret must never land in users.json/config.json -- same rule as passwords.
+    assert "JBSWY3DPEHPK3PXP" not in users_path.read_text()
+    assert "JBSWY3DPEHPK3PXP" not in config_path.read_text()
 
 
 def test_configure_never_writes_a_plaintext_password_into_json_files(tmp_path):

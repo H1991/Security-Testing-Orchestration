@@ -13,15 +13,18 @@ plugins where the flag is true. Adding a new module = create a new file
 arguments (sensible "admin"/"normal" role defaults, same convention
 `IdorTestsModule` itself uses).
 
-`auth_tests` and `jwt_tests` are NOT auto-registered here, for the same
-reason: `AuthTestsModule` needs `login_json_endpoint`/`change_password_
-url`/... (target-specific URLs `Config.modules`'s plain boolean flag
-can't express) and `JwtTestsModule` needs `roles=[...]` (which roles
-are JWT-authenticated). Both exist and are Phase 1 -- `stof/main.py`'s
-own `_build_module_builders()` is the real construction site for these
-two, reading the needed config/`UserConfig` data `build_modules()`
-here never receives. `build_modules()` still logs a warning rather than
-crashing if a caller enables either one through this simpler path.
+`auth_tests`, `jwt_tests`, and `mfa_tests` are NOT auto-registered here,
+for the same reason: `AuthTestsModule` needs `login_json_endpoint`/
+`change_password_url`/... (target-specific URLs `Config.modules`'s
+plain boolean flag can't express), `JwtTestsModule` needs `roles=[...]`
+(which roles are JWT-authenticated), and `MfaTestsModule` needs
+`login_url`/`test_username`/`test_password`/`totp_secret` for the role
+under test (from `UserConfig`, which `build_modules()` here never
+receives). All three exist and are Phase 1 -- `stof/main.py`'s own
+`_build_module_builders()` is the real construction site, reading the
+needed config/`UserConfig` data. `build_modules()` still logs a warning
+rather than crashing if a caller enables any of them through this
+simpler path.
 """
 from __future__ import annotations
 

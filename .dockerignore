@@ -1,0 +1,40 @@
+# Runtime state -- never bake scan results, sessions, or evidence into
+# the image; these belong on the mounted /opt/stof/data volume.
+data/
+*.db
+
+# Real target configuration / credentials from local development --
+# these are environment-specific and MUST NOT ship in a release image
+# handed to another team. The image ships config-defaults/ (static
+# reference catalogs only) instead; the entrypoint seeds a fresh
+# config/ volume from those on first run.
+config/config.json
+config/targets.json
+config/users.json
+.env
+
+# VCS / editor / Python noise
+.git/
+.gitignore
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# Docs, tracking spreadsheets, design assets -- not needed at runtime
+*.xlsx
+*.png
+*.svg
+*.pdf
+docs/
+dashboard/
+dummy_showcase/
+AIntoes*
+Releases/
+Releases_Stof/
+
+# Node/browser tooling not used by the Python app itself
+node_modules/

@@ -1759,6 +1759,16 @@
               </div>
               <div class="field"><label id="adminPasswordLabel">Admin password <small>write-only, never shown back</small></label><input type="password" name="admin_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
               <div class="field">
+                <label>Admin TOTP secret <small id="adminTotpStatus"></small>
+                  <button type="button" class="btn-link-remove" id="removeAdminTotpBtn" hidden>Remove</button>
+                </label>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="password" name="admin_totp_secret" autocomplete="off" placeholder="only if this account needs an authenticator-app code to log in -- leave blank otherwise" style="flex: 1;" />
+                  <button type="button" class="btn" id="uploadAdminTotpQrBtn" style="white-space: nowrap; padding: 9px 14px; font-size: 13px;">Upload QR</button>
+                  <input type="file" id="adminTotpQrFile" accept="image/*" hidden />
+                </div>
+              </div>
+              <div class="field">
                 <label>Normal-user username <button type="button" class="btn-link-remove" id="removeNormalBtn" hidden>Remove</button></label>
                 <input type="text" name="normal_username" autocomplete="off" placeholder="leave blank if this target has no normal-user account" />
               </div>
@@ -1770,6 +1780,22 @@
                 </select>
               </div>
               <div class="field"><label id="normalPasswordLabel">Normal-user password <small>write-only, never shown back</small></label><input type="password" name="normal_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
+              <div class="field">
+                <label>Normal-user TOTP secret <small id="normalTotpStatus"></small>
+                  <button type="button" class="btn-link-remove" id="removeNormalTotpBtn" hidden>Remove</button>
+                </label>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="password" name="normal_totp_secret" autocomplete="off" placeholder="only if this account needs an authenticator-app code to log in -- leave blank otherwise" style="flex: 1;" />
+                  <button type="button" class="btn" id="uploadNormalTotpQrBtn" style="white-space: nowrap; padding: 9px 14px; font-size: 13px;">Upload QR</button>
+                  <input type="file" id="normalTotpQrFile" accept="image/*" hidden />
+                </div>
+              </div>
+              <p style="margin: 0; font-size: 12px; color: var(--text-faint);">
+                TOTP secret comes from the account's 2FA-enrollment QR code -- scan it with any generic
+                QR reader (not an authenticator app) to read the raw <code class="inline">otpauth://totp/...?secret=XXXX</code>
+                data, and paste just the <code class="inline">secret=</code> value above. Only app-based
+                codes are supported -- SMS/push-approval MFA (Okta Verify, Duo push) can't be automated.
+              </p>
               <p style="margin: 0; font-size: 12px; color: var(--text-faint);">
                 Neither fits (SSO/OAuth redirect to another domain, or a bot/CAPTCHA challenge)?
                 Skip these fields and use <b>Manual Session Cookies</b> below instead.
@@ -3078,13 +3104,17 @@ async function loadHealth() {
           admin_username: f.admin_username.value.trim() || null,
           admin_password: f.admin_password.value || null,
           admin_auth_type: f.admin_auth_type.value,
+          admin_totp_secret: f.admin_totp_secret.value || null,
           normal_username: f.normal_username.value.trim() || null,
           normal_password: f.normal_password.value || null,
           normal_auth_type: f.normal_auth_type.value,
+          normal_totp_secret: f.normal_totp_secret.value || null,
         }),
       });
       f.admin_password.value = "";
       f.normal_password.value = "";
+      f.admin_totp_secret.value = "";
+      f.normal_totp_secret.value = "";
       toast("Credentials saved");
       loadVerifyLoginRoles();
       loadCredentialsFields();
@@ -3113,6 +3143,12 @@ async function loadHealth() {
       updateCredentialPasswordLabels();
       document.getElementById("removeAdminBtn").hidden = !byRole.admin;
       document.getElementById("removeNormalBtn").hidden = !byRole.normal;
+      var adminHasTotp = !!(byRole.admin && byRole.admin.has_totp);
+      var normalHasTotp = !!(byRole.normal && byRole.normal.has_totp);
+      document.getElementById("adminTotpStatus").textContent = adminHasTotp ? "configured" : "";
+      document.getElementById("normalTotpStatus").textContent = normalHasTotp ? "configured" : "";
+      document.getElementById("removeAdminTotpBtn").hidden = !adminHasTotp;
+      document.getElementById("removeNormalTotpBtn").hidden = !normalHasTotp;
     } catch (err) {
       // Non-fatal -- the form still works for entering fresh credentials.
     }
@@ -3156,6 +3192,52 @@ async function loadHealth() {
   }
   document.getElementById("removeAdminBtn").addEventListener("click", function () { removeCredentialRole("admin"); });
   document.getElementById("removeNormalBtn").addEventListener("click", function () { removeCredentialRole("normal"); });
+  // Clears only the TOTP secret for a role, leaving the username/password
+  // alone -- distinct from removeCredentialRole, which drops the whole
+  // account. Backed by targets.py's set_role_totp_secret("") semantics.
+  async function removeCredentialTotp(role) {
+    if (!activeTargetId) return;
+    try {
+      var payload = {};
+      payload[role + "_totp_secret"] = "";
+      await api("/api/targets/" + activeTargetId, { method: "PUT", body: JSON.stringify(payload) });
+      toast("'" + role + "' TOTP secret removed");
+      document.getElementById("credentialsForm")[role + "_totp_secret"].value = "";
+      loadCredentialsFields();
+    } catch (err) {
+      toast("Could not remove '" + role + "' TOTP secret: " + err.message, true);
+    }
+  }
+  document.getElementById("removeAdminTotpBtn").addEventListener("click", function () { removeCredentialTotp("admin"); });
+  document.getElementById("removeNormalTotpBtn").addEventListener("click", function () { removeCredentialTotp("normal"); });
+  // Decodes an uploaded 2FA-enrollment QR-code screenshot server-side
+  // (/api/auth/totp-qr) and drops the extracted secret straight into
+  // the matching TOTP field -- the operator still has to click "Save
+  // credentials" to persist it, same write-only-until-Save convention
+  // as every other field on this form; this only fills the input.
+  async function handleTotpQrFile(role, file) {
+    if (!file) return;
+    var fieldName = role + "_totp_secret";
+    var fd = new FormData();
+    fd.append("file", file);
+    try {
+      var result = await api("/api/auth/totp-qr", { method: "POST", body: fd, headers: {} });
+      document.getElementById("credentialsForm")[fieldName].value = result.secret;
+      toast("TOTP secret read from QR code -- click Save credentials to apply it");
+    } catch (err) {
+      toast("Could not read QR code: " + err.message, true);
+    }
+  }
+  document.getElementById("uploadAdminTotpQrBtn").addEventListener("click", function () { document.getElementById("adminTotpQrFile").click(); });
+  document.getElementById("uploadNormalTotpQrBtn").addEventListener("click", function () { document.getElementById("normalTotpQrFile").click(); });
+  document.getElementById("adminTotpQrFile").addEventListener("change", function (e) {
+    handleTotpQrFile("admin", e.target.files[0]);
+    e.target.value = "";
+  });
+  document.getElementById("normalTotpQrFile").addEventListener("change", function (e) {
+    handleTotpQrFile("normal", e.target.files[0]);
+    e.target.value = "";
+  });
   loadCredentialsFields();
 
   // ---------------------------------------------------------------- Manual Session Cookies

@@ -134,6 +134,7 @@ _MODULE_LABELS: dict[str, str] = {
     "cache_tests": "Web Cache Poisoning / Deception",
     "business_logic_tests": "Business Logic / Identity",
     "file_upload_tests": "File Upload",
+    "mfa_tests": "MFA / TOTP",
 }
 
 
@@ -925,9 +926,17 @@ class TargetProfileRequest(BaseModel):
     admin_username: str | None = None
     admin_password: str | None = None
     admin_auth_type: Literal["form_login", "jwt"] | None = None
+    # Optional TOTP/MFA secret for this role (stof.config.schema.
+    # UserConfig.totp_secret) -- same partial-update philosophy as
+    # every other field here: `None` (omitted) leaves whatever's
+    # configured untouched; `""` explicitly turns MFA off for this
+    # account; any other value sets/replaces it. Never echoed back by
+    # any endpoint, same write-only rule as admin_password.
+    admin_totp_secret: str | None = None
     normal_username: str | None = None
     normal_password: str | None = None
     normal_auth_type: Literal["form_login", "jwt"] | None = None
+    normal_totp_secret: str | None = None
     scan_intensity: Literal["cautious", "standard", "aggressive"] | None = None
     allow_state_changing_probes: bool | None = None
 
@@ -1375,7 +1384,31 @@ def _activate_target(doc: dict, target_id: str) -> dict:
         if profile.get(f"{role}_password_set"):
             value = _read_dotenv_value(ENV_PATH, target_store.env_key(role, target_id))
             if value is not None:
-                _write_dotenv_value(ENV_PATH, "ADMIN_PASSWORD" if role == "admin" else "USER_PASSWORD", value)
+                plain_key = "ADMIN_PASSWORD" if role == "admin" else "USER_PASSWORD"
+                _write_dotenv_value(ENV_PATH, plain_key, value)
+                # `stof/config/loader.py`'s `load_dotenv()` deliberately never
+                # overrides an already-set os.environ value (so a real shell
+                # export always wins) -- correct for that use case, but this
+                # process's OWN plain credential vars are entirely owned by
+                # activation, so leaving the old value cached here would make
+                # every activation after the first silently keep using
+                # whichever target activated first, for the rest of this
+                # server's life (and any scan subprocess it launches, which
+                # inherits this process's environment). Set it directly so
+                # the switch actually takes effect immediately, not just on
+                # disk. Confirmed live: this was blocking Verify Login from
+                # ever picking up a second target's real credentials.
+                os.environ[plain_key] = value
+        # Same per-profile -> plain-env-var copy, for the TOTP secret
+        # `stof/config/loader.py`'s {{env:ADMIN_TOTP_SECRET}}/
+        # {{env:USER_TOTP_SECRET}} tokens (written into users.json by
+        # `user_entries()` above) actually resolve against.
+        if profile.get(f"{role}_totp_secret_set"):
+            totp_value = _read_dotenv_value(ENV_PATH, target_store.totp_env_key(role, target_id))
+            if totp_value is not None:
+                totp_plain_key = "ADMIN_TOTP_SECRET" if role == "admin" else "USER_TOTP_SECRET"
+                _write_dotenv_value(ENV_PATH, totp_plain_key, totp_value)
+                os.environ[totp_plain_key] = totp_value
 
     doc["active_target_id"] = target_id
     target_store.save(TARGETS_PATH, doc)
@@ -1395,6 +1428,16 @@ def _apply_target_credentials(profile: dict, target_id: str, body: TargetProfile
     if body.normal_password:
         _write_dotenv_value(ENV_PATH, target_store.env_key("normal", target_id), body.normal_password)
         target_store.mark_password_set(profile, "normal")
+    # TOTP is genuinely optional per account (unlike password, which is
+    # only ever set/replaced, never turned off) -- an empty string
+    # explicitly clears it, so this still has to run when
+    # admin_totp_secret == "" even though that's falsy.
+    if body.admin_totp_secret:
+        _write_dotenv_value(ENV_PATH, target_store.totp_env_key("admin", target_id), body.admin_totp_secret)
+    target_store.set_role_totp_secret(profile, "admin", body.admin_totp_secret)
+    if body.normal_totp_secret:
+        _write_dotenv_value(ENV_PATH, target_store.totp_env_key("normal", target_id), body.normal_totp_secret)
+    target_store.set_role_totp_secret(profile, "normal", body.normal_totp_secret)
 
 
 @app.get("/api/targets")
@@ -1800,9 +1843,52 @@ def get_auth_roles() -> list[dict]:
         _log.warning(f"could not load users.json for the Verify Login role picker: {exc}")
         return []
     return [
-        {"role": u.role, "username": u.username, "auth_type": u.auth_type, "verifiable": u.auth_type == "form_login"}
+        {
+            "role": u.role, "username": u.username, "auth_type": u.auth_type,
+            "verifiable": u.auth_type == "form_login", "has_totp": bool(u.totp_secret),
+        }
         for u in users.users
     ]
+
+
+@app.post("/api/auth/totp-qr")
+async def decode_totp_qr(file: UploadFile) -> dict:
+    """Decodes an uploaded 2FA-enrollment QR-code screenshot and pulls
+    the base32 `secret` out of its `otpauth://totp/...` payload -- the
+    Settings-UI counterpart to typing the secret in by hand. Decode-only:
+    this never writes anything, it just hands the secret back to the
+    caller (same write-only-until-Save convention as the password
+    fields) -- `PUT /api/targets/{id}` with `admin_totp_secret`/
+    `normal_totp_secret` is still the only thing that persists it.
+
+    Deliberately rejects a non-TOTP QR (e.g. a push-approval "scan to
+    log in" code) rather than guessing -- `stof.auth.form_login` only
+    ever knows how to compute a TOTP code, so silently accepting an
+    unrelated QR would just fail confusingly later, at scan time."""
+    import urllib.parse
+
+    import cv2
+    import numpy as np
+
+    raw = await file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(400, "not a readable image file")
+    data, _points, _ = cv2.QRCodeDetector().detectAndDecode(img)
+    if not data:
+        raise HTTPException(400, "no QR code found in this image")
+    parsed = urllib.parse.urlparse(data)
+    if parsed.scheme != "otpauth" or parsed.netloc != "totp":
+        raise HTTPException(
+            400,
+            "this QR code isn't a TOTP enrollment code (expected an 'otpauth://totp/...' "
+            "QR from a 2FA setup screen, not a login/push-approval QR)",
+        )
+    secret = urllib.parse.parse_qs(parsed.query).get("secret", [None])[0]
+    if not secret:
+        raise HTTPException(400, "QR code has no 'secret' parameter")
+    return {"secret": secret, "issuer": urllib.parse.parse_qs(parsed.query).get("issuer", [None])[0]}
 
 
 class VerifyLoginRequest(BaseModel):

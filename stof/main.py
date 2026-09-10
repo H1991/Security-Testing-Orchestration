@@ -72,6 +72,7 @@ from stof.modules.graphql_tests import GraphQLTestConfig, GraphQLTestsModule
 from stof.modules.idor_tests import IdorTestConfig, IdorTestsModule
 from stof.modules.injection_variants_tests import InjectionVariantsTestConfig, InjectionVariantsTestsModule
 from stof.modules.jwt_tests import JwtTestConfig, JwtTestsModule
+from stof.modules.mfa_tests import MfaTestConfig, MfaTestsModule
 from stof.modules.results import ERROR, TestCaseResult, extract_findings, skipped_techniques, summarize
 from stof.modules.sqli_tests import SqliTestConfig, SqliTestsModule
 from stof.modules.ssrf_tests import SsrfTestConfig, SsrfTestsModule
@@ -201,6 +202,18 @@ def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict, ta
         allow_state_changing_probes=allow_state_changing_probes,
     )
 
+    # MFA testing needs the login page itself (not a JSON-API endpoint)
+    # -- the OTP field it looks for only ever appears on the real login
+    # form, same reason `_build_form_login_provider` always uses
+    # `config.target.login_url` rather than `jwt_token_url`.
+    mfa_config = MfaTestConfig(
+        login_url=config.target.login_url,
+        test_role=low_priv_role,
+        test_username=test_user.username if test_user else None,
+        test_password=test_user.password if test_user else None,
+        totp_secret=test_user.totp_secret if test_user else None,
+    )
+
     csrf_config = CsrfTestConfig(
         test_role=low_priv_role,
         role_auth_type=test_user.auth_type if test_user else None,
@@ -213,6 +226,7 @@ def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict, ta
         "idor_tests": lambda: IdorTestsModule(config=IdorTestConfig(candidate_ids=idor_ids, allow_state_changing_probes=allow_state_changing_probes)),
         "jwt_tests": lambda: JwtTestsModule(roles=jwt_roles, config=JwtTestConfig(**jwt_config_kwargs)),
         "auth_tests": lambda: AuthTestsModule(config=auth_config),
+        "mfa_tests": lambda: MfaTestsModule(config=mfa_config),
         "csrf_tests": lambda: CsrfTestsModule(config=csrf_config),
         "configuration_tests": lambda: ConfigurationTestsModule(config=ConfigurationTestConfig(base_url=config.target.base_url, target_profile=target_profile)),
         "disclosure_tests": lambda: DisclosureTestsModule(config=DisclosureTestConfig(high_priv_role=high_priv_role or "admin")),
@@ -371,6 +385,23 @@ def cli() -> None:
     """STOF — Security Testing Orchestration Framework."""
 
 
+def _prompt_optional_totp_secret(role_label: str) -> str | None:
+    """Optional TOTP/2FA secret prompt for one role -- extracted out of
+    `configure()` itself (asked once per role, admin and normal-user)
+    both to avoid duplicating the prompt logic and because inlining it
+    twice pushed `configure()`'s own complexity past this project's own
+    ~15 threshold. Returns `None` when the operator says the account
+    has no MFA step, matching `UserConfig.totp_secret`'s own `None`
+    default -- `configure()` only writes a totp_secret entry at all
+    when this returns a real value."""
+    if not click.confirm(f"Does the {role_label} account require an authenticator-app code (TOTP/2FA) to log in?", default=False):
+        return None
+    click.echo("  Get this from the account's 2FA enrollment QR code -- scan it with any generic QR reader")
+    click.echo("  (not an authenticator app) to read the raw otpauth://totp/...?secret=XXXX data, and paste")
+    click.echo("  just the secret= value below.")
+    return click.prompt(f"  {role_label.capitalize()} TOTP secret", hide_input=True)
+
+
 @cli.command()
 @click.option("--config", "config_path", default="config/config.json", show_default=True, type=click.Path())
 @click.option("--users", "users_path", default="config/users.json", show_default=True, type=click.Path())
@@ -416,8 +447,10 @@ def configure(config_path: str, users_path: str, env_path: str) -> None:
     click.echo("Credentials (passwords go to .env only -- never written to config.json/users.json)")
     admin_username = click.prompt("Admin (high-privilege) username/email")
     admin_password = click.prompt("Admin password", hide_input=True)
+    admin_totp_secret = _prompt_optional_totp_secret("admin")
     normal_username = click.prompt("Normal (low-privilege) username/email")
     normal_password = click.prompt("Normal password", hide_input=True)
+    normal_totp_secret = _prompt_optional_totp_secret("normal-user")
     wants_jwt_role = wants_jwt and click.confirm("Also authenticate the normal user via JWT (for jwt_tests)?", default=True)
 
     click.echo()
@@ -428,10 +461,21 @@ def configure(config_path: str, users_path: str, env_path: str) -> None:
     _write_dotenv_value(env_path, "ADMIN_PASSWORD", admin_password)
     _write_dotenv_value(env_path, "USER_PASSWORD", normal_password)
 
-    users_doc = {"users": [
-        {"id": "admin-01", "role": "admin", "username": admin_username, "password": "{{env:ADMIN_PASSWORD}}", "auth_type": "form_login"},
-        {"id": "user-01", "role": "normal", "username": normal_username, "password": "{{env:USER_PASSWORD}}", "auth_type": "form_login"},
-    ]}
+    admin_user = {"id": "admin-01", "role": "admin", "username": admin_username, "password": "{{env:ADMIN_PASSWORD}}", "auth_type": "form_login"}
+    normal_user = {"id": "user-01", "role": "normal", "username": normal_username, "password": "{{env:USER_PASSWORD}}", "auth_type": "form_login"}
+    # Same {{env:VAR}} token convention as password -- never a literal
+    # secret in users.json. Omitted entirely (not written as null) when
+    # not configured, matching `UserConfig.totp_secret`'s own `None`
+    # default so an existing users.json with no MFA stays byte-for-byte
+    # unaffected by this feature existing.
+    if admin_totp_secret:
+        _write_dotenv_value(env_path, "ADMIN_TOTP_SECRET", admin_totp_secret)
+        admin_user["totp_secret"] = "{{env:ADMIN_TOTP_SECRET}}"
+    if normal_totp_secret:
+        _write_dotenv_value(env_path, "USER_TOTP_SECRET", normal_totp_secret)
+        normal_user["totp_secret"] = "{{env:USER_TOTP_SECRET}}"
+
+    users_doc = {"users": [admin_user, normal_user]}
     if wants_jwt_role:
         users_doc["users"].append({"id": "user-01-jwt", "role": "jwt_user", "username": normal_username, "password": "{{env:USER_PASSWORD}}", "auth_type": "jwt"})
     users_path.parent.mkdir(parents=True, exist_ok=True)

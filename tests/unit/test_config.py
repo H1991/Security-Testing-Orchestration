@@ -150,6 +150,36 @@ def test_load_users_happy_path_resolves_env_tokens(tmp_path, monkeypatch):
     assert "{{env:" not in users.users[0].password
 
 
+def test_load_users_totp_secret_defaults_to_none(tmp_path, monkeypatch):
+    """No `totp_secret` key in users.json at all -- the overwhelming
+    common case (no MFA configured) -- must default to None, not error
+    or require every existing users.json to be updated."""
+    monkeypatch.setenv("ADMIN_PASSWORD", "s3cr3t-admin")
+    monkeypatch.setenv("USER_PASSWORD", "s3cr3t-user")
+    users_path = _write_json(tmp_path / "users.json", VALID_USERS)
+
+    users = load_users(users_path)
+
+    assert users.users[0].totp_secret is None
+
+
+def test_load_users_totp_secret_resolves_env_token(tmp_path, monkeypatch):
+    """`totp_secret` uses the exact same `{{env:VAR}}` convention as
+    `password` -- `_resolve_env_tokens` is field-name-agnostic, so this
+    should work with zero loader changes; this test is the proof."""
+    monkeypatch.setenv("ADMIN_PASSWORD", "s3cr3t-admin")
+    monkeypatch.setenv("USER_PASSWORD", "s3cr3t-user")
+    monkeypatch.setenv("ADMIN_TOTP_SECRET", "JBSWY3DPEHPK3PXP")
+    with_totp = json.loads(json.dumps(VALID_USERS))
+    with_totp["users"][0]["totp_secret"] = "{{env:ADMIN_TOTP_SECRET}}"
+    users_path = _write_json(tmp_path / "users.json", with_totp)
+
+    users = load_users(users_path)
+
+    assert users.users[0].totp_secret == "JBSWY3DPEHPK3PXP"
+    assert "{{env:" not in users.users[0].totp_secret
+
+
 def test_load_auth_tests_happy_path(tmp_path):
     auth_tests_path = _write_json(tmp_path / "auth_tests.json", VALID_AUTH_TESTS)
 

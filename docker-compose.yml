@@ -1,0 +1,40 @@
+services:
+  # One-off CLI usage: `docker compose run --rm cli configure`,
+  # `docker compose run --rm cli scan`, `docker compose run --rm cli
+  # crawl`, etc. -- see the user guide for the full command reference.
+  cli:
+    build: .
+    image: stof:local
+    volumes:
+      - stof-config:/opt/stof/config
+      - stof-data:/opt/stof/data
+    # No `command:` here on purpose -- `docker compose run cli <args>`
+    # appends to the image's own ENTRYPOINT (docker-entrypoint.sh),
+    # which execs whatever's passed after it.
+
+  # The web console, long-running. `STOF_CONSOLE_API_KEY` is unset by
+  # default here on purpose (matches the app's own opt-in default) --
+  # uncomment and set a real value before exposing this port beyond
+  # your own machine to anyone else. See the user guide's "Securing
+  # the console" section.
+  console:
+    build: .
+    image: stof:local
+    command: ["uvicorn", "stof.ui.server:app", "--host", "0.0.0.0", "--port", "8787"]
+    ports:
+      # Bind the HOST side to loopback by default -- only this machine
+      # can reach it. Change to "8787:8787" only if you deliberately
+      # want it reachable from other machines on your network, and set
+      # STOF_CONSOLE_API_KEY below first if you do.
+      - "127.0.0.1:8787:8787"
+    # Uncomment to require a key on every /api/* request (see the user
+    # guide's "Securing the console" section):
+    # environment:
+    #   STOF_CONSOLE_API_KEY: "set-a-real-key-here"
+    volumes:
+      - stof-config:/opt/stof/config
+      - stof-data:/opt/stof/data
+
+volumes:
+  stof-config:
+  stof-data:

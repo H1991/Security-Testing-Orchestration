@@ -118,6 +118,7 @@ class ModulesConfig(BaseModel):
     injection_variants_tests: bool = False
     oauth_tests: bool = False
     csrf_tests: bool = False
+    mfa_tests: bool = False
 
 
 class OutputConfig(BaseModel):
@@ -239,6 +240,23 @@ class UserConfig(BaseModel):
     username: str
     password: str
     auth_type: AuthType
+    # TOTP (RFC 6238) secret for a test account that has app-based 2FA
+    # enabled -- the same base32 string a real user's authenticator app
+    # (Google/Microsoft Authenticator, etc.) would be seeded with at
+    # enrollment (visible by scanning the enrollment QR code with any
+    # generic QR reader instead of an authenticator app -- see
+    # `stof/auth/form_login.py`'s `_maybe_complete_totp` docstring).
+    # `None` (the default) means this user has no TOTP step configured
+    # -- `FormLoginProvider` then behaves byte-for-byte as it did before
+    # this field existed. Resolved via the same `{{env:VAR}}` token
+    # convention `password` already uses (see `config/loader.py`'s
+    # `_resolve_env_tokens`, which is field-name-agnostic) -- never a
+    # literal secret in config/users.json. Deliberately its own field,
+    # not folded into `password`: a TOTP seed is a standing MFA bypass
+    # until the account is re-enrolled if it ever leaks, meaningfully
+    # more sensitive than a rotatable password, and worth being able to
+    # reason about/audit separately for exactly that reason.
+    totp_secret: str | None = None
 
 
 class UsersConfig(BaseModel):

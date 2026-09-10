@@ -53,7 +53,8 @@
       "scan_intensity": "standard",
       "allow_state_changing_probes": true,
       "created_at": "2026-09-08T06:59:50.974145+00:00",
-      "updated_at": "2026-09-08T17:45:37.882515+00:00"
+      "updated_at": "2026-09-10T12:01:45.918576+00:00",
+      "admin_totp_secret_set": false
     },
     {
       "id": "owasp-juice-shop",
@@ -69,7 +70,7 @@
       "idor_candidate_ids": null,
       "requires_assisted_login": false,
       "admin_username": "admin@juice-sh.op",
-      "admin_auth_type": "jwt",
+      "admin_auth_type": "form_login",
       "admin_password_set": true,
       "normal_username": null,
       "normal_auth_type": "form_login",
@@ -77,8 +78,35 @@
       "scan_intensity": "standard",
       "allow_state_changing_probes": true,
       "created_at": "2026-09-08T06:59:59.953498+00:00",
-      "updated_at": "2026-09-08T17:45:37.902869+00:00"
+      "updated_at": "2026-09-10T12:30:59.067772+00:00",
+      "admin_totp_secret_set": true
+    },
+    {
+      "id": "owasp-juice-shop-preview",
+      "name": "OWASP Juice Shop (preview)",
+      "app_type": "web",
+      "environment": "staging",
+      "base_url": "https://preview.owasp-juice.shop/",
+      "login_url": "https://preview.owasp-juice.shop/#/login",
+      "username_selector": null,
+      "password_selector": null,
+      "submit_selector": null,
+      "crawler_exclude_patterns": null,
+      "idor_candidate_ids": null,
+      "requires_assisted_login": false,
+      "admin_username": null,
+      "admin_auth_type": "form_login",
+      "admin_password_set": false,
+      "admin_totp_secret_set": false,
+      "normal_username": "ximixil443@liondapt.com",
+      "normal_auth_type": "form_login",
+      "normal_password_set": true,
+      "normal_totp_secret_set": true,
+      "scan_intensity": "standard",
+      "allow_state_changing_probes": false,
+      "created_at": "2026-09-10T12:04:50.044283+00:00",
+      "updated_at": "2026-09-10T12:16:43.127210+00:00"
     }
   ],
-  "active_target_id": "test-kapturekm-com"
+  "active_target_id": "owasp-juice-shop"
 }
