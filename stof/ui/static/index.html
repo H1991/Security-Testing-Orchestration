@@ -59,6 +59,12 @@
     --sidebar-accent-text: #f0c19f;
     --sidebar-accent-soft: rgba(194,123,72,0.22);
     --tag-info: #5c6577;
+    /* The exact orange taskslit.com's own custom cursor uses
+       (rgb(255,105,0), extracted live from their stylesheet) -- kept as
+       its own variable, not reused from --sidebar-accent, since a
+       cursor needs to stay visible against every page background at
+       once (cream, white cards, dark sidebar), not just one surface. */
+    --cursor-accent: #ff6900;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -1285,9 +1291,44 @@
     background-size: 30px 100%, 30px 100%;
   }
   .table-scroll table.findings { min-width: 720px; }
+
+  /* Custom ring+dot cursor, matched against taskslit.com's own
+     implementation (extracted live: .cursor-inner/.cursor-outer CSS +
+     the mousemove/mouseenter/mouseleave handlers in their script.js) --
+     an outer ring trails the pointer, a small inner dot tracks it
+     exactly; hovering an interactive element makes the ring fade out
+     while the dot blooms into a soft, near-transparent halo. The
+     native OS cursor is left alone (taskslit's own site does the same
+     -- this draws OVER it, not instead of it).
+
+     Deliberately OFF for touch/coarse-pointer devices (a fixed-position
+     div chasing "mouse" events that never fire on touch would just sit
+     inert in the corner) and for prefers-reduced-motion (the whole
+     point of this element is motion). */
+  .mouse-cursor {
+    position: fixed; left: 0; top: 0; pointer-events: none;
+    border-radius: 50%; transform: translateZ(0); visibility: hidden;
+  }
+  .cursor-inner {
+    margin-left: -4px; margin-top: -4px; width: 8px; height: 8px; z-index: 10000001;
+    transition: width .3s ease-in-out, height .3s ease-in-out, margin .3s ease-in-out, opacity .3s ease-in-out;
+    background: var(--cursor-accent);
+  }
+  .cursor-inner.cursor-hover { margin-left: -20px; margin-top: -20px; width: 40px; height: 40px; opacity: .12; }
+  .cursor-outer {
+    margin-left: -15px; margin-top: -15px; width: 30px; height: 30px; box-sizing: border-box;
+    z-index: 10000000; opacity: .5; border: 2px solid var(--cursor-accent); transition: .08s ease-out;
+  }
+  .cursor-outer.cursor-hover { opacity: 0; }
+  @media (pointer: coarse), (prefers-reduced-motion: reduce) {
+    .mouse-cursor { display: none; }
+  }
 </style>
 </head>
 <body>
+
+<div class="mouse-cursor cursor-outer" aria-hidden="true"></div>
+<div class="mouse-cursor cursor-inner" aria-hidden="true"></div>
 
 <!-- inline nav icon set (real geometric line icons, replacing the dingbat glyphs) -->
 <svg width="0" height="0" style="position:absolute">
@@ -6195,6 +6236,45 @@ async function loadHealth() {
     setInterval(function () { loadScans(); }, 30000);
   }
   boot();
+})();
+</script>
+
+<script>
+// Custom ring+dot cursor -- see the .mouse-cursor/.cursor-inner/
+// .cursor-outer rules in <head> for the visual spec. Self-contained
+// (own IIFE, no dependency on the app's own state) same as taskslit's
+// own mim_tm_cursor(), just ported off jQuery to plain DOM/event
+// listeners. Skipped entirely on coarse-pointer (touch) or
+// reduced-motion, matching the CSS media query that hides the two
+// cursor divs in that case -- no point attaching mousemove listeners
+// that will never fire, or animating motion the user asked to avoid.
+(function () {
+  if (window.matchMedia("(pointer: coarse), (prefers-reduced-motion: reduce)").matches) return;
+  var inner = document.querySelector(".cursor-inner");
+  var outer = document.querySelector(".cursor-outer");
+  if (!inner || !outer) return;
+
+  window.addEventListener("mousemove", function (e) {
+    outer.style.transform = "translate(" + e.clientX + "px, " + e.clientY + "px)";
+    inner.style.transform = "translate(" + e.clientX + "px, " + e.clientY + "px)";
+  });
+
+  // Delegated, not per-element listeners -- STOF's console re-renders
+  // most of its interactive content (findings table, scan list, nav)
+  // on every route change, so binding to `document` once here is the
+  // only approach that doesn't need re-wiring after every re-render.
+  var HOVER_SELECTOR = "a, button, .btn, .nav-item, input, select, textarea, [role='button'], .cursor-pointer, tr[data-clickable]";
+  document.addEventListener("mouseover", function (e) {
+    if (e.target.closest(HOVER_SELECTOR)) { inner.classList.add("cursor-hover"); outer.classList.add("cursor-hover"); }
+  });
+  document.addEventListener("mouseout", function (e) {
+    if (e.target.closest(HOVER_SELECTOR) && !(e.relatedTarget && e.relatedTarget.closest(HOVER_SELECTOR))) {
+      inner.classList.remove("cursor-hover"); outer.classList.remove("cursor-hover");
+    }
+  });
+
+  inner.style.visibility = "visible";
+  outer.style.visibility = "visible";
 })();
 </script>
 </body>
