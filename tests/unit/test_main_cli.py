@@ -92,6 +92,53 @@ def test_cli_group_has_test_command():
     assert "test" in result.output
 
 
+def test_bench_command_scores_recall_and_prints_missed_expectations(tmp_path):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps({
+        "target": "https://x", "findings": [
+            {"technique_id": "TC-022.1", "vuln_type": "Default Credentials Accepted", "endpoint": {"url": "https://x/rest/user/login"}},
+        ],
+    }))
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({
+        "name": "Test Bench", "target": "https://x", "expected_findings": [
+            {"technique_id": "TC-022.1", "endpoint_pattern": "/rest/user/login", "description": "default creds"},
+            {"technique_id": "TC-127.1", "endpoint_pattern": "/search", "description": "SQLi -- never fired"},
+        ],
+    }))
+    runner = CliRunner()
+
+    result = runner.invoke(cli, ["bench", "--report", str(report_path), "--manifest", str(manifest_path)])
+
+    assert result.exit_code == 0
+    assert "Test Bench" in result.output
+    assert "Recall: 1/2" in result.output
+    assert "MISSED: TC-127.1" in result.output
+
+
+def test_bench_command_reports_false_positives_against_a_clean_target(tmp_path):
+    report_path = tmp_path / "report.json"
+    report_path.write_text(json.dumps({"target": "https://x", "findings": []}))
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps({"name": "Test Bench", "target": "https://x", "expected_findings": []}))
+    clean_report_path = tmp_path / "clean_report.json"
+    clean_report_path.write_text(json.dumps({
+        "target": "https://clean.example", "findings": [
+            {"technique_id": "TC-127.1", "vuln_type": "SQL Injection", "endpoint": {"url": "https://clean.example/search"}},
+        ],
+    }))
+    runner = CliRunner()
+
+    result = runner.invoke(cli, [
+        "bench", "--report", str(report_path), "--manifest", str(manifest_path),
+        "--clean-report", str(clean_report_path),
+    ])
+
+    assert result.exit_code == 0
+    assert "False positives against clean target" in result.output
+    assert "FALSE POSITIVE: TC-127.1" in result.output
+
+
 # ---------------------------------------------------------------------------
 # scan — the one-command crawl + every-implemented-module pipeline
 # ---------------------------------------------------------------------------

@@ -291,3 +291,46 @@ def test_write_omits_skipped_techniques_section_when_none_skipped(tmp_path):
 
     html = path.read_text(encoding="utf-8")
     assert "Techniques Not Run" not in html
+
+
+def test_write_includes_cleanup_section(tmp_path):
+    metadata = {"cleanup": [
+        {"technique_id": "TC-128.4", "kind": "planted_content", "identifier": "stofxss1234abcd",
+         "endpoint_url": "https://x/sendFeedback", "cleanup_status": "not_attempted",
+         "cleanup_detail": "no generic revert mechanism exists for this write type"},
+    ]}
+
+    path = write([], metadata, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "Real Writes This Scan Made" in html
+    assert "stofxss1234abcd" in html
+    assert "not attempted" in html.lower()
+
+
+def test_write_omits_cleanup_section_when_nothing_was_planted(tmp_path):
+    path = write([], {}, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "Real Writes This Scan Made" not in html
+
+
+def test_write_includes_baseline_banner_when_a_baseline_scan_exists(tmp_path):
+    metadata = {"baseline_diff": {"baseline_scan_id": "scan-prev", "new_count": 2, "resolved_count": 1, "unchanged_count": 5}}
+
+    path = write([], metadata, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "scan-prev" in html
+    assert "2 new" in html
+    assert "1 resolved" in html
+    assert "5 unchanged" in html
+
+
+def test_write_omits_baseline_banner_for_the_first_scan_of_a_target(tmp_path):
+    metadata = {"baseline_diff": {"baseline_scan_id": None, "new_count": 3, "resolved_count": 0, "unchanged_count": 0}}
+
+    path = write([], metadata, tmp_path / "report.html")
+
+    html = path.read_text(encoding="utf-8")
+    assert "Compared against previous scan" not in html

@@ -157,6 +157,7 @@ def extract_findings(results: list[TestCaseResult]) -> list["Finding"]:
     half of it; the second closes the independently-confirmed half)."""
     from stof.findings.classification import classify_finding_taxonomy
     from stof.findings.cvss import cvss_vector_for_finding
+    from stof.findings.fingerprint import compute_fingerprint
 
     findings: list[Finding] = []
     seen_ids: set[str] = set()
@@ -175,6 +176,11 @@ def extract_findings(results: list[TestCaseResult]) -> list["Finding"]:
         r.finding.technique_id = r.technique_id
         r.finding.cwe, r.finding.owasp_category = classify_finding_taxonomy(r.finding)
         r.finding.cvss_vector = cvss_vector_for_finding(r.finding)
+        # Stamped AFTER technique_id above -- compute_fingerprint()
+        # reads it (falling back to vuln_type only when unset). See
+        # `Finding.fingerprint`'s own docstring for why this is the
+        # cross-scan identity a baseline/diff report needs.
+        r.finding.fingerprint = compute_fingerprint(r.finding)
         findings.append(r.finding)
     return _merge_root_cause_duplicates(findings)
 

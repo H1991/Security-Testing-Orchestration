@@ -32,6 +32,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from stof.cleanup import REVERT_FAILED, REVERTED
 from stof.core.logger import get_logger
 from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
@@ -483,9 +484,25 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 finding = Finding(
                     module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.8,
                     endpoint=_synthetic_endpoint(self.config.login_json_endpoint, "POST"), user_role="unauthenticated",
-                    request_raw=f'POST {self.config.login_json_endpoint}\nContent-Type: application/json\n\n{{"username": "{username}", "password": "***"}}',
+                    # Real, unmasked value here on purpose: `password`
+                    # comes from `_DEFAULT_CREDENTIAL_PAIRS`, a fully
+                    # public, hardcoded wordlist ("admin"/"admin",
+                    # "demo"/"demo", ...) -- it's not a secret, it's the
+                    # finding itself, and masking it broke evidence
+                    # integrity (see `git log` around this line): the
+                    # masked `***` string was what the Burp evidence-
+                    # capture replay actually sent, producing a
+                    # legitimate 401 that contradicted this finding's
+                    # own real 200 -- one finding showing two
+                    # disagreeing outcomes to whoever reviewed it. A
+                    # real, operator-configured secret (e.g.
+                    # `test_current_password` elsewhere in this file)
+                    # must still never be written here -- only a value
+                    # already drawn from a public wordlist is safe to
+                    # persist and replay verbatim.
+                    request_raw=f'POST {self.config.login_json_endpoint}\nContent-Type: application/json\n\n{{"username": "{username}", "password": "{password}"}}',
                     response_raw=f"HTTP {status}, {preview}",
-                    description=f"The default/common credential pair '{username}' / a well-known weak password was accepted by '{self.config.login_json_endpoint}'.",
+                    description=f"The default/common credential pair '{username}'/'{password}' was accepted by '{self.config.login_json_endpoint}'.",
                     recommendation="Remove every default/sample account before deployment, and enforce a password policy that rejects common passwords.",
                 )
                 finding.evidence_refs = await self._capture(evidence, finding)
@@ -517,9 +534,18 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
             finding = Finding(
                 module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.8,
                 endpoint=login_endpoint, user_role="unauthenticated",
-                request_raw=f"POST {login_endpoint.url}\n{username_param}={username}&{password_param}=***",
+                # Unmasked on purpose -- see the sibling JSON-login
+                # branch above for why: `password` is drawn from the
+                # public `credential_pairs` wordlist, not a secret, and
+                # masking it here is what broke the Burp evidence-
+                # capture replay (`stof/engine/burp_capture.py` parses
+                # this exact string to rebuild the request it resends;
+                # a literal "***" replayed as the actual password
+                # correctly gets rejected, contradicting this finding's
+                # own real accepted-login result).
+                request_raw=f"POST {login_endpoint.url}\n{username_param}={username}&{password_param}={password}",
                 response_raw=f"HTTP {status}, {preview}",
-                description=f"The default/common credential pair '{username}' / a well-known weak password was accepted by the discovered HTML login form at '{login_endpoint.url}'.",
+                description=f"The default/common credential pair '{username}'/'{password}' was accepted by the discovered HTML login form at '{login_endpoint.url}'.",
                 recommendation="Remove every default/sample account before deployment, and enforce a password policy that rejects common passwords.",
             )
             finding.evidence_refs = await self._capture(evidence, finding)
@@ -568,9 +594,13 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 finding = Finding(
                     module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.8,
                     endpoint=_synthetic_endpoint(self.config.login_json_endpoint, "POST"), user_role="unauthenticated",
-                    request_raw=f'POST {self.config.login_json_endpoint}\nContent-Type: application/json\n\n{{"username": "{username}", "password": "***"}} (fingerprinted: {matched_vendor})',
+                    # Unmasked -- `password` is drawn from
+                    # `_VENDOR_DEFAULT_CREDENTIALS`, a public,
+                    # documented wordlist, same reasoning as
+                    # `_technique_default_credentials` above.
+                    request_raw=f'POST {self.config.login_json_endpoint}\nContent-Type: application/json\n\n{{"username": "{username}", "password": "{password}"}} (fingerprinted: {matched_vendor})',
                     response_raw=f"HTTP {status}, {preview}",
-                    description=f"The target fingerprints as '{matched_vendor}', and its documented default credential pair '{username}'/a known default password was accepted.",
+                    description=f"The target fingerprints as '{matched_vendor}', and its documented default credential pair '{username}'/'{password}' was accepted.",
                     recommendation=f"Change '{matched_vendor}'s default credentials immediately, or disable the default account entirely.",
                 )
                 finding.evidence_refs = await self._capture(evidence, finding)
@@ -609,9 +639,12 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                     finding = Finding(
                         module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.1,
                         endpoint=_synthetic_endpoint(login_url, "POST"), user_role="unauthenticated",
-                        request_raw=f'POST {login_url}\nContent-Type: application/json\n\n{{"username": "{username}", "password": "***"}}',
+                        # Unmasked -- `password` is drawn from the
+                        # public `credential_pairs` wordlist, same
+                        # reasoning as `_technique_default_credentials`.
+                        request_raw=f'POST {login_url}\nContent-Type: application/json\n\n{{"username": "{username}", "password": "{password}"}}',
                         response_raw=f"HTTP {status}, {preview}",
-                        description=f"The admin interface at '{admin_url}' accepted the default credential pair '{username}'/a well-known weak password.",
+                        description=f"The admin interface at '{admin_url}' accepted the default credential pair '{username}'/'{password}'.",
                         recommendation="Remove default admin accounts and restrict admin interfaces to a trusted network.",
                     )
                     finding.evidence_refs = await self._capture(evidence, finding)
@@ -797,6 +830,17 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
         if not accepted:
             return self._result(test_id, tid, technique, vuln_type, PASS, f"'{candidate}' was rejected by the password-change endpoint (HTTP {status})")
 
+        # A real password change just happened -- track it before
+        # anything else runs, so even a crash between here and the
+        # revert in `finally` below still leaves an accurate ledger
+        # entry (the whole point of persisting at write-time, not
+        # batching at scan end).
+        cleanup_entry_id = self._register_cleanup(
+            tid, kind="password_change", identifier=self.config.test_role or "unknown",
+            endpoint_url=self.config.change_password_url, role=self.config.test_role,
+            metadata={"probe": "weak_password_policy"},
+        )
+
         # Accepted a weak password -- this IS the finding, PROVIDED the
         # acceptance is real. Revert immediately regardless of what
         # happens next, so the account doesn't stay on a weak password
@@ -837,6 +881,9 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                     f"COULD NOT REVERT test account '{self.config.test_username}' password after weak-password-policy "
                     f"probe (HTTP {revert_status}) -- it may now be set to '{candidate}'. Manual intervention required."
                 )
+                self._mark_cleanup_result(cleanup_entry_id, REVERT_FAILED, f"revert POST returned HTTP {revert_status} -- account may still be on the probe password")
+            else:
+                self._mark_cleanup_result(cleanup_entry_id, REVERTED, "password reverted to its original configured value")
 
     async def _change_password(self, context, new_password: str, current_password: str) -> tuple[bool, int]:
         """Two request shapes attempted, since REST APIs disagree on
@@ -929,6 +976,10 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
 
         original = self.config.test_current_password
         probe = "TempReuseProbe!99"
+        # Must exist before `try` -- `finally` below references it on
+        # EVERY exit path, including the one where step1 itself fails
+        # and nothing was ever actually planted/changed yet.
+        cleanup_entry_id = None
         try:
             # original -> probe -> original -> probe again (should be
             # rejected as an immediately-previous password if the
@@ -936,6 +987,15 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
             step1, _ = await self._change_password(context, probe, original)
             if not step1:
                 return self._result(test_id, tid, technique, vuln_type, "ERROR", "setup step (original -> probe) itself failed -- can't test reuse prevention")
+            # Real state change just happened -- track it before the
+            # rest of this multi-step dance runs, so a crash anywhere
+            # in the remaining steps still leaves an accurate ledger
+            # entry covering the whole sequence's final `finally` revert.
+            cleanup_entry_id = self._register_cleanup(
+                tid, kind="password_change", identifier=self.config.test_role or "unknown",
+                endpoint_url=self.config.change_password_url, role=self.config.test_role,
+                metadata={"probe": "previous_password_reuse"},
+            )
             step2, _ = await self._change_password(context, original, probe)
             if not step2:
                 _log.error(f"COULD NOT REVERT test account '{self.config.test_username}' after reuse-check setup -- it may now be '{probe}'. Manual intervention required.")
@@ -972,6 +1032,9 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                     f"COULD NOT REVERT test account '{self.config.test_username}' password after the "
                     f"previous-password-reuse probe (HTTP {revert_status}) -- it may now be '{probe}'. Manual intervention required."
                 )
+                self._mark_cleanup_result(cleanup_entry_id, REVERT_FAILED, f"final revert POST returned HTTP {revert_status} -- account may still be on the probe password")
+            else:
+                self._mark_cleanup_result(cleanup_entry_id, REVERTED, "password reverted to its original configured value")
 
     # --- TC-027 Weak Password Change/Reset --------------------------------
 
@@ -1001,6 +1064,14 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
         if not accepted:
             return self._result(test_id, tid, technique, vuln_type, PASS, f"change request without a 'current' password was rejected (HTTP {status})")
 
+        # A real password change just happened -- track it before
+        # anything else runs.
+        cleanup_entry_id = self._register_cleanup(
+            tid, kind="password_change", identifier=self.config.test_role or "unknown",
+            endpoint_url=self.config.change_password_url, role=self.config.test_role,
+            metadata={"probe": "change_without_current_password"},
+        )
+
         try:
             confirmed = await self._confirm_password_works(context, probe_password)
             if confirmed is False:
@@ -1014,7 +1085,12 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
             finding = Finding(
                 module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.1,
                 endpoint=_synthetic_endpoint(self.config.change_password_url, "GET"), user_role=self.config.test_role,
-                request_raw=f"GET {self.config.change_password_url}?new=***&repeat=*** (no 'current' password param)",
+                # Unmasked -- `probe_password` is STOF's own hardcoded
+                # literal ("TempProbe!2468"), not a secret; it's already
+                # printed unmasked in this technique's own PASS-path
+                # detail text above, so masking it only here was
+                # inconsistent, not protective.
+                request_raw=f"GET {self.config.change_password_url}?new={probe_password}&repeat={probe_password} (no 'current' password param)",
                 response_raw=f"HTTP {status} -- accepted",
                 description=f"{confirmation_note}The password-change endpoint accepted a new password with no current-password parameter supplied at all, letting a hijacked session lock the real owner out permanently.",
                 recommendation="Always require and verify the current password (or a freshly-issued step-up credential) before accepting a new one.",
@@ -1029,6 +1105,9 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                     f"COULD NOT REVERT test account '{self.config.test_username}' password after the "
                     f"no-current-password-required probe (HTTP {revert_status}) -- it may now be '{probe_password}'. Manual intervention required."
                 )
+                self._mark_cleanup_result(cleanup_entry_id, REVERT_FAILED, f"revert POST returned HTTP {revert_status} -- account may still be on the probe password")
+            else:
+                self._mark_cleanup_result(cleanup_entry_id, REVERTED, "password reverted to its original configured value")
 
     async def _technique_reset_enumeration(self, endpoints, session_pool, evidence) -> TestCaseResult:
         test_id, tid = "TC-027", "TC-027.5"
@@ -1319,6 +1398,14 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
         if confirmed is False:
             return None  # accepted at the HTTP layer but didn't actually take effect on the victim account
 
+        # A real password change on the VICTIM account just took effect
+        # -- track it before anything else runs.
+        cleanup_entry_id = self._register_cleanup(
+            tid, kind="password_change", identifier=self.config.victim_email,
+            endpoint_url=self.config.change_password_url, role=self.config.test_role,
+            metadata={"probe": "horizontal_password_change", "target_field": target_field},
+        )
+
         try:
             confirmation_note = (
                 "CONFIRMED: logging in as the victim account with the new password succeeded. " if confirmed is True else
@@ -1327,7 +1414,14 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
             finding = Finding(
                 module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.8,
                 endpoint=_synthetic_endpoint(self.config.change_password_url, "GET"), user_role=self.config.test_role,
-                request_raw=f"GET/POST {self.config.change_password_url} with current=*** (attacker's own), new=***, {target_field}={self.config.victim_email!r}",
+                # `current` stays masked -- `test_current_password` is
+                # the operator's real configured test-account secret
+                # (from users.json), not a public wordlist value, so it
+                # must never be persisted to a report per this project's
+                # own "credentials never in code/reports" rule. `new` IS
+                # unmasked: `probe_password` is STOF's own hardcoded
+                # literal ("TargetProbe!3579"), not a secret.
+                request_raw=f"GET/POST {self.config.change_password_url} with current=*** (attacker's own), new={probe_password}, {target_field}={self.config.victim_email!r}",
                 response_raw=f"HTTP {status} -- accepted",
                 description=(
                     f"{confirmation_note}Authenticated as '{self.config.test_role}', supplying a '{target_field}' parameter "
@@ -1351,6 +1445,9 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                     f"COULD NOT REVERT victim test account '{self.config.victim_email}' password after the "
                     f"horizontal-password-change probe (HTTP {revert_status}) -- it may now be '{probe_password}'. Manual intervention required."
                 )
+                self._mark_cleanup_result(cleanup_entry_id, REVERT_FAILED, f"revert POST returned HTTP {revert_status} -- victim account may still be on the probe password")
+            else:
+                self._mark_cleanup_result(cleanup_entry_id, REVERTED, "victim account password reverted to its original configured value")
 
     # --- TC-132 Weak Security Question/Answer (WSTG-AUTHN-09) -----------
 

@@ -1,0 +1,11 @@
+{
+  "name": "OWASP Juice Shop",
+  "target": "http://192.168.1.73:3001",
+  "expected_findings": [
+    {
+      "technique_id": "TC-022.1",
+      "endpoint_pattern": "/rest/user/login",
+      "description": "demo/demo default credentials accepted -- live-verified 2026-09-10: POST /rest/user/login with email=demo&password=demo returns HTTP 200 with a real, usable JWT (independently confirmed by replaying the issued token against GET /rest/basket/6)."
+    }
+  ]
+}

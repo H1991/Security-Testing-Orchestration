@@ -181,6 +181,27 @@ async def capture_via_burp(
     if method_lower not in _SUPPORTED_METHODS:
         _log.warning(f"finding '{finding.finding_id}': unsupported method '{method}' for Burp capture -- skipping")
         return None
+    # Real bug this guards against: a technique that deliberately masks
+    # a genuine secret in `request_raw` (e.g. an operator's real
+    # configured test-account password -- never a public wordlist value,
+    # those are unmasked on purpose) has that masked placeholder parsed
+    # out and sent HERE as the literal, non-functional string -- which
+    # then correctly gets rejected by the target, producing a captured
+    # "evidence" response that flatly contradicts the finding's own real
+    # result. A human reviewer (or an end user replaying the captured
+    # request in Burp) has no way to tell "this specific replay used a
+    # masked placeholder" from "this finding is a false positive" --
+    # eroding trust in a true positive. Skip the replay outright rather
+    # than silently produce evidence that lies about the outcome; the
+    # technique's own `request_raw`/`response_raw` preview (already
+    # appended to the finding) remains the record of what actually
+    # happened.
+    if any(v.strip("*") == "" and v for v in params.values()):
+        _log.warning(
+            f"finding '{finding.finding_id}': request_raw contains a masked ('***') credential value -- "
+            "skipping Burp capture rather than replaying a non-functional placeholder as if it were real"
+        )
+        return None
 
     headers = _browser_like_headers(url)
     headers.update(_session_auth_headers(session))

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from stof.auth.base import AuthProvider
+from stof.cleanup import registry as cleanup_registry
 from stof.config.schema import UserConfig
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
@@ -13,7 +14,6 @@ from stof.modules.results import ERROR, FAIL, NOT_IMPLEMENTED, PASS, SKIPPED
 from stof.session.models import Session
 from stof.session.session_manager import SessionManager
 from stof.session.session_store import SessionStore
-
 
 # ---------------------------------------------------------------------------
 # _looks_form_authenticated -- JSON API login responses (e.g. this
@@ -109,7 +109,15 @@ async def test_default_credentials_fails_when_a_pair_is_accepted(tmp_path):
     by_id = {r.technique_id: r for r in results}
     assert by_id["TC-022.1"].status == FAIL
     assert by_id["TC-022.1"].finding is not None
-    assert "***" in by_id["TC-022.1"].finding.request_raw  # password never logged in plaintext
+    # Deliberately UNMASKED, not `***`: `password` here is drawn from
+    # `credential_pairs`, a public, hardcoded wordlist -- not a secret.
+    # Masking it previously broke the Burp evidence-capture replay
+    # (which parses `request_raw` to rebuild the request it resends):
+    # the literal string "***" got resent as the actual password and
+    # correctly got rejected, contradicting this finding's own real
+    # accepted-login result and undermining trust in a true positive.
+    assert "admin" in by_id["TC-022.1"].finding.request_raw
+    assert "***" not in by_id["TC-022.1"].finding.request_raw
 
 
 @pytest.mark.asyncio
@@ -299,6 +307,49 @@ async def test_weak_password_accepted_fails_and_reverts(tmp_path):
     assert len(abc12_calls) == 2  # set to "abc12", then revert back to "oldpw"
     assert abc12_calls[0]["new"] == "abc12"
     assert abc12_calls[1] == {"current": "abc12", "new": "oldpw", "repeat": "oldpw"}
+
+
+@pytest.mark.asyncio
+async def test_weak_password_accept_and_revert_is_tracked_in_cleanup_registry(tmp_path):
+    """Real, previously-unaddressed gap this closes: the password
+    change this technique performs is a real write against the target
+    -- track it, and record whether the technique's own existing revert
+    (already correct before this change) actually succeeded."""
+    session_manager = _session_manager(tmp_path, {"normal": Session(user_id="u", role="normal", auth_type="form_login")})
+    context = AsyncMock()
+
+    async def fake_get(url, params=None, max_redirects=0):
+        return _response(200, "ok")
+
+    context.request.get = AsyncMock(side_effect=fake_get)
+    pool = _pool_with_context(context)
+    config = AuthTestConfig(
+        change_password_url="https://x/rest/user/change-password", test_role="normal",
+        test_current_password="oldpw", allow_state_changing_probes=True,
+    )
+    module = AuthTestsModule(config=config)
+
+    cleanup_registry.configure(scan_id="scan-auth-1", db_path=tmp_path / "cleanup.db")
+    try:
+        result = await module._try_weak_password_change(
+            session_manager, pool, evidence=None, candidate="abc12",
+            test_id="TC-025", tid="TC-025.1", technique="Short password (<8 chars) accepted",
+        )
+        assert result.status == FAIL
+
+        rows = cleanup_registry.summary_for_current_scan()
+        assert len(rows) == 1
+        assert rows[0]["module_id"] == "auth_tests"
+        assert rows[0]["technique_id"] == "TC-025.1"
+        assert rows[0]["kind"] == "password_change"
+        assert rows[0]["identifier"] == "normal"
+        # The fake `_change_password` calls in this test always return
+        # accepted=True (HTTP 200), so the `finally` revert also
+        # "succeeds" at the HTTP layer -- REVERTED, not REVERT_FAILED.
+        assert rows[0]["cleanup_status"] == cleanup_registry.REVERTED
+    finally:
+        cleanup_registry._registry = None
+        cleanup_registry._scan_id = None
 
 
 @pytest.mark.asyncio

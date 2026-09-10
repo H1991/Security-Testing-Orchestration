@@ -110,14 +110,34 @@ class TestCaptureViaBurp:
         request_context.dispose = AsyncMock()
         pw = _playwright_with_context(request_context)
 
-        finding = _finding("POST https://target.example/doLogin\nuid=\"' OR '1'='1'-- -\"&passw=***")
+        finding = _finding("POST https://target.example/doLogin\nuid=\"' OR '1'='1'-- -\"&passw=irrelevant")
         result = await capture_via_burp(pw, "http://127.0.0.1:8080", finding)
 
         assert result is not None
         request_context.post.assert_awaited_once()
         _, call_kwargs = request_context.post.await_args
-        assert call_kwargs["form"] == {"uid": "' OR '1'='1'-- -", "passw": "***"}
+        assert call_kwargs["form"] == {"uid": "' OR '1'='1'-- -", "passw": "irrelevant"}
         assert "uid=' OR '1'='1'-- -" in result[0]
+
+    @pytest.mark.asyncio
+    async def test_skips_replay_when_request_raw_still_carries_a_masked_credential(self):
+        """Regression: a masked `***` placeholder baked into request_raw
+        used to get parsed out and sent as the literal, non-functional
+        replay value -- producing a captured "evidence" response that
+        legitimately rejects (since `***` isn't the real credential) and
+        flatly contradicts the finding's own real result. That eroded
+        trust in a true positive (a real end-user report). Must skip
+        the replay outright instead of lying about the outcome."""
+        request_context = AsyncMock()
+        request_context.post = AsyncMock(return_value=_response(status=200, text="ok"))
+        request_context.dispose = AsyncMock()
+        pw = _playwright_with_context(request_context)
+
+        finding = _finding("POST https://target.example/doLogin\nemail=demo&password=***")
+        result = await capture_via_burp(pw, "http://127.0.0.1:8080", finding)
+
+        assert result is None
+        request_context.post.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unparseable_request_raw_returns_none(self):

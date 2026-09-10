@@ -390,6 +390,15 @@ class BusinessLogicTestsModule(VulnModule):
                     _log.warning(f"reserved-username probe failed for {registration_endpoint.url} ({username!r}): {exc}")
                     continue
                 if _looks_like_signup_success(resp.status, body) and len(body) >= self.config.min_content_length:
+                    # A real account was just created with this reserved
+                    # username -- track it so the report is honest about
+                    # what this scan left behind. `username` is already
+                    # the unique identifier this technique's own oracle
+                    # uses; no second marker invented just for cleanup.
+                    self._register_cleanup(
+                        tid, kind="account", identifier=username, endpoint_url=registration_endpoint.url,
+                        role="unauthenticated", metadata={"reserved_username": username},
+                    )
                     finding = Finding(
                         module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
                         endpoint=registration_endpoint, user_role="unauthenticated",
@@ -435,6 +444,14 @@ class BusinessLogicTestsModule(VulnModule):
 
         signed_up = _looks_like_signup_success(resp.status, body) and len(body) >= self.config.min_content_length
         role_echoed = f'"{role_param}"' in body.replace(" ", "").lower() and elevated_value.lower() in body.lower()
+        if signed_up:
+            # A real account was created here regardless of whether the
+            # elevated role was actually honored (PASS or FAIL below) --
+            # track it either way.
+            self._register_cleanup(
+                tid, kind="account", identifier=username, endpoint_url=registration_endpoint.url,
+                role="unauthenticated", metadata={"role_param": role_param, "requested_value": elevated_value},
+            )
         if signed_up and role_echoed:
             finding = Finding(
                 module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.6,

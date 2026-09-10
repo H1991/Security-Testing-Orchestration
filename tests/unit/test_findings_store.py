@@ -86,6 +86,16 @@ def test_finding_db_handles_a_finding_with_no_technique_id_or_classification(tmp
     assert loaded.owasp_category is None
 
 
+def test_finding_db_round_trips_fingerprint(tmp_path):
+    db = FindingDB(db_path=tmp_path / "stof.db")
+    finding = _finding(finding_id="f1", fingerprint="abc123def4567890")
+
+    db.save("scan-1", [finding])
+    loaded = db.load_scan("scan-1")[0]
+
+    assert loaded.fingerprint == "abc123def4567890"
+
+
 def test_finding_db_migrates_a_table_created_before_these_columns_existed(tmp_path):
     """Regression: `CREATE TABLE IF NOT EXISTS` is a no-op against an
     already-created table, so a pre-existing data/stof.db from before

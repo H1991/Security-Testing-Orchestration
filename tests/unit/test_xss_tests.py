@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from stof.auth.base import AuthProvider
+from stof.cleanup import registry as cleanup_registry
 from stof.config.schema import UserConfig
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
@@ -491,6 +492,45 @@ async def test_stored_xss_fails_when_plant_and_verify_both_succeed(tmp_path):
     # technique above -- this technique's own description says "never
     # rendered in a real browser to confirm actual script execution".
     assert result.finding.confidence == "likely"
+
+
+@pytest.mark.asyncio
+async def test_stored_xss_plant_is_tracked_in_the_cleanup_registry(tmp_path):
+    """Real, previously-unaddressed gap this closes: a stored-XSS plant
+    is a real POST against a real target -- it must be tracked so the
+    scan report is honest about what this run left behind, even though
+    STOF has no generic, safe way to delete it afterward."""
+    endpoints = _stored_xss_endpoints()
+    session_manager = _session_manager(tmp_path, {
+        "normal": Session(user_id="u", role="normal", auth_type="form_login"),
+        "admin": Session(user_id="a", role="admin", auth_type="form_login"),
+    })
+    module = XssTestsModule(config=XssTestConfig(allow_state_changing_probes=True))
+
+    def fake_post(url, form=None, max_redirects=0):
+        return _response(200, "Thank you for your feedback")
+
+    def fake_get(url, max_redirects=0):
+        return _response(200, "ok")  # verify never finds a reflection -- irrelevant to whether the plant itself is tracked
+
+    context = _fake_context(get_side_effect=fake_get, post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+
+    cleanup_registry.configure(scan_id="scan-xss-1", db_path=tmp_path / "cleanup.db")
+    try:
+        result = await module._technique_stored_xss(endpoints, session_manager, pool, evidence=None)
+
+        assert result.status == PASS  # the plant succeeded even though verify found nothing
+        rows = cleanup_registry.summary_for_current_scan()
+        assert len(rows) == 1
+        assert rows[0]["module_id"] == "xss_tests"
+        assert rows[0]["technique_id"] == "TC-128.4"
+        assert rows[0]["kind"] == "planted_content"
+        assert rows[0]["identifier"] == module._marker
+        assert rows[0]["cleanup_status"] == cleanup_registry.NOT_ATTEMPTED
+    finally:
+        cleanup_registry._registry = None
+        cleanup_registry._scan_id = None
 
 
 @pytest.mark.asyncio

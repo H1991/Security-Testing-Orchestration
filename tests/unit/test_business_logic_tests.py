@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from stof.auth.base import AuthProvider
+from stof.cleanup import registry as cleanup_registry
 from stof.config.schema import UserConfig
 from stof.crawler.endpoint_store import Endpoint
 from stof.engine.multi_session import SessionPool
@@ -239,6 +240,36 @@ async def test_reserved_username_fails_when_signup_accepted():
     assert result.status == FAIL
     assert result.finding is not None
     assert result.finding.severity == "Medium"
+
+
+@pytest.mark.asyncio
+async def test_reserved_username_signup_is_tracked_in_cleanup_registry(tmp_path):
+    """Real, previously-unaddressed gap this closes: a successful
+    reserved-username registration creates a real account -- track it,
+    identified by the same reserved username the technique's own
+    oracle already uses."""
+    def fake_post(url, form=None, max_redirects=0):
+        return _response(201, "<html>Account created successfully, welcome to the site!</html>")
+
+    context = _fake_context(post_side_effect=fake_post)
+    pool = _pool_with_context(context)
+    module = BusinessLogicTestsModule(config=BusinessLogicTestConfig(allow_state_changing_probes=True))
+
+    cleanup_registry.configure(scan_id="scan-buslogic-1", db_path=tmp_path / "cleanup.db")
+    try:
+        result = await module._technique_reserved_username([_reg_endpoint()], pool, evidence=None)
+        assert result.status == FAIL
+
+        rows = cleanup_registry.summary_for_current_scan()
+        assert len(rows) == 1
+        assert rows[0]["module_id"] == "business_logic_tests"
+        assert rows[0]["technique_id"] == "TC-135.1"
+        assert rows[0]["kind"] == "account"
+        assert rows[0]["role"] == "unauthenticated"
+        assert rows[0]["cleanup_status"] == cleanup_registry.NOT_ATTEMPTED
+    finally:
+        cleanup_registry._registry = None
+        cleanup_registry._scan_id = None
 
 
 @pytest.mark.asyncio

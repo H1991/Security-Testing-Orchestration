@@ -38,6 +38,8 @@ from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
 from stof.auth import AssistedLoginProvider, FormLoginProvider, JWTAuthProvider
+from stof.bench import score_false_positives, score_recall
+from stof.cleanup import registry as cleanup_registry
 from stof.config import ConfigError, load_config, load_dotenv, load_users
 from stof.core import rate_limiter
 from stof.core.console import DEFAULT_LOG_DIR, ScanConsole, attach_file_logging, detach_file_logging
@@ -54,9 +56,10 @@ from stof.engine.burp_controller import BurpApiError, BurpController
 from stof.engine.multi_session import SessionPool
 from stof.engine.playwright_engine import PlaywrightEngine
 from stof.evidence import EvidenceCollector
+from stof.findings.baseline import compute_diff, find_baseline_scan_id
 from stof.findings.burp_normalizer import normalize_burp_issues
 from stof.findings.models import Finding
-from stof.findings.store import write_findings
+from stof.findings.store import FindingDB, write_findings
 from stof.modules.auth_tests import AuthTestConfig, AuthTestsModule
 from stof.modules.business_logic_tests import BusinessLogicTestConfig, BusinessLogicTestsModule
 from stof.modules.cache_tests import CacheTestConfig, CacheTestsModule
@@ -504,6 +507,34 @@ def crawl(config_path: str, users_path: str, role: str | None, output_path: str,
     never crawls on its own, it only reads whatever this last wrote."""
     exit_code = asyncio.run(_run_crawl(config_path, users_path, role, output_path, max_depth, max_pages, headless))
     raise SystemExit(exit_code)
+
+
+@cli.command()
+@click.option("--report", "report_path", required=True, type=click.Path(exists=True), help="JSON report from a scan of the KNOWN-VULNERABLE benchmark target (data/reports/scan_<id>.json).")
+@click.option("--manifest", "manifest_path", required=True, type=click.Path(exists=True), help="Ground-truth manifest (see benchmarks/README.md) naming what SHOULD be found.")
+@click.option("--clean-report", "clean_report_path", default=None, type=click.Path(exists=True), help="Optional JSON report from a scan of a KNOWN-CLEAN target (same vuln classes, none of them real) -- every finding in it is a false positive.")
+def bench(report_path: str, manifest_path: str, clean_report_path: str | None) -> None:
+    """Scores a scan's report against a benchmark manifest -- recall
+    (of the vulnerabilities the manifest says are really there, how
+    many did STOF catch) and, with --clean-report, false-positive rate
+    (of what STOF claimed to find against a target known to have none
+    of them, how many were wrong). See `stof/bench/score.py`'s own
+    docstring for why these are two separate numbers, not one."""
+    report = json.loads(Path(report_path).read_text(encoding="utf-8"))
+    manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+
+    recall_score = score_recall(report, manifest)
+    click.echo(f"[BENCH] {recall_score.manifest_name} ({recall_score.target})")
+    click.echo(f"[BENCH] Recall: {len(recall_score.detected)}/{recall_score.expected_total} ({recall_score.recall:.0%})")
+    for item in recall_score.missed:
+        click.echo(f"[BENCH]   MISSED: {item['technique_id']} @ {item['endpoint_pattern']} -- {item.get('description', '')}")
+
+    if clean_report_path:
+        clean_report = json.loads(Path(clean_report_path).read_text(encoding="utf-8"))
+        fp_score = score_false_positives(clean_report)
+        click.echo(f"[BENCH] False positives against clean target ({fp_score.target}): {fp_score.false_positive_count}")
+        for fp in fp_score.false_positives:
+            click.echo(f"[BENCH]   FALSE POSITIVE: {fp['technique_id']} ({fp['vuln_type']}) @ {fp['endpoint_url']}")
 
 
 def _chromium_installed() -> bool:
@@ -1212,6 +1243,12 @@ async def _run_test(
             providers={"form_login": login_provider, "jwt": jwt_provider},
             store=session_store,
         )
+        # As early as possible, same rationale as the rate limiter's own
+        # `configure()` call above -- every state-changing technique
+        # calls `self._register_cleanup(...)` (see `stof/cleanup/
+        # registry.py`) the moment it performs a real write, so the
+        # registry must be configured before any module runs.
+        cleanup_registry.configure(scan_id=scan_id, db_path=Path("data") / "stof.db")
 
         headless = config.browser.headless if headless_override is None else headless_override
 
@@ -1440,6 +1477,12 @@ async def _run_test(
         # reports (already scan-id-namespaced) survived untouched.
         write_findings(all_findings, path=Path("data") / "findings" / f"scan_{scan_id}.json")
         write_findings(all_findings, path=Path("data") / "findings.json")
+        # SQLite mirror, same `data/stof.db` every other store already
+        # uses -- this is the cross-scan lookup baseline/diff mode reads
+        # from below (`FindingDB.load_scan()`); it previously had no
+        # writer wired in anywhere (see its own docstring).
+        finding_db = FindingDB(db_path=Path("data") / "stof.db")
+        finding_db.save(scan_id, all_findings)
 
         if module_rows:
             console.summary_table(module_rows)
@@ -1453,6 +1496,14 @@ async def _run_test(
         coverage = _coverage_funnel(endpoint_list, vuln_results, all_findings)
 
         reports_dir = output_override or config.output.reports_dir
+        # Looked up BEFORE this scan's own report is written below --
+        # `find_baseline_scan_id` reads existing `scan_*.json` report
+        # files under `reports_dir`, so this scan's own (not yet
+        # written) report can never accidentally match itself.
+        baseline_scan_id = find_baseline_scan_id(config.target.base_url, scan_id, reports_dir=reports_dir)
+        baseline_findings = finding_db.load_scan(baseline_scan_id) if baseline_scan_id else []
+        baseline_diff = compute_diff(baseline_findings, all_findings, baseline_scan_id)
+
         scan_metadata = {
             "scan_id": scan_id,
             "target": config.target.base_url,
@@ -1461,6 +1512,8 @@ async def _run_test(
             "duration_seconds": duration,
             "coverage": coverage,
             "skipped_techniques": skipped_techniques(vuln_results),
+            "cleanup": cleanup_registry.summary_for_current_scan(),
+            "baseline_diff": baseline_diff.to_dict(),
         }
         report_paths = generate_reports(
             all_findings, scan_metadata, output_dir=reports_dir,

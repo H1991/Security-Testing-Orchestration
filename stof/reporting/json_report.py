@@ -76,6 +76,8 @@ def build_report(
         "summary": build_summary(findings),
         "coverage": scan_metadata.get("coverage"),
         "skipped_techniques": scan_metadata.get("skipped_techniques", []),
+        "cleanup": scan_metadata.get("cleanup", []),
+        "baseline_diff": scan_metadata.get("baseline_diff"),
         "findings": [f.to_dict() for f in findings],
     }
     if recon_report is not None:

@@ -807,6 +807,10 @@ class SqliTestsModule(VulnModule):
             plant_probe = await send_probe(plant_context, plant_endpoint, params, location)
             if plant_probe is None:
                 continue
+            self._register_cleanup(
+                tid, kind="planted_content", identifier=payload_value, endpoint_url=plant_endpoint.url,
+                role=self.config.low_priv_role, metadata={"field": plant_field},
+            )
             for verify_endpoint in verify_candidates:
                 verify_probe = await self._probe_get(verify_context, verify_endpoint.url)
                 if verify_probe is None:

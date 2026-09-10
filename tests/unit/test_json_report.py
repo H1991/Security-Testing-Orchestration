@@ -189,6 +189,32 @@ def test_build_report_skipped_techniques_defaults_to_empty_list():
     assert report["skipped_techniques"] == []
 
 
+def test_build_report_includes_cleanup_from_metadata():
+    cleanup = [{"technique_id": "TC-128.4", "kind": "planted_content", "identifier": "stofxss1234", "cleanup_status": "not_attempted"}]
+
+    report = build_report([], {"cleanup": cleanup})
+
+    assert report["cleanup"] == cleanup
+
+
+def test_build_report_cleanup_defaults_to_empty_list():
+    report = build_report([], {})
+    assert report["cleanup"] == []
+
+
+def test_build_report_includes_baseline_diff_from_metadata():
+    baseline_diff = {"baseline_scan_id": "scan-prev", "new_count": 2, "resolved_count": 1, "unchanged_count": 5, "new": [], "resolved": []}
+
+    report = build_report([], {"baseline_diff": baseline_diff})
+
+    assert report["baseline_diff"] == baseline_diff
+
+
+def test_build_report_baseline_diff_defaults_to_none():
+    report = build_report([], {})
+    assert report["baseline_diff"] is None
+
+
 def test_write_persists_recon_report(tmp_path):
     recon = {"target": "https://x", "pages_analyzed": 3}
     path = write([], {"scan_id": "abc"}, tmp_path / "report.json", recon_report=recon)

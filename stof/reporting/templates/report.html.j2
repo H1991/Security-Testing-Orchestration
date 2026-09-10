@@ -72,6 +72,17 @@
   .skipped-technique { background: var(--card); border: 1px solid var(--border); border-left: 6px solid var(--muted); border-radius: 8px; padding: 10px 16px; font-size: 13px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
   .skipped-technique .id { font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
   .skipped-technique .reason { color: var(--muted); font-size: 12.5px; width: 100%; }
+  .cleanup-items { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+  .cleanup-item { background: var(--card); border: 1px solid var(--border); border-left: 6px solid var(--muted); border-radius: 8px; padding: 10px 16px; font-size: 13px; display: flex; justify-content: space-between; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+  .cleanup-item.status-reverted { border-left-color: var(--low); }
+  .cleanup-item.status-revert_failed { border-left-color: var(--critical); }
+  .cleanup-item .id { font-weight: 700; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .cleanup-item .status { text-transform: uppercase; font-size: 11px; font-weight: 700; letter-spacing: .03em; }
+  .cleanup-item .detail { color: var(--muted); font-size: 12.5px; width: 100%; }
+  .baseline-banner { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 18px; margin-bottom: 18px; display: flex; gap: 20px; align-items: baseline; flex-wrap: wrap; font-size: 13.5px; }
+  .baseline-banner .stat { font-weight: 700; }
+  .baseline-banner .stat.new { color: var(--critical); }
+  .baseline-banner .stat.resolved { color: var(--low); }
   code.inline { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 12px; background: #eef2f7; border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
 </style>
 </head>
@@ -92,6 +103,15 @@
   </div>
 </header>
 <main>
+  {% if baseline_diff and baseline_diff.baseline_scan_id %}
+  <div class="baseline-banner">
+    <span>Compared against previous scan <code class="inline">{{ baseline_diff.baseline_scan_id }}</code> of this target:</span>
+    <span class="stat new">{{ baseline_diff.new_count }} new</span>
+    <span class="stat resolved">{{ baseline_diff.resolved_count }} resolved</span>
+    <span>{{ baseline_diff.unchanged_count }} unchanged</span>
+  </div>
+  {% endif %}
+
   <div class="summary">
     <div class="card total"><div class="n">{{ summary.total_findings }}</div><div class="label">Total</div></div>
     <div class="card critical"><div class="n">{{ summary.by_severity.Critical }}</div><div class="label">Critical</div></div>
@@ -187,6 +207,27 @@
       <span class="id">{{ s.technique_id }}</span>
       <span>{{ s.technique }}</span>
       <span class="reason">{{ s.reason }}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if cleanup %}
+  <h2 class="section-title">Real Writes This Scan Made ({{ cleanup | length }})</h2>
+  <div class="section-clean" style="margin-bottom: 10px;">
+    Every state-changing technique that ran (planting stored content, creating an account,
+    changing a password, ...) is listed below with what it created and whether it was reverted
+    afterward. Most planted content has no generic, safe way for STOF to remove it automatically
+    -- "not attempted" means it is still on the target and should be reviewed/removed manually.
+  </div>
+  <div class="cleanup-items">
+    {% for c in cleanup %}
+    <div class="cleanup-item status-{{ c.cleanup_status }}">
+      <span class="id">{{ c.technique_id }}</span>
+      <span>{{ c.kind }}: {{ c.identifier }}</span>
+      {% if c.endpoint_url %}<span>{{ c.endpoint_url }}</span>{% endif %}
+      <span class="status">{{ c.cleanup_status | replace("_", " ") }}</span>
+      <span class="detail">{{ c.cleanup_detail }}</span>
     </div>
     {% endfor %}
   </div>

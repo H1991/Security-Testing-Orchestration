@@ -553,6 +553,16 @@ class XssTestsModule(VulnModule):
             plant_probe = await send_probe(plant_context, plant_endpoint, params, location)
             if plant_probe is None:
                 continue
+            # A real POST just succeeded -- this planted content into
+            # `plant_field` regardless of whether verify below confirms
+            # it reflects unencoded anywhere. `self._marker` is already
+            # the unique identifier embedded in `payload`; track it now,
+            # not only if this candidate later becomes the FAIL finding,
+            # since every candidate tried here is a real write.
+            self._register_cleanup(
+                tid, kind="planted_content", identifier=self._marker, endpoint_url=plant_endpoint.url,
+                role=self.config.low_priv_role, metadata={"field": plant_field, "payload": payload},
+            )
             for verify_endpoint in verify_candidates:
                 verify_probe = await self._probe_get(verify_context, verify_endpoint.url)
                 if verify_probe is None:
@@ -651,6 +661,10 @@ class XssTestsModule(VulnModule):
             probe = await send_probe(plant_context, plant_endpoint, params, location)
             if probe is not None:
                 sent.append((plant_endpoint, plant_field, callback_url))
+                self._register_cleanup(
+                    tid, kind="planted_content", identifier=marker, endpoint_url=plant_endpoint.url,
+                    role=self.config.low_priv_role, metadata={"field": plant_field, "payload": payload},
+                )
 
         if not sent:
             return self._result(tid, technique, SKIPPED, "every candidate plant request failed to send", vuln_type=vuln_type)

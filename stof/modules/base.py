@@ -56,6 +56,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
+from stof.cleanup import mark_cleanup_result, record_planted_state
 from stof.core.logger import get_logger
 from stof.core.rate_limiter import throttled
 
@@ -165,6 +166,37 @@ class VulnModule(ABC):
                 _log.warning(f"transient error authenticating role '{role}' (attempt {attempt + 1}/{attempts}), retrying: {exc}")
                 await asyncio.sleep(1.0)
         raise last_exc  # unreachable: the loop either returns or raises
+
+    def _register_cleanup(
+        self, technique_id: str, kind: str, identifier: str,
+        endpoint_url: "str | None" = None, role: "str | None" = None,
+        metadata: "dict | None" = None,
+    ) -> "str | None":
+        """Every state-changing technique (gated behind
+        `allow_state_changing_probes`) calls this right after its real
+        write succeeds -- see `stof/cleanup/registry.py`'s own docstring
+        for why this exists. `identifier` should be whatever unique
+        marker/username/value the technique already generated for its
+        own detection oracle (every write-verb technique in this
+        codebase already builds one); do not invent a second one just
+        for cleanup tracking. A no-op (returns `None`, never raises)
+        when no scan is currently configured for cleanup tracking (e.g.
+        a unit test constructing this module directly) -- every
+        existing technique keeps working unchanged either way."""
+        return record_planted_state(
+            module_id=self.module_id, technique_id=technique_id, kind=kind, identifier=identifier,
+            endpoint_url=endpoint_url, role=role, metadata=metadata,
+        )
+
+    def _mark_cleanup_result(self, entry_id: "str | None", status: str, detail: str) -> None:
+        """Companion to `_register_cleanup` for a technique that DOES
+        have a real, already-implemented revert path (e.g.
+        `auth_tests.py`'s password-change probes reverting in their own
+        `finally` block) -- call this with the outcome so it's visible
+        in the report. `entry_id` is whatever `_register_cleanup`
+        returned (may be `None` if cleanup tracking wasn't configured,
+        in which case this is a silent no-op)."""
+        mark_cleanup_result(entry_id, status, detail)
 
     async def _probe_get(self, context, url: str, **kwargs) -> "tuple[int, str] | None":
         """The try/GET/read-body/except-log-continue shape duplicated

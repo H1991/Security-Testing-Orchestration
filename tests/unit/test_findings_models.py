@@ -65,7 +65,7 @@ def test_to_dict_matches_claude_md_documented_field_order():
         # shape (same "extends, never reorders" precedent every other
         # additive Finding/Endpoint field in this project already
         # follows) -- see Finding.technique_id's own docstring.
-        "technique_id", "cwe", "owasp_category", "confidence", "cvss_vector", "confirmed_role",
+        "technique_id", "cwe", "owasp_category", "confidence", "cvss_vector", "confirmed_role", "fingerprint",
     ]
 
 
@@ -184,5 +184,5 @@ def test_finding_construction_accepts_every_valid_confidence_tier(confidence):
 
 
 def test_finding_construction_raises_on_invalid_confidence():
-    with pytest.raises(ValueError, match="confirmed.*likely.*tentative|tentative.*likely.*confirmed"):
+    with pytest.raises(ValueError, match=r"confirmed.*likely.*tentative|tentative.*likely.*confirmed"):
         _finding(confidence="probably")

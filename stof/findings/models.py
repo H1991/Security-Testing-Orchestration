@@ -128,6 +128,24 @@ class Finding:
     # real authenticated identity worth replaying alongside `user_role`,
     # not just the one that first observed the distinct content.
     confirmed_role: str | None = None
+    # Stable cross-scan identity -- `None` until `extract_findings()`
+    # stamps it in (see `stof.findings.fingerprint.compute_fingerprint`),
+    # the same "stamped centrally, not at each of the ~130 `Finding(...)`
+    # call sites" precedent `technique_id`/`cwe`/`cvss_vector` already
+    # set. Deliberately built from only the parts of a finding that
+    # identify WHAT was found and WHERE (technique, endpoint method,
+    # normalized URL path, role) -- never from `finding_id` (a fresh
+    # random uuid every run), `discovered_at` (a timestamp), or anything
+    # in `description`/`response_raw` that can carry a run's own random
+    # marker. Two findings from two different scans of the same target,
+    # technique, endpoint, and role hash identically -- that's the whole
+    # point: it's what a baseline/diff report needs to say "this is the
+    # SAME finding as last scan" instead of double-counting it as new
+    # every single run, a real, previously-unaddressed gap (`Finding`
+    # never had ANY notion of cross-scan identity before this field
+    # existed) flagged by external review as the prerequisite for CI
+    # baseline-diff usability.
+    fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         # Only for STOF's own findings -- a Burp-imported finding
@@ -187,6 +205,7 @@ class Finding:
             "confidence": self.confidence,
             "cvss_vector": self.cvss_vector,
             "confirmed_role": self.confirmed_role,
+            "fingerprint": self.fingerprint,
         }
 
     @classmethod
@@ -214,6 +233,7 @@ class Finding:
             confidence=data.get("confidence", "confirmed"),
             cvss_vector=data.get("cvss_vector"),
             confirmed_role=data.get("confirmed_role"),
+            fingerprint=data.get("fingerprint"),
         )
 
     def to_row(self) -> dict[str, Any]:
@@ -241,6 +261,7 @@ class Finding:
             "confidence": self.confidence,
             "cvss_vector": self.cvss_vector,
             "confirmed_role": self.confirmed_role,
+            "fingerprint": self.fingerprint,
         }
 
     @classmethod
@@ -268,4 +289,5 @@ class Finding:
             confidence=row.get("confidence") or "confirmed",
             cvss_vector=row.get("cvss_vector"),
             confirmed_role=row.get("confirmed_role"),
+            fingerprint=row.get("fingerprint"),
         )

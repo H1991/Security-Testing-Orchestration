@@ -80,7 +80,8 @@ class FindingDB:
                     owasp_category TEXT,
                     confidence TEXT,
                     cvss_vector TEXT,
-                    confirmed_role TEXT
+                    confirmed_role TEXT,
+                    fingerprint TEXT
                 )
                 """
             )
@@ -89,14 +90,16 @@ class FindingDB:
             # these columns existed -- `CREATE TABLE IF NOT EXISTS`
             # above is a no-op against an already-created table, so an
             # older on-disk data/stof.db needs them added explicitly.
-            # Never actually hit in production yet (this table has no
-            # writer wired into main.py/server.py as of this change),
-            # but a stale local test DB from earlier development could
-            # still have the old shape.
+            # `fingerprint` (stable cross-scan identity, see
+            # `stof.findings.fingerprint`) is the one this table's own
+            # writer now actually needs at query time (baseline-diff
+            # lookups filter/group by it), unlike the others which were
+            # historically write-only.
             existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(findings)")}
-            for column in ("technique_id", "cwe", "owasp_category", "confidence", "cvss_vector", "confirmed_role"):
+            for column in ("technique_id", "cwe", "owasp_category", "confidence", "cvss_vector", "confirmed_role", "fingerprint"):
                 if column not in existing_cols:
                     conn.execute(f"ALTER TABLE findings ADD COLUMN {column} TEXT")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint)")
 
     def save(self, scan_id: str, findings: list[Finding]) -> None:
         with self._connect() as conn:
@@ -106,12 +109,12 @@ class FindingDB:
                                        cvss_score, endpoint, user_role, request_raw, response_raw,
                                        evidence_refs, description, recommendation, discovered_at,
                                        scanner_source, technique_id, cwe, owasp_category, confidence, cvss_vector,
-                                       confirmed_role)
+                                       confirmed_role, fingerprint)
                 VALUES (:scan_id, :finding_id, :module_id, :vuln_type, :severity,
                          :cvss_score, :endpoint, :user_role, :request_raw, :response_raw,
                          :evidence_refs, :description, :recommendation, :discovered_at,
                          :scanner_source, :technique_id, :cwe, :owasp_category, :confidence, :cvss_vector,
-                         :confirmed_role)
+                         :confirmed_role, :fingerprint)
                 """,
                 [{"scan_id": scan_id, **f.to_row()} for f in findings],
             )
