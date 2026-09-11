@@ -191,6 +191,101 @@
     font-family: var(--sans); font-weight: 700; font-size: 14px;
   }
   body.nav-expanded .mark-monogram { display: none; }
+
+  /* ---------------------------------------------------------------- PIN login gate ("vault") --
+     Two-pane safe-dial sign-in, approved as a design preview before this
+     integration (NuSummit-branded artifact) -- reuses STOF's own live
+     design tokens throughout (--bg/--surface/--border/--accent/...) so it
+     matches the rest of the console instead of shipping a second palette.
+     Namespaced `pv-` to avoid any collision with the console's own
+     `.card`/`.status`/`.slot`-shaped class names used elsewhere. */
+  .pin-gate { position: fixed; inset: 0; z-index: 500; display: flex; background: var(--bg); }
+  .pv-stage {
+    flex: 1.1; min-width: 380px; position: relative; display: none;
+    flex-direction: column; justify-content: space-between;
+    padding: 36px 42px; border-right: 1px solid var(--border); background: var(--bg);
+  }
+  @media (min-width: 860px) { .pv-stage { display: flex; } }
+  .pv-stage-top { display: flex; align-items: center; gap: 12px; }
+  .pv-stage-top img { height: 20px; width: auto; display: block; filter: invert(1); } /* logo asset is solid white, made for the dark sidebar -- inverted here for the light PIN-gate ground */
+  .pv-stage-div { width: 1px; height: 18px; background: var(--border); }
+  .pv-stage-tag { font-family: var(--mono); font-size: 10.5px; font-weight: 600; letter-spacing: 0.14em; color: var(--text-faint); text-transform: uppercase; }
+  .pv-dial-zone { display: flex; flex-direction: column; align-items: center; gap: 18px; }
+  #pvDialSvg { width: min(40vh, 360px); height: auto; display: block; filter: drop-shadow(0 20px 40px rgba(31,42,51,.10)); }
+  .pv-dial-pips { display: flex; gap: 6px; }
+  .pv-dial-pips i { width: 22px; height: 3px; border-radius: 2px; background: var(--border); transition: background .2s; }
+  .pv-dial-pips i.on { background: var(--accent); }
+  .pv-readout { font-family: var(--mono); font-size: 11px; font-weight: 500; letter-spacing: 0.1em; color: var(--text-faint); display: flex; gap: 7px; align-items: center; }
+  .pv-readout b { color: var(--text); font-weight: 600; min-width: 30px; text-align: right; display: inline-block; }
+  .pv-stage-bottom { font-family: var(--mono); font-size: 10.5px; font-weight: 500; letter-spacing: 0.08em; color: var(--text-faint); text-transform: uppercase; }
+
+  .pv-panel { flex: 1; display: flex; align-items: center; justify-content: center; padding: 28px 20px; }
+  .pv-mobile-brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; }
+  @media (min-width: 860px) { .pv-mobile-brand { display: none; } }
+  .pv-mobile-brand img { height: 18px; width: auto; filter: invert(1); }
+
+  .pin-card { width: 100%; max-width: 372px; padding: 30px 28px 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .pv-eyebrow { font-family: var(--mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em; color: var(--accent-text); text-transform: uppercase; margin-bottom: 8px; }
+  .pin-card h1 { font-size: 19px; font-weight: 700; letter-spacing: -0.01em; margin-bottom: 6px; }
+  .pin-sub { font-size: 12.5px; color: var(--text-faint); line-height: 1.5; }
+
+  .pv-identity { display: flex; align-items: center; gap: 11px; margin-top: 18px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-2); }
+  .pv-identity .av { width: 36px; height: 36px; border-radius: 9px; background: var(--accent); color: #fff; font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center; flex: none; font-family: var(--sans); }
+  .pv-identity .who b { font-size: 13px; display: block; }
+  .pv-identity .who span { font-size: 11.5px; color: var(--text-faint); }
+
+  .pv-slots-row { display: flex; gap: 9px; align-items: stretch; margin-top: 20px; }
+  .pv-slots { display: flex; gap: 8px; flex: 1; }
+  .pv-slot {
+    position: relative; flex: 1; height: 54px; border-radius: 10px;
+    background: var(--surface-2); border: 1.5px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 22px; font-weight: 700; color: var(--text);
+    transition: border-color .18s, transform .18s, color .18s, opacity .2s;
+  }
+  .pv-slot.is-active { border-color: var(--accent); transform: translateY(-2px); }
+  .pv-slot.is-filled { border-color: var(--border-strong, var(--text-faint)); }
+  .pv-slot.is-active:not(.is-filled)::after {
+    content: ""; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 2px; height: 20px; border-radius: 2px; background: var(--accent); animation: pvBlink 1.1s steps(2) infinite;
+  }
+  @keyframes pvBlink { 50% { opacity: 0; } }
+  .pv-slots.pv-err .pv-slot { border-color: var(--critical); color: var(--critical); }
+  .pv-slots.pv-ok .pv-slot { border-color: var(--accent); color: var(--accent); }
+  .pv-slots.pv-dim .pv-slot { opacity: .35; }
+  .pv-slots-row.pv-shake { animation: pvShake .45s; }
+  @keyframes pvShake { 0%,100%{transform:translateX(0)} 15%{transform:translateX(-7px)} 30%{transform:translateX(6px)} 45%{transform:translateX(-4px)} 60%{transform:translateX(3px)} 75%{transform:translateX(-2px)} }
+  .pv-peek { width: 36px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-2); color: var(--text-faint); display: flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }
+  .pv-peek:hover { color: var(--text); border-color: var(--accent); }
+  .pv-peek svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.8; fill: none; }
+
+  .pv-status { display: flex; align-items: center; gap: 8px; min-height: 20px; margin-top: 12px; font-size: 12.5px; color: var(--text-faint); }
+  .pv-status.pv-err { color: var(--critical); }
+  .pv-status.pv-ok { color: var(--accent-text); }
+  .pv-attempts { margin-left: auto; display: flex; gap: 4px; align-items: center; font-family: var(--mono); font-size: 10.5px; color: var(--text-faint); }
+  .pv-attempts i { width: 12px; height: 4px; border-radius: 2px; background: var(--accent); }
+  .pv-attempts i.off { background: var(--border); }
+
+  .pv-lockbar { margin-top: 14px; border: 1px solid rgba(199,51,73,.28); background: var(--critical-soft); border-radius: 12px; padding: 12px 14px; }
+  .pv-lockbar-top { display: flex; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 600; color: var(--critical); }
+  .pv-lockbar-time { font-family: var(--mono); font-size: 24px; font-weight: 700; color: var(--text); margin: 6px 0 8px; letter-spacing: 1px; }
+  .pv-lockbar-track { height: 5px; border-radius: 99px; background: rgba(199,51,73,.16); overflow: hidden; }
+  .pv-lockbar-track i { display: block; height: 100%; background: var(--critical); border-radius: 99px; width: 100%; transition: width 1s linear; }
+
+  .pin-keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
+  .pin-keypad button { height: 48px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); color: var(--text); font-family: var(--mono); font-size: 17px; font-weight: 600; cursor: pointer; transition: transform .06s, border-color .15s, background .15s; }
+  .pin-keypad button:hover:not(:disabled) { background: var(--surface); border-color: var(--accent); }
+  .pin-keypad button:active:not(:disabled), .pin-keypad button.pv-pressing { transform: scale(0.955); border-color: var(--accent); }
+  .pin-key-blank { visibility: hidden; cursor: default; }
+  .pin-keypad.pv-disabled button { opacity: .35; pointer-events: none; }
+  .pin-error { font-size: 12.5px; color: var(--critical); background: var(--critical-soft); border-radius: 8px; padding: 8px 10px; margin-top: 14px; text-align: left; }
+  .pin-error[hidden] { display: none; }
+  .pv-foot { display: flex; align-items: center; margin-top: 16px; }
+  .pv-foot button { font-size: 12.5px; font-weight: 600; color: var(--accent-text); background: none; border: none; cursor: pointer; padding: 2px 0; }
+  .pv-foot button:hover { text-decoration: underline; }
+  .pv-sound-btn { position: absolute; top: 16px; right: 16px; width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border); background: var(--surface); color: var(--text-faint); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .pv-sound-btn:hover { color: var(--text); border-color: var(--accent); }
+  .pv-sound-btn svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.8; fill: none; }
   .brand .mark {
     display: none; align-items: center; gap: 9px;
   }
@@ -1001,6 +1096,19 @@
   .field input::placeholder { color: var(--text-faint); }
   .form-actions { display: flex; justify-content: flex-end; padding-top: 4px; }
 
+  /* One role's identity block in the Credentials card -- a real
+     sub-card (border + radius) rather than flush with the rest of the
+     form, so N of them read as a repeatable list, not one long field
+     stack a tester has to visually segment themselves. */
+  .role-block { border: 1px solid var(--border); border-radius: 12px; padding: 14px; display: flex; flex-direction: column; gap: 12px; background: var(--surface-2); }
+  .role-block + .role-block { margin-top: -2px; }
+  .role-block-head { display: flex; align-items: center; gap: 10px; }
+  .role-block-head input.role-name {
+    flex: 1; font-family: var(--sans); font-size: 14px; font-weight: 700; padding: 8px 10px;
+    border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  }
+  .role-block-head .role-index { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); white-space: nowrap; }
+
   /* modal */
   .modal-backdrop { position: fixed; inset: 0; background: rgba(10, 14, 18, 0.5); display: none; align-items: center; justify-content: center; z-index: 50; }
   .modal-backdrop.open { display: flex; }
@@ -1428,6 +1536,99 @@
 </head>
 <body>
 
+<!-- PIN login gate -- hidden by default; shown by boot() only when
+     GET /api/auth/session reports {required:true, authenticated:false}.
+     Blocks nothing server-side beyond /api/* (see server.py's
+     _require_pin_session docstring for why the HTML shell itself is
+     never gated) -- this overlay is what keeps the rest of the console
+     from ever loading real data while it's up. -->
+<div class="pin-gate" id="pinGate" hidden>
+  <aside class="pv-stage">
+    <div class="pv-stage-top">
+      <img src="/nusummit-logo.svg" alt="NuSummit" />
+      <div class="pv-stage-div"></div>
+      <div class="pv-stage-tag">STOF Security Console</div>
+    </div>
+    <div class="pv-dial-zone">
+      <svg id="pvDialSvg" viewBox="0 0 400 400" aria-hidden="true">
+        <defs><path id="pvRingPath" d="M 200,84 A 116,116 0 1 1 199.99,84" fill="none"/></defs>
+        <circle cx="200" cy="200" r="196" fill="none" stroke="var(--border-strong, var(--border))" stroke-width="1.5"/>
+        <circle cx="200" cy="200" r="190" fill="none" stroke="var(--border)" stroke-width="1"/>
+        <g id="pvDial">
+          <circle cx="200" cy="200" r="182" fill="var(--surface)" stroke="var(--border)" stroke-width="1"/>
+          <g id="pvTicks"></g>
+          <g id="pvNums"></g>
+          <text font-family="var(--mono)" font-size="10.5" font-weight="600" letter-spacing="3" fill="var(--text-faint)"><textPath href="#pvRingPath" textLength="724" lengthAdjust="spacingAndGlyphs">NUSUMMIT &#183; STOF SECURITY TESTING ORCHESTRATION &#183; AUTHORIZED USE ONLY &#183;</textPath></text>
+          <circle cx="200" cy="200" r="120" fill="none" stroke="var(--border)" stroke-width="1"/>
+          <circle cx="200" cy="200" r="88" fill="none" stroke="var(--border-strong, var(--border))" stroke-width="1" stroke-dasharray="2 7"/>
+        </g>
+        <g id="pvNeedle" style="transform-box:view-box;transform-origin:200px 200px;">
+          <polygon points="200,36 191,12 209,12" fill="var(--accent)"/>
+        </g>
+        <circle cx="200" cy="200" r="56" fill="var(--surface-2)" stroke="var(--border-strong, var(--border))" stroke-width="1"/>
+        <circle id="pvHub" cx="200" cy="200" r="46" fill="var(--surface)" stroke="var(--border-strong, var(--border))" stroke-width="1.5"/>
+        <g id="pvLock">
+          <path id="pvShackle" d="M 189 192 v -8 a 11 11 0 0 1 22 0 v 8" fill="none" stroke="var(--text)" stroke-width="4.5" stroke-linecap="round" style="transform-box:view-box;transform-origin:189px 192px;transition:transform .5s cubic-bezier(.34,1.56,.64,1);"/>
+          <rect x="184" y="192" width="32" height="24" rx="3" fill="var(--surface-2)" stroke="var(--border-strong, var(--border))" stroke-width="1"/>
+          <circle cx="200" cy="200" r="3" fill="var(--accent)"/>
+          <rect x="198.75" y="200" width="2.5" height="6" rx="1.25" fill="var(--accent)"/>
+        </g>
+      </svg>
+      <div class="pv-dial-pips" id="pvPips"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="pv-readout">&#8736; <b id="pvDialRead">000</b>&#176;</div>
+    </div>
+    <div class="pv-stage-bottom">Authorized security testing only</div>
+  </aside>
+
+  <main class="pv-panel">
+    <div style="width:100%;max-width:372px;position:relative;">
+      <div class="pv-mobile-brand"><img src="/nusummit-logo.svg" alt="NuSummit" /><div class="pv-stage-tag">STOF Console</div></div>
+      <button type="button" class="pv-sound-btn" id="pvSoundBtn" aria-label="Toggle interface sounds"></button>
+      <div class="pin-card">
+        <p class="pv-eyebrow" id="pvEyebrow">Secure sign-in</p>
+        <h1 id="pvTitle">Enter workspace PIN</h1>
+        <p class="pin-sub" id="pinSub">This console is shared -- a 6-digit PIN keeps it from being wide open to anyone on the network.</p>
+
+        <div class="pv-identity">
+          <div class="av">H</div>
+          <div class="who"><b>Harish</b><span>Workspace admin &middot; shared console</span></div>
+        </div>
+
+        <div class="pv-slots-row" id="pvSlotsRow">
+          <div class="pv-slots" id="pvSlots" role="group" aria-label="6-digit PIN">
+            <div class="pv-slot"></div><div class="pv-slot"></div><div class="pv-slot"></div>
+            <div class="pv-slot"></div><div class="pv-slot"></div><div class="pv-slot"></div>
+          </div>
+          <button type="button" class="pv-peek" id="pvPeekBtn" aria-label="Show PIN"><svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg></button>
+        </div>
+
+        <div class="pv-status" id="pvStatus" aria-live="polite">
+          <span id="pvStatusText"></span>
+          <span class="pv-attempts" id="pvAttempts"></span>
+        </div>
+
+        <div class="pv-lockbar" id="pvLockbar" hidden>
+          <div class="pv-lockbar-top">Keypad locked &mdash; too many attempts</div>
+          <div class="pv-lockbar-time" id="pvLockTime">00:30</div>
+          <div class="pv-lockbar-track"><i id="pvLockFill"></i></div>
+        </div>
+
+        <div class="pin-keypad" id="pinKeypad">
+          <button type="button" data-k="1">1</button><button type="button" data-k="2">2</button><button type="button" data-k="3">3</button>
+          <button type="button" data-k="4">4</button><button type="button" data-k="5">5</button><button type="button" data-k="6">6</button>
+          <button type="button" data-k="7">7</button><button type="button" data-k="8">8</button><button type="button" data-k="9">9</button>
+          <button type="button" class="pin-key-blank" tabindex="-1" disabled></button><button type="button" data-k="0">0</button>
+          <button type="button" id="pinBackspace" aria-label="Backspace">&#9003;</button>
+        </div>
+        <div class="pin-error" id="pinError" hidden></div>
+        <div class="pv-foot">
+          <button type="button" id="pvForgotBtn">Forgot PIN?</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
 <div class="mouse-cursor cursor-outer" aria-hidden="true"></div>
 <div class="mouse-cursor cursor-inner" aria-hidden="true"></div>
 
@@ -1473,7 +1674,13 @@
       </div>
       <button type="button" class="icon-btn" id="activityBtn" title="Recent scan activity"><svg><use href="#i-bell"/></svg></button>
       <button type="button" class="icon-btn" id="helpBtn" title="About STOF"><svg><use href="#i-help"/></svg></button>
-      <div class="avatar" id="avatarChip" title="Local operator session &mdash; STOF has no multi-user auth system in this phase.">OP</div>
+      <div class="dl-menu-wrap">
+      <button type="button" class="avatar" id="avatarChip" title="Local operator session" style="border:none;cursor:default;">OP</button>
+      <div class="dl-menu" id="avatarMenu">
+        <a href="#" id="changePinLink">Change PIN&hellip;</a>
+        <a href="#" id="signOutLink">Sign out</a>
+      </div>
+    </div>
     </div>
   </div>
 
@@ -1934,54 +2141,15 @@
           <div class="card" id="settings-credentials" style="margin-bottom: 16px;">
             <div class="card-head"><h3>Credentials</h3><div class="meta">users.json + .env</div></div>
             <p class="card-desc">
-              Only got one account for this target? Leave the other role's fields blank, or click
-              <b>Remove</b> below if it's already configured — every module and Verify Login already
-              adapt to whatever's actually here, from one account up.
+              Most targets only hand you one account -- that's the normal case, not a gap to work
+              around. Add a second or third only if you actually have more than one (e.g. an admin
+              and a read-only account) — every module and Verify Login already adapt to whatever's
+              actually here, from one role up.
             </p>
             <form id="credentialsForm" class="form-body">
-              <div class="field">
-                <label>Admin username <button type="button" class="btn-link-remove" id="removeAdminBtn" hidden>Remove</button></label>
-                <input type="text" name="admin_username" autocomplete="off" placeholder="leave blank if this target has no admin account" />
-              </div>
-              <div class="field">
-                <label>Admin login method</label>
-                <select class="select" name="admin_auth_type" id="adminAuthType">
-                  <option value="form_login">Form login (auto-detected, no setup needed)</option>
-                  <option value="jwt">API token / JWT (no login form at all)</option>
-                </select>
-              </div>
-              <div class="field"><label id="adminPasswordLabel">Admin password <small>write-only, never shown back</small></label><input type="password" name="admin_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
-              <div class="field">
-                <label>Admin TOTP secret <small id="adminTotpStatus"></small>
-                  <button type="button" class="btn-link-remove" id="removeAdminTotpBtn" hidden>Remove</button>
-                </label>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                  <input type="password" name="admin_totp_secret" autocomplete="off" placeholder="only if this account needs an authenticator-app code to log in -- leave blank otherwise" style="flex: 1;" />
-                  <button type="button" class="btn" id="uploadAdminTotpQrBtn" style="white-space: nowrap; padding: 9px 14px; font-size: 13px;">Upload QR</button>
-                  <input type="file" id="adminTotpQrFile" accept="image/*" hidden />
-                </div>
-              </div>
-              <div class="field">
-                <label>Normal-user username <button type="button" class="btn-link-remove" id="removeNormalBtn" hidden>Remove</button></label>
-                <input type="text" name="normal_username" autocomplete="off" placeholder="leave blank if this target has no normal-user account" />
-              </div>
-              <div class="field">
-                <label>Normal-user login method</label>
-                <select class="select" name="normal_auth_type" id="normalAuthType">
-                  <option value="form_login">Form login (auto-detected, no setup needed)</option>
-                  <option value="jwt">API token / JWT (no login form at all)</option>
-                </select>
-              </div>
-              <div class="field"><label id="normalPasswordLabel">Normal-user password <small>write-only, never shown back</small></label><input type="password" name="normal_password" autocomplete="new-password" placeholder="leave blank to keep unchanged" /></div>
-              <div class="field">
-                <label>Normal-user TOTP secret <small id="normalTotpStatus"></small>
-                  <button type="button" class="btn-link-remove" id="removeNormalTotpBtn" hidden>Remove</button>
-                </label>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                  <input type="password" name="normal_totp_secret" autocomplete="off" placeholder="only if this account needs an authenticator-app code to log in -- leave blank otherwise" style="flex: 1;" />
-                  <button type="button" class="btn" id="uploadNormalTotpQrBtn" style="white-space: nowrap; padding: 9px 14px; font-size: 13px;">Upload QR</button>
-                  <input type="file" id="normalTotpQrFile" accept="image/*" hidden />
-                </div>
+              <div id="rolesList"></div>
+              <div class="form-actions" style="justify-content: space-between;">
+                <button type="button" class="btn" id="addRoleBtn">+ Add another role</button>
               </div>
               <p style="margin: 0; font-size: 12px; color: var(--text-faint);">
                 TOTP secret comes from the account's 2FA-enrollment QR code -- scan it with any generic
@@ -2399,6 +2567,28 @@
         </div>
       </div>
 
+      <div class="card" style="max-width: 640px; margin-bottom: 16px;" id="settings-session">
+        <div class="card-head">
+          <span class="icon-chip" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></svg></span>
+          <h3>Session</h3>
+          <span class="settings-status" id="idleTimeoutStatus">Off</span>
+        </div>
+        <div class="card-body" style="padding: 16px 18px; display: flex; flex-direction: column; gap: 12px;">
+          <div style="font-size: 13px; color: var(--text-muted); line-height: 1.6;">
+            Sign everyone out of this console automatically after a period with no activity -- console
+            traffic only counts (a background poll from a browser tab left open doesn't reset the clock).
+            Applies only when a workspace PIN is configured; 0 turns it off.
+          </div>
+          <form id="idleTimeoutForm" class="form-body" style="padding: 0; gap: 10px;">
+            <div class="field" style="max-width: 240px;">
+              <label>Auto sign-out after <small>minutes, 0 = never</small></label>
+              <input type="number" id="idleTimeoutInput" min="0" max="1440" step="1" placeholder="0" />
+            </div>
+            <div class="form-actions" style="padding-top: 0;"><button type="submit" class="btn btn-primary">Save</button></div>
+          </form>
+        </div>
+      </div>
+
       <div class="card" style="max-width: 640px; margin-bottom: 16px;">
         <div class="card-head">
           <span class="icon-chip red" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M12 8v5"/><circle cx="12" cy="16" r="0.6" fill="currentColor" stroke="none"/></svg></span>
@@ -2608,6 +2798,32 @@
       <button class="btn" id="genericModalCancel">Cancel</button>
       <button class="btn btn-primary" id="genericModalOk">OK</button>
     </div>
+  </div>
+</div>
+
+<div class="modal-backdrop" id="changePinBackdrop">
+  <div class="modal">
+    <h3>Change workspace PIN</h3>
+    <p>Everyone sharing this console will need the new PIN next time they sign in -- your own session stays active.</p>
+    <form id="changePinForm">
+      <div class="field" style="margin-bottom: 12px;">
+        <label>Current PIN</label>
+        <input type="password" id="changePinCurrent" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" />
+      </div>
+      <div class="field" style="margin-bottom: 12px;">
+        <label>New PIN <small>6 digits</small></label>
+        <input type="password" id="changePinNew" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" />
+      </div>
+      <div class="field" style="margin-bottom: 4px;">
+        <label>Confirm new PIN</label>
+        <input type="password" id="changePinConfirm" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off" />
+      </div>
+      <div class="pin-error" id="changePinError" hidden></div>
+      <div class="modal-actions">
+        <button type="button" class="btn" id="changePinCancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="changePinSave">Save PIN</button>
+      </div>
+    </form>
   </div>
 </div>
 
@@ -2865,6 +3081,357 @@
     return ct.indexOf("application/json") !== -1 ? res.json() : res.text();
   }
 
+  // ---------------------------------------------------------------- PIN login gate
+  // GET /api/auth/session is one of the few routes exempt from the PIN
+  // middleware (see server.py) specifically so this check itself never
+  // needs a session to run. `api()` above already sends cookies (same-
+  // origin fetch default), so a valid stof_session cookie from a prior
+  // visit is picked up automatically with no extra plumbing here.
+  async function checkAuthAndBoot() {
+    var status;
+    try {
+      status = await api("/api/auth/session");
+    } catch (e) {
+      status = { required: false, authenticated: true }; // fail open to the same "no PIN configured" behavior rather than stranding the page on a network hiccup
+    }
+    if (status.required && !status.authenticated) {
+      showPinGate();
+      return;
+    }
+    document.getElementById("pinGate").hidden = true;
+    boot();
+  }
+  // ---------------------------------------------------------------- PIN vault: dial + sound
+  // Same rotary-dial mechanics as the approved NuSummit design preview --
+  // decorative only, driven entirely off `pv.pin` (never holds the PIN
+  // value itself beyond what's already in `pv.pin`). The actual auth
+  // check is still the plain POST /api/auth/login below; this is UI, not
+  // a second source of truth.
+  var pvSnd = {
+    ctx: null,
+    init: function () { if (!this.ctx) { try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} } },
+    tone: function (f, dur, type, vol, when) {
+      if (!pv.sound) return;
+      this.init(); if (!this.ctx) return;
+      when = when || 0;
+      try {
+        var t = this.ctx.currentTime + when, o = this.ctx.createOscillator(), g = this.ctx.createGain();
+        o.type = type; o.frequency.value = f;
+        g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+        o.connect(g); g.connect(this.ctx.destination); o.start(t); o.stop(t + dur + 0.02);
+      } catch (e) {}
+    },
+    tick: function () { this.tone(1550, 0.045, "square", 0.018); },
+    err: function () { this.tone(200, 0.14, "square", 0.05); this.tone(150, 0.2, "square", 0.05, 0.13); },
+    clunk: function () { this.tone(140, 0.09, "square", 0.06); this.tone(90, 0.14, "sine", 0.06, 0.05); },
+    ok: function () { this.tone(587, 0.1, "sine", 0.05); this.tone(880, 0.14, "sine", 0.05, 0.1); this.tone(1175, 0.22, "sine", 0.04, 0.22); }
+  };
+  document.addEventListener("pointerdown", function () { pvSnd.init(); }, { once: true });
+
+  var pvDial = {
+    angle: 0, steps: [], unwindT: null,
+    init: function () {
+      var t = "";
+      for (var i = 0; i < 100; i++) {
+        var a = (i * 3.6 - 90) * Math.PI / 180, major = i % 10 === 0;
+        var r1 = major ? 160 : 169, r2 = 180;
+        t += '<line x1="' + (200 + r1 * Math.cos(a)).toFixed(1) + '" y1="' + (200 + r1 * Math.sin(a)).toFixed(1) + '" x2="' + (200 + r2 * Math.cos(a)).toFixed(1) + '" y2="' + (200 + r2 * Math.sin(a)).toFixed(1) + '" stroke="var(--border-strong, var(--border))" stroke-width="' + (major ? 2.4 : 1.2) + '"/>';
+      }
+      document.getElementById("pvTicks").innerHTML = t;
+      var n = "";
+      for (var d = 0; d < 10; d++) {
+        var a2 = (d * 36 - 90) * Math.PI / 180, r = 146;
+        n += '<text x="' + (200 + r * Math.cos(a2)).toFixed(1) + '" y="' + (200 + r * Math.sin(a2) + 5).toFixed(1) + '" text-anchor="middle" font-family="var(--mono)" font-size="15" font-weight="600" fill="var(--text-faint)">' + d + "</text>";
+      }
+      document.getElementById("pvNums").innerHTML = n;
+    },
+    readout: function () { document.getElementById("pvDialRead").textContent = String(Math.abs(((this.angle % 360) + 360) % 360 | 0)).padStart(3, "0"); },
+    go: function (delta) { this.angle += delta; document.getElementById("pvDial").style.transform = "rotate(" + this.angle + "deg)"; this.readout(); },
+    push: function (d, i) { var step = (i % 2 === 0 ? 1 : -1) * (d * 36 + 360); this.steps.push(step); this.go(step); },
+    pop: function () { var s = this.steps.pop(); if (s != null) this.go(-s); },
+    unwind: function () {
+      clearInterval(this.unwindT);
+      var self = this;
+      this.unwindT = setInterval(function () {
+        if (!self.steps.length) { clearInterval(self.unwindT); return; }
+        self.pop();
+      }, 45);
+    },
+    clear: function () { clearInterval(this.unwindT); this.steps = []; this.settle(); },
+    settle: function () { var t = Math.round(this.angle / 360) * 360; this.go(t - this.angle); },
+    spin: function () { this.go(720); }
+  };
+  pvDial.init();
+
+  var pv = { pin: [], reveal: [], busy: false, locked: false, peek: false, sound: true, lockIv: null };
+  try { pv.sound = localStorage.getItem("stof.pinGateSound") !== "0"; } catch (e) {}
+  function pvPaintSound() {
+    var btn = document.getElementById("pvSoundBtn");
+    btn.innerHTML = pv.sound
+      ? '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a9 9 0 0 1 0 14"/></svg>'
+      : '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>';
+  }
+  pvPaintSound();
+  document.getElementById("pvSoundBtn").addEventListener("click", function () {
+    pv.sound = !pv.sound;
+    try { localStorage.setItem("stof.pinGateSound", pv.sound ? "1" : "0"); } catch (e) {}
+    pvPaintSound();
+    if (pv.sound) pvSnd.tick();
+  });
+
+  function pvPaintSlots() {
+    var slots = document.querySelectorAll("#pvSlots .pv-slot");
+    slots.forEach(function (el, i) {
+      var v = pv.pin[i];
+      el.classList.toggle("is-filled", v != null);
+      el.classList.toggle("is-active", i === pv.pin.length && !pv.busy && !pv.locked);
+      el.textContent = v == null ? "" : (pv.peek || pv.reveal[i] ? v : "•");
+    });
+    document.querySelectorAll("#pvPips i").forEach(function (p, i) { p.classList.toggle("on", i < pv.pin.length); });
+  }
+  function pvSetStatus(kind, msg) {
+    var el = document.getElementById("pvStatus");
+    el.className = "pv-status" + (kind ? " pv-" + kind : "");
+    document.getElementById("pvStatusText").textContent = msg;
+  }
+  function pvSetAttempts(remaining) {
+    var el = document.getElementById("pvAttempts");
+    if (remaining == null || remaining >= 5) { el.innerHTML = ""; return; }
+    var html = "";
+    for (var i = 0; i < 5; i++) html += "<i" + (i < remaining ? "" : ' class="off"') + "></i>";
+    el.innerHTML = html + "<span>" + remaining + " left</span>";
+  }
+  document.getElementById("pvPeekBtn").addEventListener("click", function () {
+    pv.peek = !pv.peek;
+    var btn = document.getElementById("pvPeekBtn");
+    btn.innerHTML = pv.peek
+      ? '<svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+      : '<svg viewBox="0 0 24 24"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
+    pvPaintSlots();
+  });
+  document.getElementById("pvForgotBtn").addEventListener("click", function () {
+    pvSetStatus("", "Ask Harish (workspace admin) to reset the PIN, or run “stof console change-pin” from the host.");
+  });
+
+  var pvRevT = [];
+  function pvFlashKey(k) {
+    var el = document.getElementById("pinKeypad").querySelector('[data-k="' + k + '"]');
+    if (!el) return;
+    el.classList.add("pv-pressing");
+    setTimeout(function () { el.classList.remove("pv-pressing"); }, 120);
+  }
+  function pinKeypadAppend(d) {
+    if (pv.busy || pv.locked || pv.pin.length >= 6) return;
+    var i = pv.pin.length;
+    pv.pin.push(d); pv.reveal[i] = true;
+    clearTimeout(pvRevT[i]);
+    pvRevT[i] = setTimeout(function () { pv.reveal[i] = false; if (!pv.peek) pvPaintSlots(); }, 300);
+    pvDial.push(Number(d), i);
+    pvSnd.tick();
+    pvFlashKey(String(d));
+    pvPaintSlots();
+    if (pv.pin.length === 6) { pv.busy = true; setTimeout(function () { pv.busy = false; pinSubmitVault(); }, 170); }
+  }
+  document.getElementById("pinKeypad").addEventListener("click", function (e) {
+    var btn = e.target.closest("button[data-k]");
+    if (btn) pinKeypadAppend(btn.dataset.k);
+  });
+  function pinBackspace() {
+    if (pv.busy || pv.locked || !pv.pin.length) return;
+    pv.pin.pop(); pv.reveal.length = pv.pin.length;
+    pvDial.pop(); pvSnd.tick(); pvFlashKey("del");
+    pvPaintSlots();
+  }
+  document.getElementById("pinBackspace").addEventListener("click", pinBackspace);
+  // Physical-keyboard digit entry, handled directly rather than relying
+  // on the browser's native text-editing + a post-hoc `input`-event
+  // sanitizer -- a reported real bug where typed digits sometimes
+  // didn't register at all. Explicit keydown handling for 0-9/Backspace/
+  // Enter (preventDefault, then append/trim via the exact same
+  // pinKeypadAppend()/pinBackspace() the on-screen keypad already uses
+  // and which is independently verified working) sidesteps whatever
+  // native-input quirk caused that, the same way a dedicated OTP-input
+  // component would, instead of trusting <input type="text"> to just
+  // work across every OS/browser/IME combination.
+  document.addEventListener("keydown", function (e) {
+    if (document.getElementById("pinGate").hidden) return;
+    if (e.key >= "0" && e.key <= "9") {
+      e.preventDefault();
+      pinKeypadAppend(e.key);
+    } else if (e.key === "Backspace") {
+      e.preventDefault();
+      pinBackspace();
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (pv.pin.length === 6 && !pv.busy && !pv.locked) pinSubmitVault();
+    }
+  });
+
+  function pvShowError(msg) {
+    var errEl = document.getElementById("pinError");
+    errEl.textContent = msg;
+    errEl.hidden = false;
+    var row = document.getElementById("pvSlotsRow"), slots = document.getElementById("pvSlots");
+    slots.classList.add("pv-err"); row.classList.add("pv-shake");
+    pvSnd.err();
+    setTimeout(function () { slots.classList.remove("pv-err"); row.classList.remove("pv-shake"); }, 520);
+    pvDial.unwind();
+  }
+  function pvResetPin() {
+    pv.pin = []; pv.reveal.length = 0; pv.busy = false;
+    pvPaintSlots();
+  }
+  function pvStartLockout(seconds) {
+    pv.locked = true;
+    pvResetPin();
+    document.getElementById("pvLockbar").hidden = false;
+    document.getElementById("pinKeypad").classList.add("pv-disabled");
+    document.getElementById("pvSlots").classList.add("pv-dim");
+    var t = seconds, fill = document.getElementById("pvLockFill"), timeEl = document.getElementById("pvLockTime");
+    function render() {
+      var m = Math.floor(t / 60), s = t % 60;
+      timeEl.textContent = String(m).padStart(2, "0") + ":" + String(s).padStart(2, "0");
+      fill.style.width = (t / seconds * 100) + "%";
+    }
+    render();
+    clearInterval(pv.lockIv);
+    pv.lockIv = setInterval(function () {
+      t--;
+      if (t <= 0) {
+        clearInterval(pv.lockIv);
+        pv.locked = false;
+        document.getElementById("pvLockbar").hidden = true;
+        document.getElementById("pinKeypad").classList.remove("pv-disabled");
+        document.getElementById("pvSlots").classList.remove("pv-dim");
+        pvSetStatus("", "Keypad unlocked -- please try again.");
+        return;
+      }
+      render();
+    }, 1000);
+  }
+  async function pinSubmitVault() {
+    var errEl = document.getElementById("pinError");
+    errEl.hidden = true;
+    var pinValue = pv.pin.join("");
+    pv.busy = true; pvPaintSlots();
+    document.getElementById("pvSlots").classList.add("pv-ok"); // optimistic dial spin while the request is in flight
+    pvDial.spin(); pvSnd.clunk();
+    try {
+      await api("/api/auth/login", { method: "POST", body: JSON.stringify({ pin: pinValue }) });
+      document.getElementById("pvSlots").classList.remove("pv-ok");
+      pvSnd.ok();
+      pvSetStatus("ok", "Access granted.");
+      document.getElementById("pinGate").hidden = true;
+      boot();
+    } catch (err) {
+      document.getElementById("pvSlots").classList.remove("pv-ok");
+      // api() throws "<status> <statusText>: <json body>" -- the real
+      // operator-facing message (remaining attempts, lockout seconds)
+      // is inside that JSON body's "detail" field, not the generic
+      // statusText, so it's worth the extra parse rather than showing
+      // "401 Unauthorized" verbatim.
+      var detail = err.message;
+      var jsonStart = err.message.indexOf("{");
+      if (jsonStart !== -1) {
+        try { detail = JSON.parse(err.message.slice(jsonStart)).detail || detail; } catch (parseErr) { /* keep the raw message */ }
+      }
+      var lockMatch = detail.match(/(?:locked for|try again in) (\d+)s/);
+      var remMatch = detail.match(/(\d+) attempt\(s\) remaining/);
+      pvShowError(detail);
+      setTimeout(pvResetPin, 470);
+      if (lockMatch) {
+        pvSetAttempts(0);
+        pvStartLockout(parseInt(lockMatch[1], 10));
+        pvSetStatus("err", "Too many attempts -- locked out.");
+      } else if (remMatch) {
+        pvSetAttempts(parseInt(remMatch[1], 10));
+        pvSetStatus("err", "Incorrect PIN -- " + remMatch[1] + " attempt(s) remaining.");
+      } else {
+        pvSetStatus("err", detail);
+      }
+    }
+  }
+  function showPinGate() {
+    var gate = document.getElementById("pinGate");
+    gate.hidden = false;
+    pv.pin = []; pv.reveal = []; pv.busy = false; pv.locked = false;
+    clearInterval(pv.lockIv);
+    document.getElementById("pvLockbar").hidden = true;
+    document.getElementById("pinKeypad").classList.remove("pv-disabled");
+    document.getElementById("pvSlots").classList.remove("pv-dim", "pv-err", "pv-ok");
+    document.getElementById("pinError").hidden = true;
+    pvDial.clear();
+    pvPaintSlots();
+    pvSetAttempts(null);
+    pvSetStatus("", "Enter your 6-digit PIN to unlock.");
+  }
+
+  // ---------------------------------------------------------------- account menu / sign out
+  document.getElementById("avatarChip").addEventListener("click", function (e) {
+    e.stopPropagation();
+    document.getElementById("avatarMenu").classList.toggle("open");
+  });
+  // Shared by the manual "Sign out" link and the idle-activity timer
+  // below -- same server call, same reload-to-the-PIN-gate result,
+  // just a different trigger. `reason` shows briefly as a toast before
+  // the reload so an idle-triggered sign-out doesn't look like the app
+  // just vanished out from under the operator.
+  async function performSignOut(reason) {
+    try { await api("/api/auth/logout", { method: "POST" }); } catch (err) { /* clear client state regardless */ }
+    if (reason) {
+      toast(reason);
+      setTimeout(function () { location.reload(); }, 1400);
+    } else {
+      location.reload();
+    }
+  }
+  document.getElementById("signOutLink").addEventListener("click", function (e) {
+    e.preventDefault();
+    performSignOut();
+  });
+
+  // ---------------------------------------------------------------- idle (inactivity) auto sign-out
+  // Client-side complement to the server-side enforcement in
+  // server.py's `_pin_session_valid` -- that's the real security
+  // control (works even if this tab's JS never runs again), this is
+  // the fast, friendly path: fires the moment the configured window
+  // elapses rather than waiting for the operator's next request to
+  // 401. Configured in Administration -> Session; 0/unset disables it.
+  var idleTimer = null;
+  var idleTimeoutMs = 0;
+  var idleListenersAttached = false;
+  var IDLE_ACTIVITY_EVENTS = ["mousemove", "keydown", "mousedown", "wheel", "touchstart", "scroll"];
+
+  function resetIdleTimer() {
+    if (!idleTimeoutMs) return;
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(function () {
+      performSignOut("Signed out after " + Math.round(idleTimeoutMs / 60000) + " minute(s) of inactivity");
+    }, idleTimeoutMs);
+  }
+  function armIdleTimer(minutes) {
+    idleTimeoutMs = (minutes || 0) > 0 ? minutes * 60 * 1000 : 0;
+    clearTimeout(idleTimer);
+    if (!idleTimeoutMs) return;
+    if (!idleListenersAttached) {
+      idleListenersAttached = true;
+      IDLE_ACTIVITY_EVENTS.forEach(function (evt) {
+        document.addEventListener(evt, resetIdleTimer, { passive: true });
+      });
+    }
+    resetIdleTimer();
+  }
+  async function initIdleTimer() {
+    try {
+      var status = await api("/api/auth/session");
+      armIdleTimer(status.idle_timeout_minutes || 0);
+    } catch (e) {
+      // Non-fatal -- worst case, auto sign-out just doesn't arm this
+      // session; the server-side enforcement (if configured) still
+      // applies to every real API call regardless.
+    }
+  }
+
   // ---------------------------------------------------------------- nav
   var navItems = document.querySelectorAll(".nav-item[data-panel]");
   navItems.forEach(function (btn) {
@@ -3087,6 +3654,32 @@ async function loadHealth() {
     await loadBurpConfig();
   }
 
+  // ---------------------------------------------------------------- Administration: idle auto sign-out
+  async function loadIdleTimeoutSetting() {
+    try {
+      var data = await api("/api/auth/idle-timeout");
+      document.getElementById("idleTimeoutInput").value = data.idle_timeout_minutes || 0;
+      setSettingsStatus("idleTimeoutStatus", !!data.idle_timeout_minutes, data.idle_timeout_minutes + " min", "Off");
+    } catch (e) {
+      // Not fatal -- most likely the PIN gate isn't configured at all
+      // (STOF_CONSOLE_PIN unset), in which case there's no session to
+      // auto-expire and this card is informational only.
+    }
+  }
+  document.getElementById("idleTimeoutForm").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var minutes = parseInt(document.getElementById("idleTimeoutInput").value, 10) || 0;
+    try {
+      var result = await api("/api/auth/idle-timeout", { method: "PUT", body: JSON.stringify({ idle_timeout_minutes: minutes }) });
+      document.getElementById("idleTimeoutInput").value = result.idle_timeout_minutes;
+      setSettingsStatus("idleTimeoutStatus", !!result.idle_timeout_minutes, result.idle_timeout_minutes + " min", "Off");
+      armIdleTimer(result.idle_timeout_minutes);
+      toast(result.idle_timeout_minutes ? "Auto sign-out set to " + result.idle_timeout_minutes + " minute(s)" : "Auto sign-out turned off");
+    } catch (err) {
+      toast("Could not save auto sign-out setting: " + err.message, true);
+    }
+  });
+
   async function loadBurpConfig() {
     try {
       var burp = await api("/api/config/burp");
@@ -3303,28 +3896,205 @@ async function loadHealth() {
     }
   });
 
+  // ---------------------------------------------------------------- Credentials: N free-text roles
+  // One role block per account, rendered from whatever /api/auth/roles
+  // actually reports (could be one, could be five) -- not a fixed
+  // admin/normal pair. A role's display name is only editable UNTIL
+  // it's first saved: renaming an already-saved role after the fact
+  // would either silently orphan its stored password/TOTP secret or
+  // require a remove+recreate the operator never asked for, so instead
+  // the name field locks (title explains why) and "Remove" + re-add is
+  // the supported way to rename one.
+  var roleBlockSeq = 0;
+
+  function roleBlockHtml(opts) {
+    var nameAttrs = opts.isSaved ? 'disabled title="Saved roles can\'t be renamed in place -- Remove this role and add it again under the new name."' : "";
+    var passwordPlaceholder = opts.passwordSet
+      ? "•••••••• already set -- leave blank to keep unchanged"
+      : (opts.authType === "jwt" ? "paste the bearer token" : "leave blank if this target has no such account");
+    var mfaChecked = opts.hasTotp ? " checked" : "";
+    var totpSectionStyle = opts.hasTotp ? "" : ' style="display:none;"';
+    return (
+      '<div class="role-block" data-client-key="' + opts.clientKey + '" data-original-role="' + (opts.isSaved ? escapeHtml(opts.role) : "") + '" data-original-has-totp="' + (opts.hasTotp ? "1" : "0") + '" data-password-set="' + (opts.passwordSet ? "1" : "0") + '">' +
+        '<div class="role-block-head">' +
+          '<input type="text" class="role-name" data-field="role" value="' + escapeHtml(opts.role || "") + '" placeholder="Role name (e.g. Admin, Support Agent)" ' + nameAttrs + ' />' +
+          '<button type="button" class="btn-link-remove" data-action="remove-role">Remove</button>' +
+        "</div>" +
+        '<div class="field"><label>Username</label><input type="text" data-field="username" autocomplete="off" value="' + escapeHtml(opts.username || "") + '" placeholder="leave blank if this target has no such account" /></div>' +
+        '<div class="field"><label>Login method</label><select class="select" data-field="auth_type">' +
+          '<option value="form_login"' + (opts.authType === "jwt" ? "" : " selected") + '>Form login (auto-detected, no setup needed)</option>' +
+          '<option value="jwt"' + (opts.authType === "jwt" ? " selected" : "") + '>API token / JWT (no login form at all)</option>' +
+        "</select></div>" +
+        '<div class="field"><label data-field-label="password">' + (opts.authType === "jwt" ? "API token" : "Password") + ' <small>write-only, never shown back</small></label>' +
+          '<input type="password" data-field="password" autocomplete="new-password" placeholder="' + passwordPlaceholder + '" /></div>' +
+        '<label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text); cursor:pointer;">' +
+          '<input type="checkbox" data-field="totp_enabled"' + mfaChecked + ' style="width:auto;" />' +
+          "This account needs an authenticator-app code (TOTP/MFA) to log in" +
+        "</label>" +
+        '<div class="field" data-totp-section' + totpSectionStyle + '><label>TOTP secret <small>' + (opts.hasTotp ? "configured" : "") + "</small></label>" +
+          '<div style="display:flex;gap:8px;align-items:center;">' +
+            '<input type="password" data-field="totp_secret" autocomplete="off" placeholder="' + (opts.hasTotp ? "leave blank to keep unchanged" : "paste the base32 secret from the enrollment QR code") + '" style="flex:1;" />' +
+            '<button type="button" class="btn" data-action="upload-totp-qr" style="white-space:nowrap;padding:9px 14px;font-size:13px;">Upload QR</button>' +
+            '<input type="file" data-field="totp_qr_file" accept="image/*" hidden />' +
+          "</div>" +
+        "</div>" +
+      "</div>"
+    );
+  }
+
+  function addRoleBlock(prefillRole) {
+    roleBlockSeq++;
+    var wrap = document.createElement("div");
+    wrap.innerHTML = roleBlockHtml({ clientKey: "new-" + roleBlockSeq, role: prefillRole || "", username: "", authType: "form_login", hasTotp: false, passwordSet: false, isSaved: false });
+    document.getElementById("rolesList").appendChild(wrap.firstElementChild);
+  }
+  document.getElementById("addRoleBtn").addEventListener("click", function () { addRoleBlock(""); });
+
+  function renderRoleBlocks(roles) {
+    var list = document.getElementById("rolesList");
+    list.innerHTML = roles.map(function (r) {
+      return roleBlockHtml({ clientKey: "saved-" + r.role, role: r.role, username: r.username, authType: r.auth_type, hasTotp: r.has_totp, passwordSet: r.password_set, isSaved: true });
+    }).join("");
+    if (!roles.length) {
+      // A brand-new target legitimately has zero accounts configured
+      // yet -- start with one empty, editable, "Admin"-defaulted block
+      // rather than an intimidating blank list with nothing to fill in.
+      addRoleBlock("Admin");
+    }
+  }
+
+  // Pre-fills the Credentials form from the active target PROFILE's own
+  // `roles` list (GET /api/targets), not GET /api/auth/roles -- that
+  // second endpoint reads config/users.json, which only ever contains a
+  // role once BOTH its username and password are set (a role missing
+  // either would otherwise get an unresolvable {{env:...}} token and
+  // break loading for every role in the file, not just itself -- see
+  // targets.py's user_entries() docstring). A role someone just typed a
+  // username for and hasn't added a password to yet is real, saved,
+  // in-progress data -- it must still show up here to edit, even though
+  // it isn't usable for a scan/Verify Login/Manual Session yet.
+  async function loadCredentialsFields() {
+    try {
+      var data = await api("/api/targets");
+      var active = data.targets.find(function (t) { return t.id === data.active_target_id; });
+      var roles = (active && active.roles || []).map(function (r) {
+        return { role: r.role, username: r.username, auth_type: r.auth_type, has_totp: r.totp_secret_set, password_set: r.password_set };
+      });
+      renderRoleBlocks(roles);
+    } catch (err) {
+      renderRoleBlocks([]); // non-fatal -- the form still works for entering fresh credentials
+    }
+  }
+
+  async function handleRemoveRoleClick(block) {
+    var originalRole = block.dataset.originalRole;
+    if (!originalRole) { block.remove(); return; } // never-saved block -- nothing server-side to remove yet
+    if (!activeTargetId) return;
+    var ok = await askConfirm(
+      "Remove '" + originalRole + "' account?",
+      "This target will then only be tested with whatever account(s) remain. You can re-add it later by filling in the fields again.",
+      true
+    );
+    if (!ok) return;
+    try {
+      await api("/api/targets/" + activeTargetId, { method: "PUT", body: JSON.stringify({ roles: [{ role: originalRole, remove: true }] }) });
+      toast("'" + originalRole + "' account removed");
+      loadCredentialsFields();
+      loadVerifyLoginRoles();
+      loadManualSessionRoles();
+    } catch (err) {
+      toast("Could not remove '" + originalRole + "': " + err.message, true);
+    }
+  }
+
+  // Decodes an uploaded 2FA-enrollment QR-code screenshot server-side
+  // (/api/auth/totp-qr) and drops the extracted secret straight into
+  // this block's TOTP field -- the operator still has to click "Save
+  // credentials" to persist it, same write-only-until-Save convention
+  // as every other field on this form; this only fills the input.
+  async function handleTotpQrFile(block, file) {
+    if (!file) return;
+    var fd = new FormData();
+    fd.append("file", file);
+    try {
+      var result = await api("/api/auth/totp-qr", { method: "POST", body: fd, headers: {} });
+      block.querySelector('[data-field="totp_secret"]').value = result.secret;
+      block.querySelector('[data-field="totp_enabled"]').checked = true;
+      block.querySelector("[data-totp-section]").style.display = "";
+      toast("TOTP secret read from QR code -- click Save credentials to apply it");
+    } catch (err) {
+      toast("Could not read QR code: " + err.message, true);
+    }
+  }
+
+  // Relabels the password field the moment the login-method dropdown
+  // changes -- "API token / JWT" means that field is no longer a real
+  // password (jwt_auth.py reads user.password as the raw bearer token).
+  // Placeholder stays "already set" once a password's actually been
+  // saved for this role, even after switching methods -- only a role
+  // that's never had one shows the method-specific hint text.
+  function updateRoleBlockPasswordLabel(block) {
+    var isJwt = block.querySelector('[data-field="auth_type"]').value === "jwt";
+    block.querySelector('[data-field-label="password"]').innerHTML = isJwt
+      ? "API token <small>write-only, never shown back</small>" : "Password <small>write-only, never shown back</small>";
+    if (block.dataset.passwordSet !== "1") {
+      block.querySelector('[data-field="password"]').placeholder = isJwt ? "paste the bearer token" : "leave blank if this target has no such account";
+    }
+  }
+
+  // The TOTP secret field/Upload-QR only matter once this account is
+  // actually flagged as MFA-enabled -- keeps the common (no MFA) case
+  // from showing an input that's never meant to be touched. Unchecking
+  // an account that DID have TOTP configured clears it on the next Save
+  // (see the submit handler below); the secret field itself is left
+  // blank rather than cleared so re-checking the box doesn't lose
+  // whatever was just typed.
+  function updateRoleBlockTotpVisibility(block) {
+    var enabled = block.querySelector('[data-field="totp_enabled"]').checked;
+    block.querySelector("[data-totp-section]").style.display = enabled ? "" : "none";
+  }
+
+  document.getElementById("rolesList").addEventListener("click", function (e) {
+    var block = e.target.closest(".role-block");
+    if (!block) return;
+    if (e.target.matches('[data-action="remove-role"]')) handleRemoveRoleClick(block);
+    else if (e.target.matches('[data-action="upload-totp-qr"]')) block.querySelector('[data-field="totp_qr_file"]').click();
+  });
+  document.getElementById("rolesList").addEventListener("change", function (e) {
+    var block = e.target.closest(".role-block");
+    if (!block) return;
+    if (e.target.matches('[data-field="auth_type"]')) updateRoleBlockPasswordLabel(block);
+    else if (e.target.matches('[data-field="totp_enabled"]')) updateRoleBlockTotpVisibility(block);
+    else if (e.target.matches('[data-field="totp_qr_file"]')) { handleTotpQrFile(block, e.target.files[0]); e.target.value = ""; }
+  });
+
   document.getElementById("credentialsForm").addEventListener("submit", async function (e) {
     e.preventDefault();
     if (!activeTargetId) { toast("Select or create a target application first", true); return; }
-    var f = e.target;
-    try {
-      await api("/api/targets/" + activeTargetId, {
-        method: "PUT",
-        body: JSON.stringify({
-          admin_username: f.admin_username.value.trim() || null,
-          admin_password: f.admin_password.value || null,
-          admin_auth_type: f.admin_auth_type.value,
-          admin_totp_secret: f.admin_totp_secret.value || null,
-          normal_username: f.normal_username.value.trim() || null,
-          normal_password: f.normal_password.value || null,
-          normal_auth_type: f.normal_auth_type.value,
-          normal_totp_secret: f.normal_totp_secret.value || null,
-        }),
+    var roles = [];
+    document.querySelectorAll("#rolesList .role-block").forEach(function (block) {
+      var roleName = block.querySelector('[data-field="role"]').value.trim();
+      if (!roleName) return; // an empty, never-named new block -- nothing to submit for it
+      var mfaEnabled = block.querySelector('[data-field="totp_enabled"]').checked;
+      var hadTotp = block.dataset.originalHasTotp === "1";
+      var typedSecret = block.querySelector('[data-field="totp_secret"]').value;
+      // null = leave whatever's already configured untouched; "" =
+      // explicitly clear it; anything else = set/replace it. The
+      // checkbox is the source of truth -- unchecking an account that
+      // HAD TOTP clears it even if the (now-hidden) field is empty;
+      // leaving it checked with the field empty means "keep what's
+      // already there," not "set an empty secret."
+      var totpSecret = mfaEnabled ? (typedSecret || null) : (hadTotp ? "" : null);
+      roles.push({
+        role: roleName,
+        username: block.querySelector('[data-field="username"]').value.trim() || null,
+        password: block.querySelector('[data-field="password"]').value || null,
+        auth_type: block.querySelector('[data-field="auth_type"]').value,
+        totp_secret: totpSecret,
       });
-      f.admin_password.value = "";
-      f.normal_password.value = "";
-      f.admin_totp_secret.value = "";
-      f.normal_totp_secret.value = "";
+    });
+    try {
+      await api("/api/targets/" + activeTargetId, { method: "PUT", body: JSON.stringify({ roles: roles }) });
       toast("Credentials saved");
       loadVerifyLoginRoles();
       loadCredentialsFields();
@@ -3334,120 +4104,6 @@ async function loadHealth() {
     }
   });
 
-  // Pre-fills the Credentials form's usernames from whatever's actually
-  // in users.json, and shows a "Remove" link on each role that's
-  // currently configured -- the other half of single-account support:
-  // a fresh install ships both admin+normal placeholders, so a target
-  // that only issues one account needs a way to drop the other one
-  // from the UI, not just leave a stale/unused entry sitting there.
-  async function loadCredentialsFields() {
-    try {
-      var roles = await api("/api/auth/roles");
-      var byRole = {};
-      roles.forEach(function (r) { byRole[r.role] = r; });
-      var f = document.getElementById("credentialsForm");
-      f.admin_username.value = (byRole.admin && byRole.admin.username) || "";
-      f.normal_username.value = (byRole.normal && byRole.normal.username) || "";
-      f.admin_auth_type.value = (byRole.admin && byRole.admin.auth_type) || "form_login";
-      f.normal_auth_type.value = (byRole.normal && byRole.normal.auth_type) || "form_login";
-      updateCredentialPasswordLabels();
-      document.getElementById("removeAdminBtn").hidden = !byRole.admin;
-      document.getElementById("removeNormalBtn").hidden = !byRole.normal;
-      var adminHasTotp = !!(byRole.admin && byRole.admin.has_totp);
-      var normalHasTotp = !!(byRole.normal && byRole.normal.has_totp);
-      document.getElementById("adminTotpStatus").textContent = adminHasTotp ? "configured" : "";
-      document.getElementById("normalTotpStatus").textContent = normalHasTotp ? "configured" : "";
-      document.getElementById("removeAdminTotpBtn").hidden = !adminHasTotp;
-      document.getElementById("removeNormalTotpBtn").hidden = !normalHasTotp;
-    } catch (err) {
-      // Non-fatal -- the form still works for entering fresh credentials.
-    }
-  }
-  // Relabels the password field per role as soon as the login-method
-  // dropdown changes -- "API token / JWT" means that field is no longer
-  // a real password (jwt_auth.py reads user.password as the raw bearer
-  // token), so the input's own label/placeholder should say so.
-  function updateCredentialPasswordLabels() {
-    var f = document.getElementById("credentialsForm");
-    var adminIsJwt = f.admin_auth_type.value === "jwt";
-    var normalIsJwt = f.normal_auth_type.value === "jwt";
-    document.getElementById("adminPasswordLabel").innerHTML = adminIsJwt
-      ? "Admin API token <small>write-only, never shown back</small>" : "Admin password <small>write-only, never shown back</small>";
-    document.getElementById("normalPasswordLabel").innerHTML = normalIsJwt
-      ? "Normal-user API token <small>write-only, never shown back</small>" : "Normal-user password <small>write-only, never shown back</small>";
-    f.admin_password.placeholder = adminIsJwt ? "paste the bearer token -- leave blank to keep unchanged" : "leave blank to keep unchanged";
-    f.normal_password.placeholder = normalIsJwt ? "paste the bearer token -- leave blank to keep unchanged" : "leave blank to keep unchanged";
-  }
-  document.getElementById("adminAuthType").addEventListener("change", updateCredentialPasswordLabels);
-  document.getElementById("normalAuthType").addEventListener("change", updateCredentialPasswordLabels);
-  async function removeCredentialRole(role) {
-    if (!activeTargetId) return;
-    var ok = await askConfirm(
-      "Remove '" + role + "' account?",
-      "This target will then only be tested with whatever account(s) remain. You can re-add it later by filling in the fields again.",
-      true
-    );
-    if (!ok) return;
-    try {
-      var payload = {};
-      payload[role + "_username"] = "";
-      await api("/api/targets/" + activeTargetId, { method: "PUT", body: JSON.stringify(payload) });
-      toast("'" + role + "' account removed");
-      document.getElementById("credentialsForm")[role + "_username"].value = "";
-      loadCredentialsFields();
-      loadVerifyLoginRoles();
-    } catch (err) {
-      toast("Could not remove '" + role + "': " + err.message, true);
-    }
-  }
-  document.getElementById("removeAdminBtn").addEventListener("click", function () { removeCredentialRole("admin"); });
-  document.getElementById("removeNormalBtn").addEventListener("click", function () { removeCredentialRole("normal"); });
-  // Clears only the TOTP secret for a role, leaving the username/password
-  // alone -- distinct from removeCredentialRole, which drops the whole
-  // account. Backed by targets.py's set_role_totp_secret("") semantics.
-  async function removeCredentialTotp(role) {
-    if (!activeTargetId) return;
-    try {
-      var payload = {};
-      payload[role + "_totp_secret"] = "";
-      await api("/api/targets/" + activeTargetId, { method: "PUT", body: JSON.stringify(payload) });
-      toast("'" + role + "' TOTP secret removed");
-      document.getElementById("credentialsForm")[role + "_totp_secret"].value = "";
-      loadCredentialsFields();
-    } catch (err) {
-      toast("Could not remove '" + role + "' TOTP secret: " + err.message, true);
-    }
-  }
-  document.getElementById("removeAdminTotpBtn").addEventListener("click", function () { removeCredentialTotp("admin"); });
-  document.getElementById("removeNormalTotpBtn").addEventListener("click", function () { removeCredentialTotp("normal"); });
-  // Decodes an uploaded 2FA-enrollment QR-code screenshot server-side
-  // (/api/auth/totp-qr) and drops the extracted secret straight into
-  // the matching TOTP field -- the operator still has to click "Save
-  // credentials" to persist it, same write-only-until-Save convention
-  // as every other field on this form; this only fills the input.
-  async function handleTotpQrFile(role, file) {
-    if (!file) return;
-    var fieldName = role + "_totp_secret";
-    var fd = new FormData();
-    fd.append("file", file);
-    try {
-      var result = await api("/api/auth/totp-qr", { method: "POST", body: fd, headers: {} });
-      document.getElementById("credentialsForm")[fieldName].value = result.secret;
-      toast("TOTP secret read from QR code -- click Save credentials to apply it");
-    } catch (err) {
-      toast("Could not read QR code: " + err.message, true);
-    }
-  }
-  document.getElementById("uploadAdminTotpQrBtn").addEventListener("click", function () { document.getElementById("adminTotpQrFile").click(); });
-  document.getElementById("uploadNormalTotpQrBtn").addEventListener("click", function () { document.getElementById("normalTotpQrFile").click(); });
-  document.getElementById("adminTotpQrFile").addEventListener("change", function (e) {
-    handleTotpQrFile("admin", e.target.files[0]);
-    e.target.value = "";
-  });
-  document.getElementById("normalTotpQrFile").addEventListener("change", function (e) {
-    handleTotpQrFile("normal", e.target.files[0]);
-    e.target.value = "";
-  });
   loadCredentialsFields();
 
   // ---------------------------------------------------------------- Manual Session Cookies
@@ -3972,6 +4628,56 @@ async function loadHealth() {
     setTimeout(function () { genericInput.focus(); }, 50);
     return new Promise(function (resolve) { genericResolve = function (v) { resolve(!!v); }; });
   }
+
+  // ---------------------------------------------------------------- change PIN
+  var changePinBackdrop = document.getElementById("changePinBackdrop");
+  function openChangePinModal() {
+    document.getElementById("avatarMenu").classList.remove("open");
+    ["changePinCurrent", "changePinNew", "changePinConfirm"].forEach(function (id) { document.getElementById(id).value = ""; });
+    document.getElementById("changePinError").hidden = true;
+    changePinBackdrop.classList.add("open");
+    setTimeout(function () { document.getElementById("changePinCurrent").focus(); }, 50);
+  }
+  function closeChangePinModal() { changePinBackdrop.classList.remove("open"); }
+  document.getElementById("changePinLink").addEventListener("click", function (e) { e.preventDefault(); openChangePinModal(); });
+  document.getElementById("changePinCancel").addEventListener("click", closeChangePinModal);
+  changePinBackdrop.addEventListener("click", function (e) { if (e.target === changePinBackdrop) closeChangePinModal(); });
+  // Digits-only on all three fields -- same lightweight sanitizer as the
+  // PIN-gate's own paste handler (only reassigns when something actually
+  // needs stripping, so normal typing is never interfered with).
+  ["changePinCurrent", "changePinNew", "changePinConfirm"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", function (e) {
+      var cleaned = e.target.value.replace(/[^0-9]/g, "").slice(0, 6);
+      if (cleaned !== e.target.value) e.target.value = cleaned;
+    });
+  });
+  document.getElementById("changePinForm").addEventListener("submit", async function (e) {
+    e.preventDefault();
+    var current = document.getElementById("changePinCurrent").value;
+    var next = document.getElementById("changePinNew").value;
+    var confirm = document.getElementById("changePinConfirm").value;
+    var errEl = document.getElementById("changePinError");
+    var saveBtn = document.getElementById("changePinSave");
+    errEl.hidden = true;
+    if (next.length !== 6) { errEl.textContent = "New PIN must be 6 digits."; errEl.hidden = false; return; }
+    if (next !== confirm) { errEl.textContent = "New PIN and confirmation don't match."; errEl.hidden = false; return; }
+    saveBtn.disabled = true;
+    try {
+      await api("/api/auth/change-pin", { method: "POST", body: JSON.stringify({ current_pin: current, new_pin: next }) });
+      closeChangePinModal();
+      toast("PIN changed -- use the new PIN next time you (or your team) sign in");
+    } catch (err) {
+      var detail = err.message;
+      var jsonStart = err.message.indexOf("{");
+      if (jsonStart !== -1) {
+        try { detail = JSON.parse(err.message.slice(jsonStart)).detail || detail; } catch (parseErr) { /* keep the raw message */ }
+      }
+      errEl.textContent = detail;
+      errEl.hidden = false;
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
 
   // ---------------------------------------------------------------- New Scan page
   // A real, routed page (#/scan-new) instead of a popup -- a decision
@@ -6938,7 +7644,7 @@ async function loadHealth() {
     // which silently falls back to raw module ids (e.g. "auth_tests"
     // instead of "Authentication") when state.modules is still empty.
     await loadModules().catch(function () {});
-    await Promise.allSettled([loadHealth(), loadConfig(), loadTesting(), loadScans(), loadWorkflows(), loadApplicationsPanel()]);
+    await Promise.allSettled([loadHealth(), loadConfig(), loadTesting(), loadScans(), loadWorkflows(), loadApplicationsPanel(), loadIdleTimeoutSetting(), initIdleTimer()]);
     loadDashboardSummary();
     connectGlobalStream();
     // Router init: everything it can act on (scan list, findings) is
@@ -6955,7 +7661,7 @@ async function loadHealth() {
     // push-based dashboards use.
     setInterval(function () { loadScans(); }, 30000);
   }
-  boot();
+  checkAuthAndBoot();
 })();
 </script>
 

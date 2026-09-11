@@ -90,8 +90,7 @@ def test_new_profile_defaults():
     assert profile["environment"] == "production"
     assert profile["scan_intensity"] == "standard"
     assert profile["allow_state_changing_probes"] is False
-    assert profile["admin_password_set"] is False
-    assert profile["normal_password_set"] is False
+    assert profile["roles"] == []  # zero accounts is a valid, fully-supported starting state
     assert profile["created_at"] == profile["updated_at"]
 
 
@@ -159,38 +158,83 @@ def test_apply_fields_updates_timestamp():
 
 
 # ---------------------------------------------------------------------------
-# set_role_credentials / mark_password_set
+# set_role_credentials / mark_password_set / remove_role -- N free-text
+# roles, not a fixed admin/normal pair. `profile["roles"]` is now a
+# list; `_role()` below fetches one entry by its display label, mirroring
+# how a caller (server.py) actually looks a role up.
 # ---------------------------------------------------------------------------
+
+
+def _role(profile: dict, role: str) -> dict | None:
+    return next((r for r in profile["roles"] if r["role"] == role), None)
 
 
 def test_set_role_credentials_sets_username_and_auth_type():
     profile = targets.new_profile("acme", "Acme")
     targets.set_role_credentials(profile, "admin", "admin@acme.com", "jwt")
-    assert profile["admin_username"] == "admin@acme.com"
-    assert profile["admin_auth_type"] == "jwt"
+    entry = _role(profile, "admin")
+    assert entry["username"] == "admin@acme.com"
+    assert entry["auth_type"] == "jwt"
+    assert entry["id"] == "admin-01"  # historical id, back-compat with existing .env files
 
 
-def test_set_role_credentials_empty_string_clears_role():
+def test_set_role_credentials_creates_an_arbitrary_free_text_role():
+    """A tester with a role that isn't "admin" or "normal" -- e.g. a
+    third support account -- works identically, not just the two
+    historical role names."""
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "Support Agent", "support@acme.com", "form_login")
+    entry = _role(profile, "Support Agent")
+    assert entry["username"] == "support@acme.com"
+    assert entry["id"] == "support-agent"  # derived from the role's own slug, unique by construction
+
+
+def test_set_role_credentials_supports_more_than_two_roles_at_once():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.set_role_credentials(profile, "normal", "user@acme.com", "form_login")
+    targets.set_role_credentials(profile, "Read-only", "viewer@acme.com", "form_login")
+    assert [r["role"] for r in profile["roles"]] == ["admin", "normal", "Read-only"]
+
+
+def test_set_role_credentials_empty_string_clears_role_in_place():
     profile = targets.new_profile("acme", "Acme")
     targets.set_role_credentials(profile, "admin", "admin@acme.com", "jwt")
-    profile["admin_password_set"] = True
+    targets.mark_password_set(profile, "admin")
     targets.set_role_credentials(profile, "admin", "", None)
-    assert profile["admin_username"] is None
-    assert profile["admin_auth_type"] == "form_login"
-    assert profile["admin_password_set"] is False
+    entry = _role(profile, "admin")
+    assert entry["username"] is None
+    assert entry["auth_type"] == "form_login"
+    assert entry["password_set"] is False
 
 
 def test_set_role_credentials_both_none_is_a_noop():
     profile = targets.new_profile("acme", "Acme")
-    profile["admin_username"] = "existing"
+    targets.set_role_credentials(profile, "admin", "existing", "form_login")
     targets.set_role_credentials(profile, "admin", None, None)
-    assert profile["admin_username"] == "existing"
+    assert _role(profile, "admin")["username"] == "existing"
+
+
+def test_set_role_credentials_username_only_never_creates_a_role_for_auth_type_alone():
+    """auth_type with no username, for a role that doesn't exist yet --
+    nothing to attach it to, so this must not silently create a
+    credential-less role entry."""
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", None, "jwt")
+    assert profile["roles"] == []
 
 
 def test_mark_password_set():
     profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "normal", "user@acme.com", "form_login")
     targets.mark_password_set(profile, "normal")
-    assert profile["normal_password_set"] is True
+    assert _role(profile, "normal")["password_set"] is True
+
+
+def test_mark_password_set_is_a_noop_for_a_role_that_does_not_exist():
+    profile = targets.new_profile("acme", "Acme")
+    targets.mark_password_set(profile, "admin")
+    assert profile["roles"] == []
 
 
 def test_set_role_credentials_empty_string_clears_totp_flag_too():
@@ -200,9 +244,23 @@ def test_set_role_credentials_empty_string_clears_totp_flag_too():
     exists in this profile."""
     profile = targets.new_profile("acme", "Acme")
     targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
-    profile["admin_totp_secret_set"] = True
+    targets.set_role_totp_secret(profile, "admin", "JBSWY3DPEHPK3PXP")
     targets.set_role_credentials(profile, "admin", "", None)
-    assert profile["admin_totp_secret_set"] is False
+    assert _role(profile, "admin")["totp_secret_set"] is False
+
+
+def test_remove_role_drops_the_entry_and_returns_it():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.set_role_credentials(profile, "normal", "user@acme.com", "form_login")
+    removed = targets.remove_role(profile, "admin")
+    assert removed["id"] == "admin-01"
+    assert [r["role"] for r in profile["roles"]] == ["normal"]
+
+
+def test_remove_role_returns_none_when_no_such_role():
+    profile = targets.new_profile("acme", "Acme")
+    assert targets.remove_role(profile, "admin") is None
 
 
 # ---------------------------------------------------------------------------
@@ -212,27 +270,94 @@ def test_set_role_credentials_empty_string_clears_totp_flag_too():
 
 def test_set_role_totp_secret_marks_set_for_a_real_value():
     profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
     targets.set_role_totp_secret(profile, "admin", "JBSWY3DPEHPK3PXP")
-    assert profile["admin_totp_secret_set"] is True
+    assert _role(profile, "admin")["totp_secret_set"] is True
 
 
 def test_set_role_totp_secret_empty_string_clears_the_flag():
     profile = targets.new_profile("acme", "Acme")
-    profile["admin_totp_secret_set"] = True
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.set_role_totp_secret(profile, "admin", "JBSWY3DPEHPK3PXP")
     targets.set_role_totp_secret(profile, "admin", "")
-    assert profile["admin_totp_secret_set"] is False
+    assert _role(profile, "admin")["totp_secret_set"] is False
 
 
 def test_set_role_totp_secret_none_is_a_noop():
     profile = targets.new_profile("acme", "Acme")
-    profile["admin_totp_secret_set"] = True
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.set_role_totp_secret(profile, "admin", "JBSWY3DPEHPK3PXP")
     targets.set_role_totp_secret(profile, "admin", None)
-    assert profile["admin_totp_secret_set"] is True  # untouched, not reset
+    assert _role(profile, "admin")["totp_secret_set"] is True  # untouched, not reset
+
+
+def test_set_role_totp_secret_is_a_noop_for_a_role_that_does_not_exist():
+    """TOTP with no username to attach it to is meaningless -- same
+    principle as mark_password_set's own no-op-when-absent case."""
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_totp_secret(profile, "admin", "JBSWY3DPEHPK3PXP")
+    assert profile["roles"] == []
 
 
 def test_totp_env_key_shape():
     assert targets.totp_env_key("admin", "kapture-km-staging") == "ADMIN_TOTP_SECRET__KAPTURE_KM_STAGING"
     assert targets.totp_env_key("normal", "kapture-km-staging") == "USER_TOTP_SECRET__KAPTURE_KM_STAGING"
+
+
+def test_env_key_custom_role_derives_prefix_from_its_own_label():
+    assert targets.env_key("Support Agent", "acme") == "SUPPORT_AGENT_PASSWORD__ACME"
+    assert targets.totp_env_key("Support Agent", "acme") == "SUPPORT_AGENT_TOTP_SECRET__ACME"
+
+
+# ---------------------------------------------------------------------------
+# roles migration -- a targets.json written before roles became a list
+# ---------------------------------------------------------------------------
+
+
+def test_load_migrates_a_legacy_flat_role_profile_into_a_roles_list(tmp_path):
+    path = tmp_path / "targets.json"
+    profile = targets.new_profile("acme", "Acme")
+    del profile["roles"]
+    profile.update({
+        "admin_username": "admin@acme.com", "admin_auth_type": "form_login",
+        "admin_password_set": True, "admin_totp_secret_set": False,
+        "normal_username": "user@acme.com", "normal_auth_type": "jwt",
+        "normal_password_set": False, "normal_totp_secret_set": True,
+    })
+    path.write_text(json.dumps({"targets": [profile], "active_target_id": "acme"}), encoding="utf-8")
+    loaded = targets.load(path)
+    migrated = loaded["targets"][0]
+    assert "admin_username" not in migrated  # old flat keys are gone, not left as dead weight
+    assert _role(migrated, "admin") == {
+        "id": "admin-01", "role": "admin", "username": "admin@acme.com",
+        "auth_type": "form_login", "password_set": True, "totp_secret_set": False,
+    }
+    assert _role(migrated, "normal")["auth_type"] == "jwt"
+    assert _role(migrated, "normal")["totp_secret_set"] is True
+
+
+def test_load_migration_skips_a_role_with_no_username(tmp_path):
+    path = tmp_path / "targets.json"
+    profile = targets.new_profile("acme", "Acme")
+    del profile["roles"]
+    profile.update({
+        "admin_username": "admin@acme.com", "admin_auth_type": "form_login",
+        "admin_password_set": True, "admin_totp_secret_set": False,
+        "normal_username": None, "normal_auth_type": "form_login",
+        "normal_password_set": False, "normal_totp_secret_set": False,
+    })
+    path.write_text(json.dumps({"targets": [profile], "active_target_id": "acme"}), encoding="utf-8")
+    migrated = targets.load(path)["targets"][0]
+    assert [r["role"] for r in migrated["roles"]] == ["admin"]
+
+
+def test_load_does_not_reprocess_a_profile_that_already_has_a_roles_list(tmp_path):
+    path = tmp_path / "targets.json"
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "Support Agent", "support@acme.com", "form_login")
+    path.write_text(json.dumps({"targets": [profile], "active_target_id": "acme"}), encoding="utf-8")
+    loaded = targets.load(path)["targets"][0]
+    assert [r["role"] for r in loaded["roles"]] == ["Support Agent"]
 
 
 # ---------------------------------------------------------------------------
@@ -298,9 +423,10 @@ def test_testing_block_reflects_profile_safety_settings():
     assert targets.testing_block(profile) == {"allow_state_changing_probes": True, "scan_intensity": "cautious"}
 
 
-def test_user_entries_includes_only_roles_with_a_username():
+def test_user_entries_includes_only_roles_with_a_username_and_a_password():
     profile = targets.new_profile("acme", "Acme")
-    profile["admin_username"] = "admin@acme.com"
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.mark_password_set(profile, "admin")
     entries = targets.user_entries(profile)
     assert len(entries) == 1
     assert entries[0] == {
@@ -312,6 +438,22 @@ def test_user_entries_includes_only_roles_with_a_username():
     }
 
 
+def test_user_entries_excludes_a_role_with_a_username_but_no_password_yet():
+    """Regression test for a real bug caught via live testing: a role
+    saved with only a username (a tester fills in what they know and
+    saves, meaning to add the password moments later) used to still get
+    a {{env:...}} password token pointing at an unset env var --
+    stof.config.loader.load_users() raises on that, which broke
+    GET /api/auth/roles (and a real scan) for EVERY role in the file,
+    not just the incomplete one."""
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.mark_password_set(profile, "admin")
+    targets.set_role_credentials(profile, "Support Agent", "support@acme.com", "form_login")
+    entries = targets.user_entries(profile)
+    assert [e["role"] for e in entries] == ["admin"]
+
+
 def test_user_entries_empty_when_no_roles_configured():
     profile = targets.new_profile("acme", "Acme")
     assert targets.user_entries(profile) == []
@@ -319,8 +461,8 @@ def test_user_entries_empty_when_no_roles_configured():
 
 def test_user_entries_normal_role_uses_user_password_token():
     profile = targets.new_profile("acme", "Acme")
-    profile["normal_username"] = "user@acme.com"
-    profile["normal_auth_type"] = "jwt"
+    targets.set_role_credentials(profile, "normal", "user@acme.com", "jwt")
+    targets.mark_password_set(profile, "normal")
     entries = targets.user_entries(profile)
     assert entries[0]["password"] == "{{env:USER_PASSWORD}}"
     assert entries[0]["auth_type"] == "jwt"
@@ -328,8 +470,9 @@ def test_user_entries_normal_role_uses_user_password_token():
 
 def test_user_entries_includes_totp_secret_token_when_configured():
     profile = targets.new_profile("acme", "Acme")
-    profile["admin_username"] = "admin@acme.com"
-    profile["admin_totp_secret_set"] = True
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.mark_password_set(profile, "admin")
+    targets.set_role_totp_secret(profile, "admin", "JBSWY3DPEHPK3PXP")
     entries = targets.user_entries(profile)
     assert entries[0]["totp_secret"] == "{{env:ADMIN_TOTP_SECRET}}"
 
@@ -339,14 +482,30 @@ def test_user_entries_omits_totp_secret_key_entirely_when_not_configured():
     have no MFA at all, so the key shouldn't even be present (not a
     null value) in the generated users.json entry."""
     profile = targets.new_profile("acme", "Acme")
-    profile["admin_username"] = "admin@acme.com"
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.mark_password_set(profile, "admin")
     entries = targets.user_entries(profile)
     assert "totp_secret" not in entries[0]
 
 
 def test_user_entries_normal_role_totp_uses_user_totp_secret_token():
     profile = targets.new_profile("acme", "Acme")
-    profile["normal_username"] = "user@acme.com"
-    profile["normal_totp_secret_set"] = True
+    targets.set_role_credentials(profile, "normal", "user@acme.com", "form_login")
+    targets.mark_password_set(profile, "normal")
+    targets.set_role_totp_secret(profile, "normal", "JBSWY3DPEHPK3PXP")
     entries = targets.user_entries(profile)
     assert entries[0]["totp_secret"] == "{{env:USER_TOTP_SECRET}}"
+
+
+def test_user_entries_supports_an_arbitrary_third_role():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.mark_password_set(profile, "admin")
+    targets.set_role_credentials(profile, "normal", "user@acme.com", "form_login")
+    targets.mark_password_set(profile, "normal")
+    targets.set_role_credentials(profile, "Support Agent", "support@acme.com", "form_login")
+    targets.mark_password_set(profile, "Support Agent")
+    entries = targets.user_entries(profile)
+    assert len(entries) == 3
+    assert entries[2]["role"] == "Support Agent"
+    assert entries[2]["password"] == "{{env:SUPPORT_AGENT_PASSWORD}}"

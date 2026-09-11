@@ -21,11 +21,32 @@ Target/Application profile from the engine's own per-scan config.
 
 Passwords are never written to `targets.json` -- same `{{env:VAR}}`-token
 philosophy `users.json` already uses (CLAUDE.md rule 6), just with a
-per-profile env var name (`ADMIN_PASSWORD__<TARGET_ID>`) so two
-profiles' credentials for the same role never collide in `.env`. Only a
-`<role>_password_set` boolean is persisted for the UI to show
-"configured" without ever reading a secret back -- same convention
-`burp.api_key_set` already uses in `stof/ui/server.py`.
+per-profile env var name so two profiles' credentials for the same role
+never collide in `.env`. Only a `password_set` boolean is persisted per
+role for the UI to show "configured" without ever reading a secret back
+-- same convention `burp.api_key_set` already uses in `stof/ui/server.py`.
+
+Roles: a profile's `roles` field is a LIST (`[{"id": ..., "role": ...,
+"username": ..., "auth_type": ..., "password_set": ..., "totp_secret_
+set": ...}, ...]`), not a fixed pair -- a real tester often has exactly
+one account for a target, sometimes three (Admin/Support/Read-only),
+never reliably two named "admin"/"normal". This matches how Invicti's
+own form-auth setup defaults to one identity block and Fortify
+WebInspect's multi-user login is an explicit opt-in, not a mandatory
+second slot (see the console's New Scan Credentials card for the
+tester-facing side of this). `role` is a free-text display label the
+operator types (no fixed enum) -- `id` is a separate, stable handle
+assigned once when the role is first added and never recomputed
+afterward, because every `.env` key name is derived from it (see
+`env_key()`/`totp_env_key()` below); renaming the display label later
+must never orphan an already-written secret. This project's original
+two roles ("admin"/"normal", exact lowercase match) keep their
+historical `admin-01`/`user-01` ids and `ADMIN_PASSWORD`/`USER_PASSWORD`
+env var prefixes -- an existing install's `.env` file keeps resolving
+with zero migration. Any other role name gets a fresh id derived from
+its own slug (deduped the same way `new_target_id()` dedupes target
+ids), which by construction can never collide with another role's env
+var name within the same profile.
 
 Disk I/O (reading/writing `targets.json`, `.env`, `config.json`,
 `users.json`) deliberately stays OUT of this module -- it only builds
@@ -49,7 +70,15 @@ SCAN_INTENSITIES = ("cautious", "standard", "aggressive")
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _ENV_KEY_RE = re.compile(r"[^A-Z0-9]+")
 
-_DEFAULT_IDS = {"admin": "admin-01", "normal": "user-01"}
+# This project's original two roles -- exact lowercase match only (a
+# tester who types "Admin" with a capital A gets a fresh id/env-var
+# pair, not this historical one; the two are different free-text
+# labels as far as this module is concerned). Kept solely so an
+# existing install's .env file (ADMIN_PASSWORD__..., USER_PASSWORD__...)
+# keeps resolving after this module moved from a fixed admin/normal
+# pair to an arbitrary-length roles list.
+_DEFAULT_ROLE_IDS = {"admin": "admin-01", "normal": "user-01"}
+_DEFAULT_ENV_PREFIXES = {"admin": "ADMIN", "normal": "USER"}
 
 
 def slugify(name: str) -> str:
@@ -72,26 +101,67 @@ def new_target_id(name: str, existing_ids: Any) -> str:
     return candidate
 
 
+def _role_id_for(role: str, existing_ids: set[str]) -> str:
+    """Stable id for a newly-added role entry, used as `users.json`'s
+    per-entry `"id"` field -- purely a display/bookkeeping handle, NOT
+    what env var names are derived from (see `_env_prefix_for_role()`
+    below, which works off the free-text label directly, matching this
+    module's original contract). "admin"/"normal" keep their historical
+    ids when available; everything else falls back to the same
+    slug+dedupe scheme `new_target_id()` uses for target ids."""
+    default = _DEFAULT_ROLE_IDS.get(role)
+    if default and default not in existing_ids:
+        return default
+    base = slugify(role)
+    candidate = base
+    n = 2
+    while candidate in existing_ids:
+        candidate = f"{base}-{n}"
+        n += 1
+    return candidate
+
+
+def _env_prefix_for_role(role: str) -> str:
+    """"admin" -> "ADMIN", "normal" -> "USER" (exact historical prefixes,
+    preserved so an existing install's `.env` file keeps resolving with
+    zero migration); any other free-text role label is sanitized
+    directly into a prefix. Note this means two custom role names that
+    sanitize to the same text (e.g. "Support!" and "Support?") would
+    share an env var prefix within one profile -- an accepted, narrow
+    edge case for a human-typed, small (1-3 role) list, not one this
+    module tries to fully rule out with extra bookkeeping."""
+    if role in _DEFAULT_ENV_PREFIXES:
+        return _DEFAULT_ENV_PREFIXES[role]
+    return _ENV_KEY_RE.sub("_", role.upper()).strip("_") or "ROLE"
+
+
+def plain_env_var(role: str) -> str:
+    """The un-suffixed `.env` key name a role's password resolves
+    through once a profile carrying it is activated (the actual token
+    `{{env:...}}` written into `config/users.json` by `user_entries()`
+    below) -- single source of truth also used by `env_key()` and by
+    `stof/ui/server.py`'s activation step, so the two can never drift
+    out of sync with each other."""
+    return f"{_env_prefix_for_role(role)}_PASSWORD"
+
+
+def plain_totp_env_var(role: str) -> str:
+    return f"{_env_prefix_for_role(role)}_TOTP_SECRET"
+
+
 def env_key(role: str, target_id: str) -> str:
     """`ADMIN_PASSWORD__KAPTURE_KM_STAGING` / `USER_PASSWORD__...` -- the
-    per-profile `.env` key a target's stored password/token lives
-    under. `role` is "admin" or "normal", matching `users.json`'s own
-    role names; "normal" maps to the pre-existing `USER_PASSWORD`
-    prefix for continuity with the single-target convention this
-    replaces."""
-    prefix = "ADMIN_PASSWORD" if role == "admin" else "USER_PASSWORD"
+    per-profile `.env` key a role's stored password/token lives under."""
     suffix = _ENV_KEY_RE.sub("_", target_id.upper()).strip("_")
-    return f"{prefix}__{suffix}"
+    return f"{plain_env_var(role)}__{suffix}"
 
 
 def totp_env_key(role: str, target_id: str) -> str:
-    """`ADMIN_TOTP_SECRET__KAPTURE_KM_STAGING` / `USER_TOTP_SECRET__...`
-    -- same per-profile `.env` scoping shape as `env_key()`, for the
+    """Same per-profile `.env` scoping shape as `env_key()`, for the
     optional TOTP/MFA secret (`stof.config.schema.UserConfig.
     totp_secret`) instead of the password."""
-    prefix = "ADMIN_TOTP_SECRET" if role == "admin" else "USER_TOTP_SECRET"
     suffix = _ENV_KEY_RE.sub("_", target_id.upper()).strip("_")
-    return f"{prefix}__{suffix}"
+    return f"{plain_totp_env_var(role)}__{suffix}"
 
 
 def _now() -> str:
@@ -100,6 +170,34 @@ def _now() -> str:
 
 def default_store() -> dict:
     return {"targets": [], "active_target_id": None}
+
+
+def _migrate_profile_roles(profile: dict) -> None:
+    """Additive migration for a `targets.json` written before roles
+    became a list: an old profile carried exactly `admin_username`/
+    `admin_auth_type`/`admin_password_set`/`admin_totp_secret_set` and
+    the same four keys prefixed `normal_` directly on the profile dict.
+    Converts those into `profile["roles"]`, in place, dropping the old
+    flat keys entirely (not left around as dead weight -- this project's
+    own rule against backwards-compatibility cruft once a clean
+    migration exists). A profile that already has a `"roles"` key was
+    either created fresh under the new shape or already migrated; never
+    reprocessed."""
+    if "roles" in profile:
+        return
+    roles: list[dict] = []
+    for role, role_id in _DEFAULT_ROLE_IDS.items():
+        username = profile.pop(f"{role}_username", None)
+        auth_type = profile.pop(f"{role}_auth_type", "form_login")
+        password_set = bool(profile.pop(f"{role}_password_set", False))
+        totp_secret_set = bool(profile.pop(f"{role}_totp_secret_set", False))
+        if username:
+            roles.append({
+                "id": role_id, "role": role, "username": username,
+                "auth_type": auth_type, "password_set": password_set,
+                "totp_secret_set": totp_secret_set,
+            })
+    profile["roles"] = roles
 
 
 def load(path: Path) -> dict:
@@ -113,11 +211,13 @@ def load(path: Path) -> dict:
         return default_store()
     doc.setdefault("targets", [])
     doc.setdefault("active_target_id", None)
-    # Additive migration for a targets.json written before "environment"
-    # existed -- same convention findings/store.py's own schema
-    # migration uses for an on-disk file predating a newer field.
     for profile in doc["targets"]:
+        # Additive migration for a targets.json written before
+        # "environment" existed -- same convention findings/store.py's
+        # own schema migration uses for an on-disk file predating a
+        # newer field.
         profile.setdefault("environment", "production")
+        _migrate_profile_roles(profile)
     return doc
 
 
@@ -134,7 +234,10 @@ def new_profile(target_id: str, name: str) -> dict:
     """A fresh profile with every field defaulted -- callers layer
     `apply_fields`/`set_role_credentials` on top for whatever the
     create request actually supplied, so this is the one place
-    new-profile defaults live."""
+    new-profile defaults live. `roles` starts empty: a brand new
+    profile legitimately has zero accounts configured yet, the same
+    "from one account up" state the Credentials card already supports
+    for an existing profile."""
     now = _now()
     return {
         "id": target_id,
@@ -156,14 +259,7 @@ def new_profile(target_id: str, name: str) -> dict:
         "crawler_exclude_patterns": None,
         "idor_candidate_ids": None,
         "requires_assisted_login": False,
-        "admin_username": None,
-        "admin_auth_type": "form_login",
-        "admin_password_set": False,
-        "admin_totp_secret_set": False,
-        "normal_username": None,
-        "normal_auth_type": "form_login",
-        "normal_password_set": False,
-        "normal_totp_secret_set": False,
+        "roles": [],
         "scan_intensity": "standard",
         "allow_state_changing_probes": False,
         "created_at": now,
@@ -173,10 +269,10 @@ def new_profile(target_id: str, name: str) -> dict:
 
 def apply_fields(profile: dict, updates: dict) -> None:
     """Partial update -- the exact convention every other config
-    endpoint in this codebase already uses (see `/api/config/target`,
-    `/api/credentials` in `stof/ui/server.py`): a field absent from
-    `updates` (or explicitly `None`) is left untouched; `""` on a
-    clearable selector field resets it back to auto-detect."""
+    endpoint in this codebase already uses (see `/api/config/target`):
+    a field absent from `updates` (or explicitly `None`) is left
+    untouched; `""` on a clearable selector field resets it back to
+    auto-detect."""
     for field in ("name", "app_type", "environment", "base_url", "login_url", "scan_intensity"):
         value = updates.get(field)
         if value:
@@ -194,37 +290,72 @@ def apply_fields(profile: dict, updates: dict) -> None:
     profile["updated_at"] = _now()
 
 
+def _find_role_entry(profile: dict, role: str) -> dict | None:
+    return next((r for r in profile.get("roles", []) if r["role"] == role), None)
+
+
 def set_role_credentials(profile: dict, role: str, username: str | None, auth_type: str | None) -> None:
-    """Sets username/auth_type for `role` ("admin" | "normal") on the
-    profile. `username=""` clears that role's credentials entirely
-    (username, auth_type reset to default, `password_set` reset to
-    False) -- mirrors `DELETE /api/credentials/{role}`'s single-account
-    support, just expressed as a value instead of a separate endpoint.
-    The caller is still responsible for deleting the matching `.env`
-    key via `env_key()`; this only updates the profile document."""
+    """Sets username/auth_type for `role` (any free-text label, not
+    just "admin"/"normal") on the profile -- creating the role entry
+    (with a freshly-assigned, stable `id`) the first time it's seen.
+    `username=""` clears that role's credentials entirely (mirrors
+    `remove_role()` below, just expressed as a value instead of a
+    dedicated call for a role the caller already knows exists). The
+    caller is still responsible for writing the matching `.env` key via
+    `env_key()`; this only updates the profile document."""
     if username is None and auth_type is None:
         return
+    entry = _find_role_entry(profile, role)
     if username == "":
-        profile[f"{role}_username"] = None
-        profile[f"{role}_auth_type"] = "form_login"
-        profile[f"{role}_password_set"] = False
-        # Removing the account removes whatever MFA was configured for
-        # it too -- a stale totp_secret_set flag with no username
-        # behind it would silently keep referencing a `.env` key for an
-        # account that no longer exists in this profile.
-        profile[f"{role}_totp_secret_set"] = False
-        profile["updated_at"] = _now()
+        if entry is not None:
+            entry["username"] = None
+            entry["auth_type"] = "form_login"
+            entry["password_set"] = False
+            # Removing the account removes whatever MFA was configured
+            # for it too -- a stale totp_secret_set flag with no
+            # username behind it would silently keep referencing a
+            # .env key for an account that no longer exists.
+            entry["totp_secret_set"] = False
+            profile["updated_at"] = _now()
         return
+    if entry is None:
+        if username is None:  # only auth_type given for a role that doesn't exist yet -- nothing to create
+            return
+        existing_ids = {r["id"] for r in profile.get("roles", [])}
+        entry = {
+            "id": _role_id_for(role, existing_ids), "role": role, "username": None,
+            "auth_type": "form_login", "password_set": False, "totp_secret_set": False,
+        }
+        profile.setdefault("roles", []).append(entry)
     if username is not None:
-        profile[f"{role}_username"] = username
+        entry["username"] = username
     if auth_type is not None:
-        profile[f"{role}_auth_type"] = auth_type
+        entry["auth_type"] = auth_type
     profile["updated_at"] = _now()
+
+
+def remove_role(profile: dict, role: str) -> dict | None:
+    """Drops a role entry entirely -- the UI's per-role "Remove" action.
+    Returns the removed entry (its `id` is what a caller needs to
+    address the matching `.env` keys, though this project's existing
+    convention -- see `set_role_credentials`'s own `username=""` branch
+    above -- is to leave an orphaned `.env` value in place rather than
+    delete it, since `password_set`/`totp_secret_set` being gone from
+    the profile is what actually stops it from ever being read again).
+    `None` if no such role existed on this profile."""
+    entry = _find_role_entry(profile, role)
+    if entry is None:
+        return None
+    profile["roles"] = [r for r in profile.get("roles", []) if r is not entry]
+    profile["updated_at"] = _now()
+    return entry
 
 
 def mark_password_set(profile: dict, role: str) -> None:
-    profile[f"{role}_password_set"] = True
-    profile["updated_at"] = _now()
+    entry = _find_role_entry(profile, role)
+    if entry is not None:
+        entry["password_set"] = True
+        profile["updated_at"] = _now()
 
 
 def set_role_totp_secret(profile: dict, role: str, totp_secret: str | None) -> None:
@@ -238,11 +369,14 @@ def set_role_totp_secret(profile: dict, role: str, totp_secret: str | None) -> N
     responsible for writing the matching `.env` key via
     `totp_env_key()` -- this only updates the profile document, same
     division of responsibility as `set_role_credentials`/
-    `mark_password_set`."""
+    `mark_password_set`. No-op if the role doesn't exist (TOTP without
+    a username to attach it to is meaningless)."""
     if totp_secret is None:
         return
-    profile[f"{role}_totp_secret_set"] = bool(totp_secret)
-    profile["updated_at"] = _now()
+    entry = _find_role_entry(profile, role)
+    if entry is not None:
+        entry["totp_secret_set"] = bool(totp_secret)
+        profile["updated_at"] = _now()
 
 
 def target_block(profile: dict) -> dict:
@@ -275,25 +409,32 @@ def testing_block(profile: dict) -> dict:
 
 def user_entries(profile: dict) -> list[dict]:
     """The `users` list `config/users.json` needs for this profile's
-    roles -- a role is included only if it actually has a username
-    configured (single-account targets are normal and already
-    supported elsewhere in this codebase, see `server.py`'s
-    `set_credentials`/`delete_credentials` docstrings)."""
+    roles -- a role is included only if it has BOTH a username AND a
+    password actually configured (single-account targets are normal
+    and already supported: a fresh profile's `roles` list starts
+    empty). Username alone is not enough: the entry always carries a
+    `{{env:...}}` password token pointing at a per-role env var, and
+    `stof.config.loader.load_users()` raises if that token can't
+    resolve -- a role saved with only a username (a real, easy-to-hit
+    state: a tester fills in what they know and saves, meaning to add
+    the password moments later) would otherwise poison the WHOLE
+    users.json, breaking every other already-fully-configured role
+    along with it, not just leave its own entry out. Iterates
+    `profile["roles"]` directly rather than a fixed admin/normal pair,
+    so any number of roles with any free-text label works identically."""
     entries = []
-    for role, default_id in _DEFAULT_IDS.items():
-        username = profile.get(f"{role}_username")
-        if not username:
+    for r in profile.get("roles", []):
+        username = r.get("username")
+        if not username or not r.get("password_set"):
             continue
-        env_var = "ADMIN_PASSWORD" if role == "admin" else "USER_PASSWORD"
         entry = {
-            "id": default_id,
-            "role": role,
+            "id": r["id"],
+            "role": r["role"],
             "username": username,
-            "password": f"{{{{env:{env_var}}}}}",
-            "auth_type": profile.get(f"{role}_auth_type", "form_login"),
+            "password": f"{{{{env:{plain_env_var(r['role'])}}}}}",
+            "auth_type": r.get("auth_type", "form_login"),
         }
-        if profile.get(f"{role}_totp_secret_set"):
-            totp_var = "ADMIN_TOTP_SECRET" if role == "admin" else "USER_TOTP_SECRET"
-            entry["totp_secret"] = f"{{{{env:{totp_var}}}}}"
+        if r.get("totp_secret_set"):
+            entry["totp_secret"] = f"{{{{env:{plain_totp_env_var(r['role'])}}}}}"
         entries.append(entry)
     return entries

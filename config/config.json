@@ -1,13 +1,8 @@
 {
   "target": {
-    "base_url": "https://test.kapturekm.com/kauthor/login",
-    "login_url": "https://test.kapturekm.com/kauthor/login",
-    "requires_assisted_login": false,
-    "crawler_exclude_patterns": [
-      "content=inside_",
-      "survey_questions",
-      "privacypolicy"
-    ]
+    "base_url": "https://test.com",
+    "login_url": "https://test.com/login",
+    "requires_assisted_login": false
   },
   "browser": {
     "headless": true,
@@ -50,7 +45,7 @@
     "run_active_scan": true
   },
   "testing": {
-    "allow_state_changing_probes": true,
+    "allow_state_changing_probes": false,
     "scan_intensity": "standard"
   }
 }

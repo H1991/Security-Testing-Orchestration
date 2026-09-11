@@ -2,18 +2,40 @@
 import io
 import logging
 
+import pytest
+
+import stof.core.logger as logger_module
 from stof.core.logger import configure_logging, get_logger
 
 
-def _fresh_root():
-    """Reset the shared `stof` logger between tests so handler
-    installation/format assertions don't leak across test cases."""
-    import stof.core.logger as logger_module
-
+@pytest.fixture(autouse=True)
+def _isolated_stof_logger():
+    """`configure_logging()` mutates process-global logging state (installs
+    a handler on the shared `stof` root logger and sets `propagate = False`
+    so its own handler doesn't double-print through Python's root logger).
+    That's correct for a real process, but this file used to only reset
+    state *before* each test (a plain `_fresh_root()` helper) -- so
+    `propagate` stayed `False` after the *last* test here ran, for the rest
+    of the pytest session. `caplog` relies on propagation to the root
+    logger, so that leak silently broke it for every unrelated test
+    elsewhere that checks a `stof.*` log message afterwards -- the real
+    cause of a previously-flaky-looking failure in
+    test_modules_registry.py's skip-warning assertion (passed alone,
+    failed in the full suite, regardless of run order). Restoring here
+    after every test, regardless of outcome, keeps this file's global-state
+    pokes from leaking into the rest of the suite.
+    """
     root = logging.getLogger("stof")
+    original_handlers = list(root.handlers)
+    original_propagate = root.propagate
+    original_configured = logger_module._configured
     root.handlers.clear()
     logger_module._configured = False
-    return root
+    yield
+    root.handlers.clear()
+    root.handlers.extend(original_handlers)
+    root.propagate = original_propagate
+    logger_module._configured = original_configured
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +44,6 @@ def _fresh_root():
 
 
 def test_configure_logging_formats_with_layer_tag():
-    _fresh_root()
     buffer = io.StringIO()
     configure_logging(level=logging.INFO, stream=buffer)
 
@@ -44,7 +65,6 @@ def test_get_logger_namespaces_under_stof():
 
 
 def test_configure_logging_is_idempotent_and_does_not_duplicate_handlers():
-    _fresh_root()
     buffer = io.StringIO()
     configure_logging(level=logging.INFO, stream=buffer)
     configure_logging(level=logging.INFO, stream=buffer)
@@ -59,7 +79,6 @@ def test_configure_logging_is_idempotent_and_does_not_duplicate_handlers():
 
 
 def test_unrecognised_logger_prefix_falls_back_to_stof_tag():
-    _fresh_root()
     buffer = io.StringIO()
     configure_logging(level=logging.INFO, stream=buffer)
 

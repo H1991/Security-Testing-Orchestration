@@ -21,17 +21,20 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hmac
 import json
 import os
 import re
+import secrets
 import shutil
 import sys
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
-from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -51,6 +54,7 @@ USERS_PATH = REPO_ROOT / "config" / "users.json"
 # docstring for why the scan engine stays single-target while this file
 # gives the console real multi-application support.
 TARGETS_PATH = REPO_ROOT / "config" / "targets.json"
+CONSOLE_AUTH_PATH = REPO_ROOT / "config" / "console_auth.json"
 SESSIONS_DB_PATH = REPO_ROOT / "data" / "stof.db"  # same path stof/main.py's SessionStore uses
 ENV_PATH = REPO_ROOT / ".env"
 TESTCASES_PATH = REPO_ROOT / "config" / "testcases.json"
@@ -881,19 +885,39 @@ class BurpTestRequest(BaseModel):
     api_key: str | None = None
 
 
-class CredentialsUpdateRequest(BaseModel):
-    admin_username: str | None = None
-    admin_password: str | None = None
-    normal_username: str | None = None
-    normal_password: str | None = None
-    # "form_login" (default, browser login form, auto-detected) or "jwt"
-    # (no login step -- `admin_password`/`normal_password` is read as a
-    # pre-issued bearer token instead, see stof/auth/jwt_auth.py's own
-    # docstring on why `password` doubles as the token field). `None`
-    # leaves whatever's already configured untouched, same partial-update
-    # convention the rest of this endpoint already uses.
-    admin_auth_type: Literal["form_login", "jwt"] | None = None
-    normal_auth_type: Literal["form_login", "jwt"] | None = None
+class RoleCredentialUpdate(BaseModel):
+    """One role's slice of a `TargetProfileRequest` -- a target now
+    carries a LIST of these (`TargetProfileRequest.roles`) instead of a
+    fixed admin/normal pair, so a tester with exactly one account for a
+    target isn't shown two equal-weight identity blocks (see the New
+    Scan Credentials card), and a target with three real roles isn't
+    artificially capped at two. `role` is a free-text display label
+    (any string the operator typed, e.g. "Admin", "Support Agent") --
+    it's also the key `stof.ui.targets.py` matches an update against an
+    already-existing role entry on the profile, so renaming a role via
+    this field actually creates a NEW role rather than renaming the old
+    one; the UI always removes-then-recreates for an intentional rename
+    rather than exposing that distinction to the operator.
+
+    Same partial-update convention as every other field on
+    `TargetProfileRequest`: `None` (omitted) leaves that field
+    untouched, `""` on `username` clears the whole role's credentials
+    (mirrors the historical `DELETE /api/credentials/{role}` behavior,
+    just expressed as a value). `remove=True` drops the role entirely
+    -- the UI's per-role "Remove" button -- independent of whatever
+    else this update carries for it."""
+
+    role: str
+    username: str | None = None
+    password: str | None = None
+    auth_type: Literal["form_login", "jwt"] | None = None
+    # Optional TOTP/MFA secret (stof.config.schema.UserConfig.
+    # totp_secret) -- `None` leaves whatever's configured untouched,
+    # `""` explicitly turns MFA off for this account, any other value
+    # sets/replaces it. Never echoed back by any endpoint, same
+    # write-only rule as `password`.
+    totp_secret: str | None = None
+    remove: bool = False
 
 
 class TargetProfileRequest(BaseModel):
@@ -903,10 +927,13 @@ class TargetProfileRequest(BaseModel):
     Pydantic can't express "required on create, optional on update" in
     one model without two near-duplicate classes. Every other field is
     independently optional, the same partial-update convention
-    `/api/config/target` and `/api/credentials` already use: `None`
-    (omitted) leaves it untouched; `""` on a selector or a username
-    clears it (a blank username also drops that role's credentials
-    entirely, mirroring `DELETE /api/credentials/{role}`)."""
+    `/api/config/target` already uses: `None` (omitted) leaves it
+    untouched; `""` on a selector clears it. `roles` is different from
+    every other field here: it's `None`-or-a-list, and an update only
+    touches the roles it actually names -- a role this profile already
+    has that isn't mentioned in `roles` is left completely alone,
+    exactly like every other partial-update field, just at list-element
+    granularity instead of a single value."""
 
     name: str | None = None
     app_type: Literal["web", "api", "mobile_api", "other"] | None = None
@@ -923,20 +950,7 @@ class TargetProfileRequest(BaseModel):
     crawler_exclude_patterns: list[str] | None = None
     idor_candidate_ids: list[str] | None = None
     requires_assisted_login: bool | None = None
-    admin_username: str | None = None
-    admin_password: str | None = None
-    admin_auth_type: Literal["form_login", "jwt"] | None = None
-    # Optional TOTP/MFA secret for this role (stof.config.schema.
-    # UserConfig.totp_secret) -- same partial-update philosophy as
-    # every other field here: `None` (omitted) leaves whatever's
-    # configured untouched; `""` explicitly turns MFA off for this
-    # account; any other value sets/replaces it. Never echoed back by
-    # any endpoint, same write-only rule as admin_password.
-    admin_totp_secret: str | None = None
-    normal_username: str | None = None
-    normal_password: str | None = None
-    normal_auth_type: Literal["form_login", "jwt"] | None = None
-    normal_totp_secret: str | None = None
+    roles: list[RoleCredentialUpdate] | None = None
     scan_intensity: Literal["cautious", "standard", "aggressive"] | None = None
     allow_state_changing_probes: bool | None = None
 
@@ -971,6 +985,258 @@ async def _require_api_key(request: Request, call_next):
     gated = _CONSOLE_API_KEY and request.url.path.startswith("/api/") and request.url.path != "/api/health"
     if gated and request.headers.get("X-STOF-API-Key") != _CONSOLE_API_KEY:
         return JSONResponse(status_code=401, content={"detail": "missing or invalid X-STOF-API-Key header"})
+    return await call_next(request)
+
+
+# ---------------------------------------------------------------------
+# PIN login (browser session gate)
+# ---------------------------------------------------------------------
+# `STOF_CONSOLE_API_KEY` above is for programmatic callers (curl, CI) --
+# a raw header, no cookie, no login screen. This is the browser-facing
+# counterpart: a real login screen a team shares a container through,
+# gating with a signed session cookie instead of a header the console
+# UI itself would have no way to attach to its own page load.
+#
+# Deliberately a single shared PIN for now, not a per-user account --
+# "initially hardcoded, later bind with a real user profile" was the
+# explicit, stated scope. The one thing worth building future-proof
+# now is the session/cookie plumbing itself (real HttpOnly cookies,
+# real server-side session tokens, real logout) -- swapping the PIN
+# check for a username+password/user-lookup later only touches
+# `_verify_pin`/`start_login` below, nothing about how a session is
+# held or validated afterward.
+#
+# Sessions are in-memory only (not persisted to stof.db) -- a server
+# restart requiring everyone to re-enter the PIN is the correct,
+# expected behavior for a login gate, not a bug; nothing about scan
+# state depends on it (scans/findings already persist to disk/SQLite
+# independently of this).
+_CONSOLE_PIN = os.environ.get("STOF_CONSOLE_PIN", "").strip()
+_PIN_SESSION_COOKIE = "stof_session"
+_PIN_SESSION_TTL_S = 8 * 3600  # matches the "Maximum session duration" default the reference design proposed
+_pin_sessions: dict[str, float] = {}  # token -> expires_at (monotonic-ish unix time)
+# Idle (inactivity) auto-logout -- a separate, additional opt-in on top
+# of the absolute 8h session cap above: an operator who configures it
+# in Administration gets logged out after N minutes of no real API
+# activity, regardless of how much of the 8h cap is left. `0`/unset
+# (the default) disables this entirely -- same "unset means no
+# behavior change" convention every opt-in gate in this file already
+# follows. Enforced here (server-side, `_pin_session_valid` below)
+# rather than only client-side, since a client-side-only timer is just
+# a UX nicety a closed tab or disabled JS trivially bypasses -- this is
+# the actual security control; the browser-side idle timer (index.html)
+# is the fast, friendly path that logs the operator out the moment
+# they'd notice, before their next request would 401 against this.
+_pin_last_activity: dict[str, float] = {}  # token -> last-seen unix time
+
+
+def _current_idle_timeout_minutes() -> int:
+    stored = _read_json(CONSOLE_AUTH_PATH)
+    if isinstance(stored, dict):
+        try:
+            return max(0, int(stored.get("idle_timeout_minutes") or 0))
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+# Brute-force protection: a 6-digit PIN is only 1,000,000 combinations
+# -- meaningless without a real lockout, unlike a proper password. Kept
+# as simple, unauthenticated-caller-scoped global counters (not
+# per-account -- there IS no account yet) rather than per-IP, since a
+# shared-container deployment behind one NAT/proxy would otherwise let
+# one legitimate operator's failed attempts lock out everyone else's IP
+# bucket anyway; a single shared gate's failure budget is naturally
+# shared too.
+_PIN_MAX_ATTEMPTS = 5
+_PIN_LOCKOUT_S = 30
+_pin_failed_attempts = 0
+_pin_locked_until = 0.0
+
+
+def _current_pin() -> str:
+    """The PIN actually in effect: a runtime change via `POST
+    /api/auth/change-pin` (persisted to `console_auth.json`) always
+    wins over `STOF_CONSOLE_PIN` -- the env var is only the initial
+    value a fresh deployment starts with, per the explicit "initially
+    hardcoded, later changeable" scope this was built to."""
+    stored = _read_json(CONSOLE_AUTH_PATH)
+    if isinstance(stored, dict) and stored.get("pin"):
+        return str(stored["pin"]).strip()
+    return _CONSOLE_PIN
+
+
+def _pin_configured() -> bool:
+    return bool(_current_pin())
+
+
+def _new_pin_session() -> str:
+    token = secrets.token_urlsafe(32)
+    now = time.time()
+    _pin_sessions[token] = now + _PIN_SESSION_TTL_S
+    _pin_last_activity[token] = now
+    return token
+
+
+def _drop_pin_session(token: str) -> None:
+    _pin_sessions.pop(token, None)
+    _pin_last_activity.pop(token, None)
+
+
+def _pin_session_valid(token: str | None) -> bool:
+    if not token:
+        return False
+    expires_at = _pin_sessions.get(token)
+    if expires_at is None:
+        return False
+    now = time.time()
+    if expires_at < now:
+        _drop_pin_session(token)
+        return False
+    idle_minutes = _current_idle_timeout_minutes()
+    if idle_minutes and now - _pin_last_activity.get(token, now) > idle_minutes * 60:
+        _drop_pin_session(token)
+        return False
+    return True
+
+
+class PinLoginRequest(BaseModel):
+    pin: str
+
+
+@app.post("/api/auth/login")
+def pin_login(body: PinLoginRequest, response: Response) -> dict:
+    global _pin_failed_attempts, _pin_locked_until
+    if not _pin_configured():
+        raise HTTPException(400, "no console PIN is configured (STOF_CONSOLE_PIN is unset) -- nothing to log in to")
+    now = time.time()
+    if now < _pin_locked_until:
+        remaining = int(_pin_locked_until - now) + 1
+        raise HTTPException(429, f"too many incorrect attempts -- try again in {remaining}s")
+    if not hmac.compare_digest(body.pin.strip(), _current_pin()):
+        _pin_failed_attempts += 1
+        if _pin_failed_attempts >= _PIN_MAX_ATTEMPTS:
+            _pin_locked_until = now + _PIN_LOCKOUT_S
+            _pin_failed_attempts = 0
+            raise HTTPException(429, f"too many incorrect attempts -- locked for {_PIN_LOCKOUT_S}s")
+        remaining_attempts = _PIN_MAX_ATTEMPTS - _pin_failed_attempts
+        raise HTTPException(401, f"incorrect PIN -- {remaining_attempts} attempt(s) remaining before a temporary lockout")
+    _pin_failed_attempts = 0
+    token = _new_pin_session()
+    response.set_cookie(
+        _PIN_SESSION_COOKIE, token, max_age=_PIN_SESSION_TTL_S, httponly=True, samesite="strict",
+        secure=False,  # the console itself is loopback/LAN HTTP by default (see module docstring) -- forcing Secure would break the cookie on that exact deployment shape
+    )
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+def pin_logout(request: Request, response: Response) -> dict:
+    token = request.cookies.get(_PIN_SESSION_COOKIE)
+    if token:
+        _drop_pin_session(token)
+    response.delete_cookie(_PIN_SESSION_COOKIE)
+    return {"ok": True}
+
+
+class PinChangeRequest(BaseModel):
+    current_pin: str
+    new_pin: str
+
+
+@app.post("/api/auth/change-pin")
+def pin_change(body: PinChangeRequest) -> dict:
+    """Requires an already-valid session (this route is NOT in
+    `_PIN_EXEMPT_PATHS`, so `_require_pin_session` already enforced that
+    before this handler ever runs) PLUS the current PIN itself -- same
+    defense-in-depth every "change my password" flow uses: a hijacked
+    but still-live session shouldn't alone be enough to lock the real
+    operator out by changing the PIN out from under them. Persists to
+    `console_auth.json` so the new PIN survives a container restart,
+    unlike the in-memory session store above."""
+    if not _pin_configured():
+        raise HTTPException(400, "no console PIN is configured -- nothing to change")
+    if not hmac.compare_digest(body.current_pin.strip(), _current_pin()):
+        raise HTTPException(401, "current PIN is incorrect")
+    new_pin = body.new_pin.strip()
+    if not (new_pin.isdigit() and len(new_pin) == 6):
+        raise HTTPException(400, "new PIN must be exactly 6 digits")
+    _write_console_auth(pin=new_pin)
+    return {"ok": True}
+
+
+def _write_console_auth(**updates) -> None:
+    """Merges into `console_auth.json` rather than overwriting it --
+    this file now holds more than just the PIN (see
+    `idle_timeout_minutes` below), so a caller changing one setting
+    must never silently wipe out the others. `updates` values of `None`
+    are dropped, not written, so a caller only ever touches the key(s)
+    it actually means to change."""
+    stored = _read_json(CONSOLE_AUTH_PATH)
+    doc = dict(stored) if isinstance(stored, dict) else {}
+    for key, value in updates.items():
+        if value is not None:
+            doc[key] = value
+    CONSOLE_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONSOLE_AUTH_PATH.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
+
+
+class IdleTimeoutRequest(BaseModel):
+    # Minutes of no real API activity before this session is force-
+    # logged-out. 0 disables it entirely -- the default, matching every
+    # other opt-in gate in this file ("unset means no behavior change").
+    idle_timeout_minutes: int
+
+
+@app.get("/api/auth/idle-timeout")
+def get_idle_timeout() -> dict:
+    return {"idle_timeout_minutes": _current_idle_timeout_minutes()}
+
+
+@app.put("/api/auth/idle-timeout")
+def set_idle_timeout(body: IdleTimeoutRequest) -> dict:
+    minutes = max(0, min(body.idle_timeout_minutes, 24 * 60))  # a cap, not a real limit -- just guards against a fat-fingered huge number silently meaning "never"
+    _write_console_auth(idle_timeout_minutes=minutes)
+    return {"idle_timeout_minutes": minutes}
+
+
+@app.get("/api/auth/session")
+def pin_session_status(request: Request) -> dict:
+    if not _pin_configured():
+        return {"required": False, "authenticated": True}
+    token = request.cookies.get(_PIN_SESSION_COOKIE)
+    return {
+        "required": True,
+        "authenticated": _pin_session_valid(token),
+        # Handed back on every session check (not just a dedicated
+        # settings fetch) so the browser-side idle timer can arm itself
+        # right after boot without a second round trip.
+        "idle_timeout_minutes": _current_idle_timeout_minutes(),
+    }
+
+
+_PIN_EXEMPT_PATHS = {"/api/health", "/api/auth/login", "/api/auth/session"}
+
+
+@app.middleware("http")
+async def _require_pin_session(request: Request, call_next):
+    """Mirrors `_require_api_key` above (same opt-in-only, same
+    `/api/*`-only scope, same reasoning for never gating the static
+    HTML shell) but for the browser login flow: a valid `stof_session`
+    cookie instead of a static header. `/api/auth/login` must stay
+    reachable while unauthenticated (that's how a session is ever
+    obtained), and `/api/auth/session` so the frontend can ask "am I
+    logged in?" before it knows whether to render the PIN screen."""
+    if not _pin_configured() or not request.url.path.startswith("/api/") or request.url.path in _PIN_EXEMPT_PATHS:
+        return await call_next(request)
+    token = request.cookies.get(_PIN_SESSION_COOKIE)
+    if not _pin_session_valid(token):
+        return JSONResponse(status_code=401, content={"detail": "not authenticated -- PIN login required"})
+    # A real, gated API call -- the definition of "active" the idle
+    # timeout above measures against. Bumped here rather than in
+    # `_pin_session_valid` itself so a READ of validity (e.g. from a
+    # future caller that just wants to check, not use, the session)
+    # never doubles as activity on its own.
+    _pin_last_activity[token] = time.time()
     return await call_next(request)
 
 
@@ -1227,68 +1493,6 @@ async def test_burp_connection(body: BurpTestRequest) -> dict:
     return await loop.run_in_executor(None, _check)
 
 
-def _apply_credentials_update(
-    by_role: dict, role: str, default_id: str, username: str | None, env_var: str, auth_type: str | None
-) -> None:
-    """One role's slice of `set_credentials()`'s partial update -- pulled
-    out so the endpoint itself reads as one straight-line sequence
-    instead of a repeated if/if/if block per role, and stays under this
-    project's complexity gate (CLAUDE.md's own quality standard)."""
-    if username is not None:
-        entry = by_role.setdefault(role, {"id": default_id, "role": role, "auth_type": "form_login"})
-        entry["username"] = username
-        entry["password"] = f"{{{{env:{env_var}}}}}"
-    if auth_type is not None and role in by_role:
-        by_role[role]["auth_type"] = auth_type
-
-
-@app.put("/api/credentials")
-def set_credentials(body: CredentialsUpdateRequest) -> dict:
-    """Mirrors `stof configure`'s own credential-handling rule (CLAUDE.md
-    rule 6): a password is written ONLY to `.env`, never to users.json,
-    which only ever gets a `{{env:VAR}}` token. Usernames are plain
-    identifiers (not secrets) and go straight into users.json."""
-    users_doc = _read_json(USERS_PATH) or {"users": []}
-    by_role = {u.get("role"): u for u in users_doc.get("users", [])}
-
-    _apply_credentials_update(by_role, "admin", "admin-01", body.admin_username, "ADMIN_PASSWORD", body.admin_auth_type)
-    _apply_credentials_update(by_role, "normal", "user-01", body.normal_username, "USER_PASSWORD", body.normal_auth_type)
-
-    if body.admin_password:
-        _write_dotenv_value(ENV_PATH, "ADMIN_PASSWORD", body.admin_password)
-    if body.normal_password:
-        _write_dotenv_value(ENV_PATH, "USER_PASSWORD", body.normal_password)
-
-    users_doc["users"] = list(by_role.values())
-    USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    USERS_PATH.write_text(json.dumps(users_doc, indent=2) + "\n", encoding="utf-8")
-    # Never echo a password back, even the token form -- the response
-    # confirms which usernames are now configured, nothing else.
-    return {"admin_username": by_role.get("admin", {}).get("username"), "normal_username": by_role.get("normal", {}).get("username")}
-
-
-@app.delete("/api/credentials/{role}")
-def delete_credentials(role: str) -> dict:
-    """Drops one role from `users.json` entirely -- the other half of
-    single-account support: a target that only issues one account has
-    no admin (or no normal-user) entry to begin with, and an operator
-    who was handed just one needs a way to remove whichever placeholder
-    role was there before, not just leave it stale. `stof/main.py`'s own
-    role resolution already collapses `high_priv_role`/`low_priv_role`
-    to whatever's left when one role is gone (see EXPLOIT_COVERAGE.md's
-    TC-055.5 note for how cross-identity techniques degrade honestly
-    once that happens) -- this just lets that state be reached from the
-    UI instead of hand-editing the file."""
-    users_doc = _read_json(USERS_PATH) or {"users": []}
-    remaining = [u for u in users_doc.get("users", []) if u.get("role") != role]
-    if len(remaining) == len(users_doc.get("users", [])):
-        raise HTTPException(404, f"no '{role}' account configured in users.json")
-    users_doc["users"] = remaining
-    USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    USERS_PATH.write_text(json.dumps(users_doc, indent=2) + "\n", encoding="utf-8")
-    return {"removed": role, "remaining_roles": [u.get("role") for u in remaining]}
-
-
 # ---------------------------------------------------------------------------
 # Target Profiles -- the console's multi-application layer (see
 # stof/ui/targets.py's own module docstring for the full design). A
@@ -1333,10 +1537,14 @@ def _migrate_single_target_to_profile() -> dict:
     users_doc = _read_json(USERS_PATH) or {}
     for user in users_doc.get("users", []):
         role = user.get("role")
-        if role not in ("admin", "normal"):
+        username = user.get("username")
+        if not role or not username:
             continue
-        profile[f"{role}_username"] = user.get("username")
-        profile[f"{role}_auth_type"] = user.get("auth_type", "form_login")
+        entry = {
+            "id": user.get("id") or role, "role": role, "username": username,
+            "auth_type": user.get("auth_type", "form_login"),
+            "password_set": False, "totp_secret_set": False,
+        }
         # An existing single-target install's users.json entry can
         # reference ANY {{env:VAR}} token -- not necessarily the literal
         # names ADMIN_PASSWORD/USER_PASSWORD (this repo's own real
@@ -1348,7 +1556,8 @@ def _migrate_single_target_to_profile() -> dict:
         existing_value = _read_dotenv_value(ENV_PATH, token_match.group(1)) if token_match else None
         if existing_value is not None:
             _write_dotenv_value(ENV_PATH, target_store.env_key(role, target_id), existing_value)
-            profile[f"{role}_password_set"] = True
+            entry["password_set"] = True
+        profile["roles"].append(entry)
 
     doc["targets"] = [profile]
     doc["active_target_id"] = target_id
@@ -1380,11 +1589,12 @@ def _activate_target(doc: dict, target_id: str) -> dict:
     USERS_PATH.parent.mkdir(parents=True, exist_ok=True)
     USERS_PATH.write_text(json.dumps(users_doc, indent=2) + "\n", encoding="utf-8")
 
-    for role in ("admin", "normal"):
-        if profile.get(f"{role}_password_set"):
+    for entry in profile.get("roles", []):
+        role = entry["role"]
+        if entry.get("password_set"):
             value = _read_dotenv_value(ENV_PATH, target_store.env_key(role, target_id))
             if value is not None:
-                plain_key = "ADMIN_PASSWORD" if role == "admin" else "USER_PASSWORD"
+                plain_key = target_store.plain_env_var(role)
                 _write_dotenv_value(ENV_PATH, plain_key, value)
                 # `stof/config/loader.py`'s `load_dotenv()` deliberately never
                 # overrides an already-set os.environ value (so a real shell
@@ -1400,13 +1610,13 @@ def _activate_target(doc: dict, target_id: str) -> dict:
                 # ever picking up a second target's real credentials.
                 os.environ[plain_key] = value
         # Same per-profile -> plain-env-var copy, for the TOTP secret
-        # `stof/config/loader.py`'s {{env:ADMIN_TOTP_SECRET}}/
-        # {{env:USER_TOTP_SECRET}} tokens (written into users.json by
-        # `user_entries()` above) actually resolve against.
-        if profile.get(f"{role}_totp_secret_set"):
+        # `stof/config/loader.py`'s {{env:<ROLE>_TOTP_SECRET}} token
+        # (written into users.json by `user_entries()` above) actually
+        # resolves against.
+        if entry.get("totp_secret_set"):
             totp_value = _read_dotenv_value(ENV_PATH, target_store.totp_env_key(role, target_id))
             if totp_value is not None:
-                totp_plain_key = "ADMIN_TOTP_SECRET" if role == "admin" else "USER_TOTP_SECRET"
+                totp_plain_key = target_store.plain_totp_env_var(role)
                 _write_dotenv_value(ENV_PATH, totp_plain_key, totp_value)
                 os.environ[totp_plain_key] = totp_value
 
@@ -1417,27 +1627,29 @@ def _activate_target(doc: dict, target_id: str) -> dict:
 
 def _apply_target_credentials(profile: dict, target_id: str, body: TargetProfileRequest) -> None:
     """The credential half of a target-profile create/update -- pulled
-    out for the same reason `_apply_credentials_update` was (CLAUDE.md's
-    complexity gate), and follows the exact same write-only-to-.env
-    rule (CLAUDE.md rule 6)."""
-    target_store.set_role_credentials(profile, "admin", body.admin_username, body.admin_auth_type)
-    target_store.set_role_credentials(profile, "normal", body.normal_username, body.normal_auth_type)
-    if body.admin_password:
-        _write_dotenv_value(ENV_PATH, target_store.env_key("admin", target_id), body.admin_password)
-        target_store.mark_password_set(profile, "admin")
-    if body.normal_password:
-        _write_dotenv_value(ENV_PATH, target_store.env_key("normal", target_id), body.normal_password)
-        target_store.mark_password_set(profile, "normal")
-    # TOTP is genuinely optional per account (unlike password, which is
-    # only ever set/replaced, never turned off) -- an empty string
-    # explicitly clears it, so this still has to run when
-    # admin_totp_secret == "" even though that's falsy.
-    if body.admin_totp_secret:
-        _write_dotenv_value(ENV_PATH, target_store.totp_env_key("admin", target_id), body.admin_totp_secret)
-    target_store.set_role_totp_secret(profile, "admin", body.admin_totp_secret)
-    if body.normal_totp_secret:
-        _write_dotenv_value(ENV_PATH, target_store.totp_env_key("normal", target_id), body.normal_totp_secret)
-    target_store.set_role_totp_secret(profile, "normal", body.normal_totp_secret)
+    out for the same reason every other multi-step endpoint body in
+    this file is (CLAUDE.md's complexity gate), and follows the exact
+    same write-only-to-.env rule (CLAUDE.md rule 6). Iterates
+    `body.roles` (any number of entries, any free-text role label)
+    rather than a fixed admin/normal pair -- see `RoleCredentialUpdate`'s
+    own docstring for the update semantics of each field."""
+    if body.roles is None:
+        return
+    for update in body.roles:
+        if update.remove:
+            target_store.remove_role(profile, update.role)
+            continue
+        target_store.set_role_credentials(profile, update.role, update.username, update.auth_type)
+        if update.password:
+            _write_dotenv_value(ENV_PATH, target_store.env_key(update.role, target_id), update.password)
+            target_store.mark_password_set(profile, update.role)
+        # TOTP is genuinely optional per account (unlike password, which
+        # is only ever set/replaced, never turned off) -- an empty
+        # string explicitly clears it, so this still has to run when
+        # totp_secret == "" even though that's falsy.
+        if update.totp_secret:
+            _write_dotenv_value(ENV_PATH, target_store.totp_env_key(update.role, target_id), update.totp_secret)
+        target_store.set_role_totp_secret(profile, update.role, update.totp_secret)
 
 
 @app.get("/api/targets")

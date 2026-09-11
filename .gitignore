@@ -30,6 +30,11 @@ __pycache__/
 .env
 *.egg-info/
 
+# Holds the runtime-changed console PIN in plaintext (see
+# stof/ui/server.py's change-pin endpoint) -- same secret-handling rule
+# as .env above, never targets.json's {{env:VAR}}-token convention.
+config/console_auth.json
+
 data/sessions/
 data/evidence/
 data/workflows/*.json
