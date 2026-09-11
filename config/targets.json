@@ -152,8 +152,8 @@
       "scan_intensity": "standard",
       "allow_state_changing_probes": false,
       "created_at": "2026-09-11T10:44:25.248445+00:00",
-      "updated_at": "2026-09-11T10:44:25.248549+00:00"
+      "updated_at": "2026-09-11T11:57:45.454059+00:00"
     }
   ],
-  "active_target_id": "xtroy"
+  "active_target_id": "demo-testfire-net"
 }

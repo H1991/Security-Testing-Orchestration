@@ -17,10 +17,20 @@ from .assisted_login import AssistedLoginProvider
 from .base import AuthExpiredError, AuthFailedError, AuthProvider
 from .form_login import FormLoginProvider
 from .jwt_auth import JWTAuthProvider
+from .workflow_login import WorkflowLoginProvider
 
 AUTH_PROVIDERS: dict[str, type[AuthProvider]] = {
     "form_login": FormLoginProvider,
     "jwt": JWTAuthProvider,
+    # Selected by UserConfig.auth_type == "recorded_workflow" --
+    # WorkflowLoginProvider needs a WorkflowRepository, unlike the two
+    # above's kwarg-optional constructors, so `get_provider("recorded_
+    # workflow")` with no kwargs will raise; `stof/main.py`'s own
+    # session-manager wiring constructs it directly with one instead of
+    # going through this registry (same reason `FormLoginProvider`
+    # itself is built directly there too, per this file's own opening
+    # docstring).
+    "recorded_workflow": WorkflowLoginProvider,
     # Not auto-selected by any UserConfig.auth_type value -- a target
     # opts into this by setting TargetConfig.requires_assisted_login,
     # which swaps `FormLoginProvider` out for this one entirely for
@@ -48,5 +58,6 @@ __all__ = [
     "AuthProvider",
     "FormLoginProvider",
     "JWTAuthProvider",
+    "WorkflowLoginProvider",
     "get_provider",
 ]

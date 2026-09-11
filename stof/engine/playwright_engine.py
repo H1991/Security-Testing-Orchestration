@@ -87,7 +87,7 @@ class PlaywrightEngine:
 
         try:
             for action in actions:
-                await self._execute(page, action)
+                await execute_action(page, action)
                 completed += 1
         except Exception as exc:
             error = f"{type(exc).__name__}: {exc}"
@@ -109,15 +109,27 @@ class PlaywrightEngine:
             response_log=response_log,
         )
 
-    async def _execute(self, page: "Page", action: dict[str, Any]) -> None:
-        action_type = action.get("type")
-        if action_type == "navigate":
-            await page.goto(action["url"])
-        elif action_type == "fill":
-            await page.fill(action["selector"], action.get("value", ""))
-        elif action_type == "click":
-            await page.click(action["selector"])
-        elif action_type == "wait_for":
-            await page.wait_for_selector(action["selector"], timeout=action.get("timeout_ms", 5000))
-        else:
-            raise UnknownActionType(f"unknown action type: {action_type!r}")
+
+async def execute_action(page: "Page", action: dict[str, Any]) -> None:
+    """The navigate/fill/click/wait_for dispatch every workflow replay
+    ultimately runs -- a free function (not a `PlaywrightEngine` method)
+    so `stof/auth/workflow_login.py`'s `WorkflowLoginProvider` can reuse
+    the exact same action execution for a recorded LOGIN workflow
+    without duplicating it. `PlaywrightEngine.replay()` above closes the
+    page itself when it's done (it created that page), which is why
+    `WorkflowLoginProvider` doesn't call `replay()` directly -- an
+    `AuthProvider.authenticate()` never owns the page it's handed (see
+    `stof/auth/base.py`'s docstring; `FormLoginProvider`/
+    `AssistedLoginProvider` both leave the page open for their caller),
+    so it needs this lower-level piece instead."""
+    action_type = action.get("type")
+    if action_type == "navigate":
+        await page.goto(action["url"])
+    elif action_type == "fill":
+        await page.fill(action["selector"], action.get("value", ""))
+    elif action_type == "click":
+        await page.click(action["selector"])
+    elif action_type == "wait_for":
+        await page.wait_for_selector(action["selector"], timeout=action.get("timeout_ms", 5000))
+    else:
+        raise UnknownActionType(f"unknown action type: {action_type!r}")

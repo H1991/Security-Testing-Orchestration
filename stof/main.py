@@ -37,7 +37,7 @@ import click
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
-from stof.auth import AssistedLoginProvider, FormLoginProvider, JWTAuthProvider
+from stof.auth import AssistedLoginProvider, FormLoginProvider, JWTAuthProvider, WorkflowLoginProvider
 from stof.bench import score_false_positives, score_recall
 from stof.cleanup import registry as cleanup_registry
 from stof.config import ConfigError, load_config, load_dotenv, load_users
@@ -51,6 +51,8 @@ from stof.crawler.crawler import crawl as run_crawler
 from stof.crawler.endpoint_store import Endpoint, write_endpoints
 from stof.crawler.endpoint_store import load as load_endpoints
 from stof.crawler.endpoint_store import merge as merge_endpoints
+from stof.crawler.hidden_param_discovery import discover_hidden_params
+from stof.crawler.openapi_discovery import discover_openapi_endpoints
 from stof.engine.burp_capture import capture_findings_via_burp
 from stof.engine.burp_controller import BurpApiError, BurpController
 from stof.engine.multi_session import SessionPool
@@ -76,6 +78,8 @@ from stof.modules.mfa_tests import MfaTestConfig, MfaTestsModule
 from stof.modules.results import ERROR, TestCaseResult, extract_findings, skipped_techniques, summarize
 from stof.modules.sqli_tests import SqliTestConfig, SqliTestsModule
 from stof.modules.ssrf_tests import SsrfTestConfig, SsrfTestsModule
+from stof.modules.tls_tests import TlsTestConfig, TlsTestsModule
+from stof.modules.vulnerable_components_tests import VulnerableComponentsConfig, VulnerableComponentsModule
 from stof.modules.xss_tests import XssTestConfig, XssTestsModule
 from stof.passive.engine import PassiveEngine
 from stof.recon import build_target_profile, run_recon, write_recon_report
@@ -229,6 +233,8 @@ def _build_module_builders(config, jwt_roles: list[str], users_by_role: dict, ta
         "mfa_tests": lambda: MfaTestsModule(config=mfa_config),
         "csrf_tests": lambda: CsrfTestsModule(config=csrf_config),
         "configuration_tests": lambda: ConfigurationTestsModule(config=ConfigurationTestConfig(base_url=config.target.base_url, target_profile=target_profile)),
+        "tls_tests": lambda: TlsTestsModule(config=TlsTestConfig(base_url=config.target.base_url)),
+        "vulnerable_components_tests": lambda: VulnerableComponentsModule(config=VulnerableComponentsConfig(base_url=config.target.base_url)),
         "disclosure_tests": lambda: DisclosureTestsModule(config=DisclosureTestConfig(high_priv_role=high_priv_role or "admin")),
         "graphql_tests": lambda: GraphQLTestsModule(config=GraphQLTestConfig(
             high_priv_role=high_priv_role or "admin", low_priv_role=low_priv_role or "normal",
@@ -1103,10 +1109,11 @@ async def _run_crawl(
 
     login_provider = _build_login_provider(config)
     jwt_provider = JWTAuthProvider(token_url=config.target.jwt_token_url)
+    workflow_login_provider = WorkflowLoginProvider(WorkflowRepository())
     session_store = SessionStore(db_path=Path("data") / "stof.db")
     session_manager = SessionManager(
         users=users_by_role,
-        providers={"form_login": login_provider, "jwt": jwt_provider},
+        providers={"form_login": login_provider, "jwt": jwt_provider, "recorded_workflow": workflow_login_provider},
         store=session_store,
     )
 
@@ -1133,6 +1140,23 @@ async def _run_crawl(
             )
             anon_context = await session_pool.new_anonymous_context()
             try:
+                openapi_endpoints = await discover_openapi_endpoints(anon_context, config.target.base_url)
+                if openapi_endpoints:
+                    echo(f"[CRAWL] OpenAPI/Swagger spec found -- merged {len(openapi_endpoints)} endpoint(s) from it")
+                    endpoints = merge_endpoints(endpoints, openapi_endpoints)
+                # Authenticated, not anonymous -- a hidden parameter
+                # gated behind a real login (the common case: a
+                # mass-assignment-shaped admin/debug flag an
+                # authenticated request can reach) would show no
+                # behavioral difference at all to an anonymous caller.
+                # Falls back to the anonymous context only when this
+                # target genuinely has no configured role to crawl as.
+                hidden_param_context = await session_pool.get_context(crawl_roles[0]) if crawl_roles else anon_context
+                hidden_param_endpoints = await discover_hidden_params(hidden_param_context, endpoints)
+                if hidden_param_endpoints:
+                    total_found = sum(len(e.parameters) for e in hidden_param_endpoints)
+                    echo(f"[CRAWL] Hidden parameter discovery -- found {total_found} undocumented parameter(s) across {len(hidden_param_endpoints)} endpoint(s)")
+                    endpoints = merge_endpoints(endpoints, hidden_param_endpoints)
                 await verify_auth_required(endpoints, anon_context)
             finally:
                 await anon_context.close()
@@ -1281,10 +1305,11 @@ async def _run_test(
 
         login_provider = _build_login_provider(config)
         jwt_provider = JWTAuthProvider(token_url=config.target.jwt_token_url)
+        workflow_login_provider = WorkflowLoginProvider(WorkflowRepository())
         session_store = SessionStore(db_path=Path("data") / "stof.db")
         session_manager = SessionManager(
             users=users_by_role,
-            providers={"form_login": login_provider, "jwt": jwt_provider},
+            providers={"form_login": login_provider, "jwt": jwt_provider, "recorded_workflow": workflow_login_provider},
             store=session_store,
         )
         # As early as possible, same rationale as the rate limiter's own

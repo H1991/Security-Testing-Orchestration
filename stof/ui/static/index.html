@@ -252,6 +252,13 @@
   @keyframes pvBlink { 50% { opacity: 0; } }
   .pv-slots.pv-err .pv-slot { border-color: var(--critical); color: var(--critical); }
   .pv-slots.pv-ok .pv-slot { border-color: var(--accent); color: var(--accent); }
+  /* The dial's own "access granted" moment -- the shackle swings open,
+     same real physical read as a safe actually unlocking, right at
+     the center the whole login already draws the eye to. Held on
+     screen briefly (see pinSubmitVault()) instead of the gate
+     vanishing the instant the request resolves, so this is actually
+     seen, not just technically rendered for one frame. */
+  #pvLock.open #pvShackle { transform: rotate(-38deg) translate(-2px, -6px); }
   .pv-slots.pv-dim .pv-slot { opacity: .35; }
   .pv-slots-row.pv-shake { animation: pvShake .45s; }
   @keyframes pvShake { 0%,100%{transform:translateX(0)} 15%{transform:translateX(-7px)} 30%{transform:translateX(6px)} 45%{transform:translateX(-4px)} 60%{transform:translateX(3px)} 75%{transform:translateX(-2px)} }
@@ -3318,11 +3325,18 @@
     pvDial.spin(); pvSnd.clunk();
     try {
       await api("/api/auth/login", { method: "POST", body: JSON.stringify({ pin: pinValue }) });
-      document.getElementById("pvSlots").classList.remove("pv-ok");
+      // Slots stay green and the lock visibly swings open -- held on
+      // screen for a beat before the gate disappears, so "access
+      // granted" is an actual moment the operator sees, not a state
+      // that technically existed for one invisible frame before
+      // boot() replaces the whole screen.
+      document.getElementById("pvLock").classList.add("open");
       pvSnd.ok();
       pvSetStatus("ok", "Access granted.");
-      document.getElementById("pinGate").hidden = true;
-      boot();
+      setTimeout(function () {
+        document.getElementById("pinGate").hidden = true;
+        boot();
+      }, 900);
     } catch (err) {
       document.getElementById("pvSlots").classList.remove("pv-ok");
       // api() throws "<status> <statusText>: <json body>" -- the real
@@ -3360,6 +3374,7 @@
     document.getElementById("pinKeypad").classList.remove("pv-disabled");
     document.getElementById("pvSlots").classList.remove("pv-dim", "pv-err", "pv-ok");
     document.getElementById("pinError").hidden = true;
+    document.getElementById("pvLock").classList.remove("open");
     pvDial.clear();
     pvPaintSlots();
     pvSetAttempts(null);
@@ -3914,6 +3929,14 @@ async function loadHealth() {
       : (opts.authType === "jwt" ? "paste the bearer token" : "leave blank if this target has no such account");
     var mfaChecked = opts.hasTotp ? " checked" : "";
     var totpSectionStyle = opts.hasTotp ? "" : ' style="display:none;"';
+    var isWorkflow = opts.authType === "recorded_workflow";
+    var workflowSectionStyle = isWorkflow ? "" : ' style="display:none;"';
+    var workflows = opts.workflows || [];
+    var workflowOptions = workflows.length
+      ? workflows.map(function (w) {
+          return '<option value="' + escapeHtml(w.workflow_id) + '"' + (w.workflow_id === opts.loginWorkflowId ? " selected" : "") + '>' + escapeHtml(w.name) + " (" + w.action_count + " step" + (w.action_count === 1 ? "" : "s") + ')</option>';
+        }).join("")
+      : '<option value="">No recordings yet -- record one under Workflows first</option>';
     return (
       '<div class="role-block" data-client-key="' + opts.clientKey + '" data-original-role="' + (opts.isSaved ? escapeHtml(opts.role) : "") + '" data-original-has-totp="' + (opts.hasTotp ? "1" : "0") + '" data-password-set="' + (opts.passwordSet ? "1" : "0") + '">' +
         '<div class="role-block-head">' +
@@ -3922,9 +3945,11 @@ async function loadHealth() {
         "</div>" +
         '<div class="field"><label>Username</label><input type="text" data-field="username" autocomplete="off" value="' + escapeHtml(opts.username || "") + '" placeholder="leave blank if this target has no such account" /></div>' +
         '<div class="field"><label>Login method</label><select class="select" data-field="auth_type">' +
-          '<option value="form_login"' + (opts.authType === "jwt" ? "" : " selected") + '>Form login (auto-detected, no setup needed)</option>' +
+          '<option value="form_login"' + (opts.authType === "form_login" || !opts.authType ? " selected" : "") + '>Form login (auto-detected, no setup needed)</option>' +
           '<option value="jwt"' + (opts.authType === "jwt" ? " selected" : "") + '>API token / JWT (no login form at all)</option>' +
+          '<option value="recorded_workflow"' + (isWorkflow ? " selected" : "") + '>Use a recorded workflow (best for SPAs / unusual logins)</option>' +
         "</select></div>" +
+        '<div class="field" data-workflow-section' + workflowSectionStyle + '><label>Recorded login workflow</label><select class="select" data-field="login_workflow_id">' + workflowOptions + "</select></div>" +
         '<div class="field"><label data-field-label="password">' + (opts.authType === "jwt" ? "API token" : "Password") + ' <small>write-only, never shown back</small></label>' +
           '<input type="password" data-field="password" autocomplete="new-password" placeholder="' + passwordPlaceholder + '" /></div>' +
         '<label style="display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--text); cursor:pointer;">' +
@@ -3942,10 +3967,16 @@ async function loadHealth() {
     );
   }
 
+  // Populated by loadCredentialsFields() below (a GET /api/workflows
+  // fetch), read directly here rather than threaded through every
+  // addRoleBlock()/renderRoleBlocks() call site -- the "+ Add another
+  // role" button has no natural place to pass a fresh list from.
+  var availableWorkflows = [];
+
   function addRoleBlock(prefillRole) {
     roleBlockSeq++;
     var wrap = document.createElement("div");
-    wrap.innerHTML = roleBlockHtml({ clientKey: "new-" + roleBlockSeq, role: prefillRole || "", username: "", authType: "form_login", hasTotp: false, passwordSet: false, isSaved: false });
+    wrap.innerHTML = roleBlockHtml({ clientKey: "new-" + roleBlockSeq, role: prefillRole || "", username: "", authType: "form_login", hasTotp: false, passwordSet: false, isSaved: false, workflows: availableWorkflows });
     document.getElementById("rolesList").appendChild(wrap.firstElementChild);
   }
   document.getElementById("addRoleBtn").addEventListener("click", function () { addRoleBlock(""); });
@@ -3953,7 +3984,11 @@ async function loadHealth() {
   function renderRoleBlocks(roles) {
     var list = document.getElementById("rolesList");
     list.innerHTML = roles.map(function (r) {
-      return roleBlockHtml({ clientKey: "saved-" + r.role, role: r.role, username: r.username, authType: r.auth_type, hasTotp: r.has_totp, passwordSet: r.password_set, isSaved: true });
+      return roleBlockHtml({
+        clientKey: "saved-" + r.role, role: r.role, username: r.username, authType: r.auth_type,
+        hasTotp: r.has_totp, passwordSet: r.password_set, isSaved: true,
+        workflows: availableWorkflows, loginWorkflowId: r.login_workflow_id,
+      });
     }).join("");
     if (!roles.length) {
       // A brand-new target legitimately has zero accounts configured
@@ -3974,11 +4009,15 @@ async function loadHealth() {
   // in-progress data -- it must still show up here to edit, even though
   // it isn't usable for a scan/Verify Login/Manual Session yet.
   async function loadCredentialsFields() {
+    try { availableWorkflows = await api("/api/workflows"); } catch (err) { availableWorkflows = []; }
     try {
       var data = await api("/api/targets");
       var active = data.targets.find(function (t) { return t.id === data.active_target_id; });
       var roles = (active && active.roles || []).map(function (r) {
-        return { role: r.role, username: r.username, auth_type: r.auth_type, has_totp: r.totp_secret_set, password_set: r.password_set };
+        return {
+          role: r.role, username: r.username, auth_type: r.auth_type, has_totp: r.totp_secret_set,
+          password_set: r.password_set, login_workflow_id: r.login_workflow_id,
+        };
       });
       renderRoleBlocks(roles);
     } catch (err) {
@@ -4042,6 +4081,14 @@ async function loadHealth() {
     }
   }
 
+  // Only relevant once "Use a recorded workflow" is picked -- keeps
+  // the picker hidden for the common form_login/jwt case, the same
+  // pattern updateRoleBlockTotpVisibility already uses for TOTP.
+  function updateRoleBlockWorkflowVisibility(block) {
+    var isWorkflow = block.querySelector('[data-field="auth_type"]').value === "recorded_workflow";
+    block.querySelector("[data-workflow-section]").style.display = isWorkflow ? "" : "none";
+  }
+
   // The TOTP secret field/Upload-QR only matter once this account is
   // actually flagged as MFA-enabled -- keeps the common (no MFA) case
   // from showing an input that's never meant to be touched. Unchecking
@@ -4063,7 +4110,7 @@ async function loadHealth() {
   document.getElementById("rolesList").addEventListener("change", function (e) {
     var block = e.target.closest(".role-block");
     if (!block) return;
-    if (e.target.matches('[data-field="auth_type"]')) updateRoleBlockPasswordLabel(block);
+    if (e.target.matches('[data-field="auth_type"]')) { updateRoleBlockPasswordLabel(block); updateRoleBlockWorkflowVisibility(block); }
     else if (e.target.matches('[data-field="totp_enabled"]')) updateRoleBlockTotpVisibility(block);
     else if (e.target.matches('[data-field="totp_qr_file"]')) { handleTotpQrFile(block, e.target.files[0]); e.target.value = ""; }
   });
@@ -4085,12 +4132,19 @@ async function loadHealth() {
       // leaving it checked with the field empty means "keep what's
       // already there," not "set an empty secret."
       var totpSecret = mfaEnabled ? (typedSecret || null) : (hadTotp ? "" : null);
+      var authType = block.querySelector('[data-field="auth_type"]').value;
+      var workflowField = block.querySelector('[data-field="login_workflow_id"]');
       roles.push({
         role: roleName,
         username: block.querySelector('[data-field="username"]').value.trim() || null,
         password: block.querySelector('[data-field="password"]').value || null,
-        auth_type: block.querySelector('[data-field="auth_type"]').value,
+        auth_type: authType,
         totp_secret: totpSecret,
+        // Only meaningful (and only sent) for "recorded_workflow" --
+        // switching a role back to form_login/jwt leaves whatever
+        // workflow choice was there untouched rather than clearing it,
+        // in case the operator switches back later.
+        login_workflow_id: authType === "recorded_workflow" && workflowField ? (workflowField.value || null) : null,
       });
     });
     try {

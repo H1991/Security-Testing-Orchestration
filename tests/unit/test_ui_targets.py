@@ -299,6 +299,48 @@ def test_set_role_totp_secret_is_a_noop_for_a_role_that_does_not_exist():
     assert profile["roles"] == []
 
 
+# ---------------------------------------------------------------------------
+# set_role_login_workflow -- "recorded_workflow" auth_type's own setting
+# ---------------------------------------------------------------------------
+
+
+def test_set_role_login_workflow_sets_the_id():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "recorded_workflow")
+    targets.set_role_login_workflow(profile, "admin", "spa-login")
+    assert _role(profile, "admin")["login_workflow_id"] == "spa-login"
+
+
+def test_set_role_login_workflow_empty_string_clears_it():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "recorded_workflow")
+    targets.set_role_login_workflow(profile, "admin", "spa-login")
+    targets.set_role_login_workflow(profile, "admin", "")
+    assert _role(profile, "admin")["login_workflow_id"] is None
+
+
+def test_set_role_login_workflow_none_is_a_noop():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "recorded_workflow")
+    targets.set_role_login_workflow(profile, "admin", "spa-login")
+    targets.set_role_login_workflow(profile, "admin", None)
+    assert _role(profile, "admin")["login_workflow_id"] == "spa-login"  # untouched, not reset
+
+
+def test_set_role_login_workflow_is_a_noop_for_a_role_that_does_not_exist():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_login_workflow(profile, "admin", "spa-login")
+    assert profile["roles"] == []
+
+
+def test_removing_a_role_via_empty_username_also_clears_its_login_workflow():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "recorded_workflow")
+    targets.set_role_login_workflow(profile, "admin", "spa-login")
+    targets.set_role_credentials(profile, "admin", "", None)
+    assert _role(profile, "admin")["login_workflow_id"] is None
+
+
 def test_totp_env_key_shape():
     assert targets.totp_env_key("admin", "kapture-km-staging") == "ADMIN_TOTP_SECRET__KAPTURE_KM_STAGING"
     assert targets.totp_env_key("normal", "kapture-km-staging") == "USER_TOTP_SECRET__KAPTURE_KM_STAGING"
@@ -509,3 +551,20 @@ def test_user_entries_supports_an_arbitrary_third_role():
     assert len(entries) == 3
     assert entries[2]["role"] == "Support Agent"
     assert entries[2]["password"] == "{{env:SUPPORT_AGENT_PASSWORD}}"
+
+
+def test_user_entries_includes_login_workflow_id_for_recorded_workflow_roles():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "recorded_workflow")
+    targets.mark_password_set(profile, "admin")
+    targets.set_role_login_workflow(profile, "admin", "spa-login")
+    entries = targets.user_entries(profile)
+    assert entries[0]["login_workflow_id"] == "spa-login"
+
+
+def test_user_entries_omits_login_workflow_id_when_not_set():
+    profile = targets.new_profile("acme", "Acme")
+    targets.set_role_credentials(profile, "admin", "admin@acme.com", "form_login")
+    targets.mark_password_set(profile, "admin")
+    entries = targets.user_entries(profile)
+    assert "login_workflow_id" not in entries[0]

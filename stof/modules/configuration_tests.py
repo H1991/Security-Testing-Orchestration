@@ -43,6 +43,23 @@ _log = get_logger("modules.configuration_tests")
 _ADMIN_PANEL_PATHS: tuple[str, ...] = (
     "/admin", "/administrator", "/admin/login", "/manage", "/management",
     "/console", "/manager/html", "/wp-admin", "/phpmyadmin", "/adminer.php",
+    # Extended set -- curated from SecLists' Discovery/Web-Content
+    # AdminPanels.txt (danielmiessler/SecLists, MIT license, 72k+
+    # stars: https://github.com/danielmiessler/SecLists) rather than
+    # the full multi-thousand-entry list: this project's own convention
+    # (see the module docstring above, quoting config/testcases.json's
+    # own "Burp Scanner checks default files and endpoints; limited to
+    # known patterns" framing) is a small, curated, cited list run
+    # through real baseline-diffing, not an exhaustive brute force --
+    # a bigger list is still bounded, not "every SecLists entry."
+    "/admin/", "/admin/index", "/admin/dashboard", "/admin/home", "/admin1", "/admin2",
+    "/moderator", "/webadmin", "/adminpanel", "/admincp", "/admin-console",
+    "/cpanel", "/siteadmin", "/useradmin", "/sysadmin", "/backend",
+    "/wp-login.php", "/pma", "/typo3/", "/magento/admin", "/craft/admin",
+    "/concrete5/index.php/dashboard",
+    "/manager/status", "/jmx-console", "/web-console", "/solr/admin",
+    "/Admin/Default.aspx", "/umbraco", "/sitecore/login",
+    "/django-admin", "/rails/admin", "/admin/sidekiq/queues",
 )
 # Context-aware narrowing (Phase 1): which stack family each path is
 # ONLY relevant to, per stof.recon.target_profile.TargetProfile.
@@ -53,16 +70,29 @@ _ADMIN_PANEL_PATHS: tuple[str, ...] = (
 # different stack -- verified live: demo.testfire.net fingerprints as
 # Apache-Coyote/1.1 (Java/Tomcat) via stof/recon/target_profile.py,
 # so /wp-admin, /phpmyadmin, /adminer.php are wasted probes there
-# every single scan today.
+# every single scan today. A path with no entry here at all (most of
+# the extended set above) defaults to None (universal, never narrowed)
+# via `_narrow_paths_for_stack`'s own `.get(p)` fallback -- only the
+# genuinely framework-specific new entries are tagged below.
 _ADMIN_PANEL_PATH_STACK: dict[str, str | None] = {
     "/admin": None, "/administrator": None, "/admin/login": None,
     "/manage": None, "/management": None, "/console": None,
-    "/manager/html": "java",
+    "/manager/html": "java", "/manager/status": "java", "/jmx-console": "java",
+    "/web-console": "java", "/solr/admin": "java",
     "/wp-admin": "php", "/phpmyadmin": "php", "/adminer.php": "php",
+    "/wp-login.php": "php", "/pma": "php", "/typo3/": "php", "/magento/admin": "php",
+    "/craft/admin": "php", "/concrete5/index.php/dashboard": "php",
+    "/Admin/Default.aspx": "dotnet", "/umbraco": "dotnet", "/sitecore/login": "dotnet",
+    "/django-admin": "python",
+    "/rails/admin": "ruby", "/admin/sidekiq/queues": "ruby",
 }
 
 _LISTABLE_DIR_PATHS: tuple[str, ...] = (
     "/", "/images/", "/assets/", "/uploads/", "/backup/", "/files/", "/static/", "/logs/",
+    # Extended set -- same SecLists curation as _ADMIN_PANEL_PATHS above.
+    "/tmp/", "/temp/", "/old/", "/backups/", "/db/", "/database/", "/private/",
+    "/cgi-bin/", "/media/", "/download/", "/downloads/", "/config/", "/includes/",
+    "/lib/", "/vendor/",
 )
 _DIRECTORY_LISTING_SIGNATURES: tuple[str, ...] = ("Index of /", "<title>Index of", "Directory Listing For", "[To Parent Directory]")
 
@@ -75,6 +105,26 @@ _STACK_TRACE_SIGNATURES: tuple[str, ...] = (
 _SAMPLE_FILE_PATHS: tuple[str, ...] = (
     "/install.php", "/test.php", "/phpinfo.php", "/info.php", "/.git/config",
     "/.env", "/web.config", "/server-status", "/.DS_Store", "/backup.sql", "/dump.sql",
+    # Extended set -- same SecLists curation as _ADMIN_PANEL_PATHS above,
+    # covering version-control exposure, config/secrets files, backup
+    # archives, infra files, and the two highest-signal real-world
+    # "forgot this was on by default" endpoints: Spring Boot Actuator
+    # (/actuator, unauthenticated env/heap-dump disclosure is one of
+    # the most commonly reported real misconfigurations in bug bounty
+    # writeups) and ASP.NET's elmah.axd (an exposed error log that
+    # routinely leaks session ids/stack traces/connection strings).
+    "/.git/HEAD", "/.gitignore", "/.svn/entries", "/.svn/wc.db", "/.hg/hgrc",
+    "/.env.local", "/.env.production", "/.env.example",
+    "/config.php.bak", "/wp-config.php.bak", "/wp-config.php", "/web.config.bak",
+    "/settings.py", "/application.properties", "/appsettings.json",
+    "/database.yml", "/secrets.yml", "/.npmrc",
+    "/composer.json", "/composer.lock", "/package.json", "/package-lock.json",
+    "/Gemfile", "/Gemfile.lock", "/requirements.txt",
+    "/backup.zip", "/backup.tar.gz", "/db_backup.sql", "/database.sql", "/site.tar.gz", "/www.zip",
+    "/Dockerfile", "/docker-compose.yml", "/.aws/credentials", "/.ssh/id_rsa",
+    "/debug.php", "/elmah.axd", "/trace.axd", "/_profiler", "/actuator", "/actuator/env", "/actuator/health",
+    "/.well-known/security.txt",
+    "/configuration.php", "/sites/default/settings.php",
 )
 # Same context-aware narrowing convention as _ADMIN_PANEL_PATH_STACK.
 _SAMPLE_FILE_PATH_STACK: dict[str, str | None] = {
@@ -82,6 +132,13 @@ _SAMPLE_FILE_PATH_STACK: dict[str, str | None] = {
     "/.git/config": None, "/.env": None,
     "/web.config": "dotnet",
     "/server-status": None, "/.DS_Store": None, "/backup.sql": None, "/dump.sql": None,
+    "/config.php.bak": "php", "/wp-config.php.bak": "php", "/wp-config.php": "php",
+    "/web.config.bak": "dotnet", "/settings.py": "python",
+    "/application.properties": "java", "/actuator": "java", "/actuator/env": "java", "/actuator/health": "java",
+    "/appsettings.json": "dotnet", "/elmah.axd": "dotnet", "/trace.axd": "dotnet",
+    "/database.yml": "ruby", "/secrets.yml": "ruby", "/Gemfile": "ruby", "/Gemfile.lock": "ruby",
+    "/npmrc": "node", "/package.json": "node", "/package-lock.json": "node",
+    "/_profiler": "php", "/configuration.php": "php", "/sites/default/settings.php": "php",
 }
 
 

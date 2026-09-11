@@ -139,6 +139,8 @@ _MODULE_LABELS: dict[str, str] = {
     "business_logic_tests": "Business Logic / Identity",
     "file_upload_tests": "File Upload",
     "mfa_tests": "MFA / TOTP",
+    "tls_tests": "TLS / SSL Configuration",
+    "vulnerable_components_tests": "Known-Vulnerable Components",
 }
 
 
@@ -910,13 +912,19 @@ class RoleCredentialUpdate(BaseModel):
     role: str
     username: str | None = None
     password: str | None = None
-    auth_type: Literal["form_login", "jwt"] | None = None
+    auth_type: Literal["form_login", "jwt", "recorded_workflow"] | None = None
     # Optional TOTP/MFA secret (stof.config.schema.UserConfig.
     # totp_secret) -- `None` leaves whatever's configured untouched,
     # `""` explicitly turns MFA off for this account, any other value
     # sets/replaces it. Never echoed back by any endpoint, same
     # write-only rule as `password`.
     totp_secret: str | None = None
+    # Only meaningful when `auth_type == "recorded_workflow"`: which
+    # saved recording (GET /api/workflows) this role's login step
+    # replays (stof.auth.workflow_login.WorkflowLoginProvider). Same
+    # partial-update convention as every other field here: `None`
+    # leaves whatever's configured untouched, `""` clears it.
+    login_workflow_id: str | None = None
     remove: bool = False
 
 
@@ -1650,6 +1658,7 @@ def _apply_target_credentials(profile: dict, target_id: str, body: TargetProfile
         if update.totp_secret:
             _write_dotenv_value(ENV_PATH, target_store.totp_env_key(update.role, target_id), update.totp_secret)
         target_store.set_role_totp_secret(profile, update.role, update.totp_secret)
+        target_store.set_role_login_workflow(profile, update.role, update.login_workflow_id)
 
 
 @app.get("/api/targets")

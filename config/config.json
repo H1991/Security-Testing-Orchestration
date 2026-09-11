@@ -1,8 +1,12 @@
 {
   "target": {
-    "base_url": "https://test.com",
-    "login_url": "https://test.com/login",
-    "requires_assisted_login": false
+    "base_url": "http://demo.testfire.net",
+    "login_url": "http://demo.testfire.net/login.jsp",
+    "requires_assisted_login": false,
+    "crawler_exclude_patterns": [
+      "feedback.jsp",
+      "disclaimer.htm"
+    ]
   },
   "browser": {
     "headless": true,
@@ -27,7 +31,9 @@
     "cache_tests": true,
     "business_logic_tests": true,
     "file_upload_tests": true,
-    "mfa_tests": true
+    "mfa_tests": true,
+    "tls_tests": true,
+    "vulnerable_components_tests": true
   },
   "output": {
     "reports_dir": "data/reports",
@@ -45,7 +51,7 @@
     "run_active_scan": true
   },
   "testing": {
-    "allow_state_changing_probes": false,
+    "allow_state_changing_probes": true,
     "scan_intensity": "standard"
   }
 }

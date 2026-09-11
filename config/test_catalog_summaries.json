@@ -30,5 +30,10 @@
   "TC-141": "Checks whether the app can be tricked into accepting a wrong two-factor code by tampering with its own verification response.",
   "TC-142": "Checks whether repeatedly guessing the two-factor code gets throttled or locked out, or can be tried indefinitely.",
   "TC-143": "Checks whether a two-factor code can be reused a second time instead of being one-time-only.",
-  "TC-144": "Checks whether a common code like 000000 is ever accepted in place of the real two-factor code."
+  "TC-144": "Checks whether a common code like 000000 is ever accepted in place of the real two-factor code.",
+  "TC-145": "Checks whether the site still accepts old, broken versions of encryption (SSLv2/3, TLS 1.0/1.1).",
+  "TC-146": "Checks whether the site accepts weak encryption methods that offer little or no real protection.",
+  "TC-147": "Checks for Heartbleed, a famous 2014 bug that leaks private server memory over an encrypted connection.",
+  "TC-148": "Checks for ROBOT, a flaw that can let an attacker eventually decrypt captured encrypted traffic.",
+  "TC-149": "Checks whether the site loads an old, known-vulnerable version of a JavaScript library like jQuery or Bootstrap."
 }

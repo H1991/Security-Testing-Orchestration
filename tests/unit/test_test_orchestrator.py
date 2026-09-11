@@ -38,7 +38,8 @@ def test_build_test_plan_all_enabled_preserves_execution_order():
             business_logic_tests=True, file_upload_tests=True, cache_tests=True,
             sqli_tests=True, xss_tests=True, ssrf_tests=True, injection_variants_tests=True,
             configuration_tests=True, disclosure_tests=True, graphql_tests=True, deserialization_tests=True,
-            oauth_tests=True, csrf_tests=True, mfa_tests=True,
+            oauth_tests=True, csrf_tests=True, mfa_tests=True, tls_tests=True,
+            vulnerable_components_tests=True,
         )
     )
 

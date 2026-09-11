@@ -10,7 +10,7 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-AuthType = Literal["form_login", "jwt"]
+AuthType = Literal["form_login", "jwt", "recorded_workflow"]
 Severity = Literal["Critical", "High", "Medium", "Low", "Info"]
 
 
@@ -119,6 +119,8 @@ class ModulesConfig(BaseModel):
     oauth_tests: bool = False
     csrf_tests: bool = False
     mfa_tests: bool = False
+    tls_tests: bool = False
+    vulnerable_components_tests: bool = False
 
 
 class OutputConfig(BaseModel):
@@ -257,6 +259,14 @@ class UserConfig(BaseModel):
     # more sensitive than a rotatable password, and worth being able to
     # reason about/audit separately for exactly that reason.
     totp_secret: str | None = None
+    # Which saved recording (stof/workflows/, data/workflows/*.json) to
+    # replay as this role's login step -- only meaningful when
+    # `auth_type == "recorded_workflow"` (stof/auth/workflow_login.py).
+    # `None` behaves exactly as before this auth_type existed for every
+    # other auth_type; a "recorded_workflow" role with no id set fails
+    # cleanly at authenticate() time with a clear message, rather than
+    # silently doing nothing.
+    login_workflow_id: str | None = None
 
 
 class UsersConfig(BaseModel):

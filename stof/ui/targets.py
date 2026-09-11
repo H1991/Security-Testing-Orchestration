@@ -314,8 +314,12 @@ def set_role_credentials(profile: dict, role: str, username: str | None, auth_ty
             # Removing the account removes whatever MFA was configured
             # for it too -- a stale totp_secret_set flag with no
             # username behind it would silently keep referencing a
-            # .env key for an account that no longer exists.
+            # .env key for an account that no longer exists. Same
+            # reasoning for login_workflow_id: a "form_login" role
+            # pointing at a leftover recorded-workflow id would be a
+            # confusing, meaningless combination.
             entry["totp_secret_set"] = False
+            entry["login_workflow_id"] = None
             profile["updated_at"] = _now()
         return
     if entry is None:
@@ -325,6 +329,7 @@ def set_role_credentials(profile: dict, role: str, username: str | None, auth_ty
         entry = {
             "id": _role_id_for(role, existing_ids), "role": role, "username": None,
             "auth_type": "form_login", "password_set": False, "totp_secret_set": False,
+            "login_workflow_id": None,
         }
         profile.setdefault("roles", []).append(entry)
     if username is not None:
@@ -332,6 +337,23 @@ def set_role_credentials(profile: dict, role: str, username: str | None, auth_ty
     if auth_type is not None:
         entry["auth_type"] = auth_type
     profile["updated_at"] = _now()
+
+
+def set_role_login_workflow(profile: dict, role: str, login_workflow_id: str | None) -> None:
+    """Which saved recording (`GET /api/workflows`) this role's login
+    replays -- only meaningful when the role's `auth_type` is
+    `"recorded_workflow"`, but stored regardless so switching a role
+    back and forth between login methods doesn't lose the choice.
+    Mirrors `set_role_totp_secret`'s exact shape: `None` (omitted)
+    leaves whatever's configured untouched, `""` explicitly clears it,
+    any other value sets/replaces it. No-op for a role that doesn't
+    exist (nothing to attach a workflow choice to)."""
+    if login_workflow_id is None:
+        return
+    entry = _find_role_entry(profile, role)
+    if entry is not None:
+        entry["login_workflow_id"] = login_workflow_id or None
+        profile["updated_at"] = _now()
 
 
 def remove_role(profile: dict, role: str) -> dict | None:
@@ -436,5 +458,7 @@ def user_entries(profile: dict) -> list[dict]:
         }
         if r.get("totp_secret_set"):
             entry["totp_secret"] = f"{{{{env:{plain_totp_env_var(r['role'])}}}}}"
+        if r.get("login_workflow_id"):
+            entry["login_workflow_id"] = r["login_workflow_id"]
         entries.append(entry)
     return entries

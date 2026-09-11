@@ -8,10 +8,13 @@ plugins where the flag is true. Adding a new module = create a new file
 + register it here; no other module changes.
 
 `idor_tests`, `configuration_tests`, `disclosure_tests`,
-`graphql_tests`, `deserialization_tests`, `sqli_tests`, and
-`xss_tests` are auto-registered: each constructs correctly with zero
-arguments (sensible "admin"/"normal" role defaults, same convention
-`IdorTestsModule` itself uses).
+`graphql_tests`, `deserialization_tests`, `sqli_tests`, `tls_tests`,
+`vulnerable_components_tests`, and `xss_tests` are auto-registered: each
+constructs correctly with zero arguments (sensible "admin"/"normal"
+role defaults, same convention `IdorTestsModule` itself uses --
+`TlsTestsModule`/`VulnerableComponentsModule` fall back to whatever URL
+the crawler discovered first when no `base_url` is given, the same way
+`ConfigurationTestsModule` already does).
 
 `auth_tests`, `jwt_tests`, and `mfa_tests` are NOT auto-registered here,
 for the same reason: `AuthTestsModule` needs `login_json_endpoint`/
@@ -46,6 +49,8 @@ from .idor_tests import IdorTestsModule
 from .injection_variants_tests import InjectionVariantsTestsModule
 from .sqli_tests import SqliTestsModule
 from .ssrf_tests import SsrfTestsModule
+from .tls_tests import TlsTestsModule
+from .vulnerable_components_tests import VulnerableComponentsModule
 from .xss_tests import XssTestsModule
 
 if TYPE_CHECKING:
@@ -65,6 +70,8 @@ MODULE_FACTORIES: dict[str, Callable[[], VulnModule]] = {
     "deserialization_tests": DeserializationTestsModule,
     "sqli_tests": SqliTestsModule,
     "ssrf_tests": SsrfTestsModule,
+    "tls_tests": TlsTestsModule,
+    "vulnerable_components_tests": VulnerableComponentsModule,
     "xss_tests": XssTestsModule,
 }
 

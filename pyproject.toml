@@ -16,6 +16,18 @@ dependencies = [
     # dependency, not a `ui` extra: MFA login must work for the plain
     # CLI (`stof scan`), not just the console.
     "pyotp>=2.9,<3",
+    # TLS/SSL protocol-and-cipher-suite scanning (stof/modules/
+    # tls_tests.py) -- a core dependency, not a `ui` extra: `tls_tests`
+    # must run for the plain CLI (`stof scan --module tls_tests`), not
+    # just the console.
+    "sslyze>=6,<7",
+    # Parses a YAML-format OpenAPI/Swagger spec (stof/crawler/
+    # openapi_discovery.py) -- a core dependency: endpoint discovery
+    # runs during every plain CLI `stof crawl`/`stof scan`, not just
+    # the console. Already an indirect dependency of several packages
+    # above; declared explicitly now that STOF's own code imports it
+    # directly, rather than relying on that transitive pin.
+    "pyyaml>=6,<7",
 ]
 
 [project.optional-dependencies]
@@ -88,6 +100,12 @@ ignore = [
     # passwords purely because of the string "PASS" -- they're test
     # outcome labels, not credentials.
     "S105",
+    # False positive: flags "/tmp/" and similar entries in
+    # `modules/configuration_tests.py`'s wordlist tuples (URL PATHS
+    # this module probes on the *target*, e.g. "GET /tmp/") as if they
+    # were this process's own insecure local tempfile usage -- they're
+    # never touched as a filesystem path here at all.
+    "S108",
 ]
 
 [tool.ruff.lint.per-file-ignores]
