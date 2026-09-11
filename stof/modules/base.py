@@ -258,13 +258,29 @@ class VulnModule(ABC):
         module keeps its own `_result()` with its own natural call-site
         shape -- e.g. `configuration_tests.py` fixes `test_id`/
         `vuln_type`/`role` and only takes `technique_id`/`status`/
-        `detail` -- and delegates the actual construction here."""
+        `detail` -- and delegates the actual construction here.
+
+        `finding.severity` -- when a `Finding` is attached -- always
+        wins over the `severity` parameter/default. Real, live bug this
+        fixes: almost no module's own `_result()` wrapper ever passed
+        `severity=` through explicitly, so every FAIL silently fell back
+        to this function's `"Critical"` default regardless of the
+        finding's REAL severity (a High/Medium/Low finding still
+        reported as Critical in the terminal, the per-scan log, and the
+        live `finding` WebSocket event/dashboard KPI -- confirmed live:
+        a 27-finding scan with a real 2/18/6/1 Critical/High/Medium/Info
+        split showed "33 Critical, 0 High" everywhere BUT the final
+        saved report, because only `extract_findings()` (Layer 10) ever
+        read `finding.severity` directly; this constructor didn't).
+        A PASS/SKIP/ERROR result has no finding, so `severity` there
+        still just passes through unchanged -- there is nothing more
+        authoritative to prefer for those."""
         from .results import TestCaseResult
 
         return TestCaseResult(
             test_id=test_id, technique_id=technique_id, technique=technique, vuln_type=vuln_type,
-            module_id=self.module_id, severity=severity, status=status, detail=detail,
-            user_role=role, endpoint=endpoint, finding=finding,
+            module_id=self.module_id, severity=finding.severity if finding is not None else severity,
+            status=status, detail=detail, user_role=role, endpoint=endpoint, finding=finding,
         )
 
     @abstractmethod

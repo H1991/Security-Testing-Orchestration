@@ -25,5 +25,10 @@
   "TC-134": "6 techniques: duplicate-parameter handling, CSV/formula injection, time-based blind OS command injection, XXE (external entity file read), SSTI (template-engine evaluation), and NoSQL operator-based auth bypass.",
   "TC-135": "Tests registration and multi-step workflows for logic gaps -- reserved username takeover, role injection at signup, and out-of-order access to any step of a modeled workflow state machine.",
   "TC-136": "Confirms whether a manipulated request can poison a shared cache for other visitors, or trick the cache into serving a private page as if it were public.",
-  "TC-137": "Attempts to make the server fetch attacker-chosen internal or external URLs -- covering cloud metadata endpoints, internal port scanning, alternate-encoding bypasses, and out-of-band confirmation."
+  "TC-137": "Attempts to make the server fetch attacker-chosen internal or external URLs -- covering cloud metadata endpoints, internal port scanning, alternate-encoding bypasses, and out-of-band confirmation.",
+  "TC-140": "Checks whether the app hands out a working session before the two-factor code is even entered.",
+  "TC-141": "Checks whether the app can be tricked into accepting a wrong two-factor code by tampering with its own verification response.",
+  "TC-142": "Checks whether repeatedly guessing the two-factor code gets throttled or locked out, or can be tried indefinitely.",
+  "TC-143": "Checks whether a two-factor code can be reused a second time instead of being one-time-only.",
+  "TC-144": "Checks whether a common code like 000000 is ever accepted in place of the real two-factor code."
 }

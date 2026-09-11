@@ -1,5 +1,9 @@
 """Layer 9 -- `stof/modules/mfa_tests.py`: MFA/TOTP Security Test Module
-(TC-140).
+(TC-140 Pre-MFA Session Access, TC-141 Response-Manipulation Bypass,
+TC-142 Missing Rate Limiting, TC-143 OTP Replay, TC-144 Weak/Static
+Code Acceptance -- five separate top-level ids, deliberately, not
+`.N` sub-techniques of one id: see `_result()`'s own docstring for why
+that distinction matters here.).
 
 STOF's TOTP support (`stof/auth/form_login.py`'s `_maybe_complete_totp`)
 answers "can STOF log in through this target's MFA step". This module
@@ -174,8 +178,21 @@ class MfaTestsModule(VulnModule):
         return extract_findings(await self.run_techniques(endpoints, session_manager, session_pool, evidence))
 
     def _result(self, technique_id: str, technique: str, status: str, detail: str, finding: Finding | None = None) -> TestCaseResult:
+        # `test_id` is `technique_id`'s own top-level id (e.g. "TC-142.1"
+        # -> "TC-142"), NOT a single shared "TC-140" for all five --
+        # these five techniques are five genuinely distinct vulnerability
+        # classes (bypass, tampering, missing rate limiting, replay, weak
+        # code), not sibling sub-techniques confirming the SAME root
+        # cause the way e.g. tenant_tests.py's TC-131.1/.2 do. Grouping
+        # them under one top-level id fed straight into `results.py`'s
+        # `_merge_root_cause_duplicates()` -- which deliberately
+        # consolidates same-top-level-id findings on the same endpoint
+        # -- and silently dropped a real, independent finding (confirmed
+        # live: TC-142.1's rate-limiting FAIL and TC-143.1's replay FAIL,
+        # both on POST .../login, collapsed into one reported finding).
+        test_id = technique_id.split(".")[0]
         return self._make_result(
-            test_id="TC-140", technique_id=technique_id, technique=technique, vuln_type="MFA/TOTP Weakness",
+            test_id=test_id, technique_id=technique_id, technique=technique, vuln_type="MFA/TOTP Weakness",
             status=status, detail=detail, role=self.config.test_role, finding=finding,
         )
 
@@ -197,10 +214,10 @@ class MfaTestsModule(VulnModule):
                 self._result(tid, technique, SKIPPED, skip_reason)
                 for tid, technique in (
                     ("TC-140.1", "Pre-MFA session/endpoint access"),
-                    ("TC-140.2", "OTP verification response manipulation"),
-                    ("TC-140.3", "OTP brute-force / missing rate limiting"),
-                    ("TC-140.4", "OTP replay (reuse of an already-consumed code)"),
-                    ("TC-140.5", "Static/weak OTP acceptance (000000)"),
+                    ("TC-141.1", "OTP verification response manipulation"),
+                    ("TC-142.1", "OTP brute-force / missing rate limiting"),
+                    ("TC-143.1", "OTP replay (reuse of an already-consumed code)"),
+                    ("TC-144.1", "Static/weak OTP acceptance (000000)"),
                 )
             ]
         results: list[TestCaseResult] = []
@@ -210,19 +227,19 @@ class MfaTestsModule(VulnModule):
         ))
         results.append(await self._safe_result(
             self._technique_response_manipulation(session_pool, evidence),
-            "TC-140", "TC-140.2", "OTP verification response manipulation", "MFA Bypass (Client-Trusted Response)", role=self.config.test_role,
+            "TC-141", "TC-141.1", "OTP verification response manipulation", "MFA Bypass (Client-Trusted Response)", role=self.config.test_role,
         ))
         results.append(await self._safe_result(
             self._technique_brute_force(session_pool),
-            "TC-140", "TC-140.3", "OTP brute-force / missing rate limiting", "Missing MFA Rate Limiting", role=self.config.test_role,
+            "TC-142", "TC-142.1", "OTP brute-force / missing rate limiting", "Missing MFA Rate Limiting", role=self.config.test_role,
         ))
         results.append(await self._safe_result(
             self._technique_otp_replay(session_pool),
-            "TC-140", "TC-140.4", "OTP replay (reuse of an already-consumed code)", "MFA OTP Replay", role=self.config.test_role,
+            "TC-143", "TC-143.1", "OTP replay (reuse of an already-consumed code)", "MFA OTP Replay", role=self.config.test_role,
         ))
         results.append(await self._safe_result(
             self._technique_static_code(session_pool),
-            "TC-140", "TC-140.5", "Static/weak OTP acceptance (000000)", "MFA Weak/Static Code Accepted", role=self.config.test_role,
+            "TC-144", "TC-144.1", "Static/weak OTP acceptance (000000)", "MFA Weak/Static Code Accepted", role=self.config.test_role,
         ))
         return results
 
@@ -275,10 +292,10 @@ class MfaTestsModule(VulnModule):
         )
         return self._result(tid, technique, FAIL, finding.description, finding=finding)
 
-    # --- TC-140.2 OTP verification response manipulation -----------------
+    # --- TC-141.1 OTP verification response manipulation -----------------
 
     async def _technique_response_manipulation(self, session_pool: "SessionPool", evidence) -> TestCaseResult:
-        tid, technique = "TC-140.2", "OTP verification response manipulation"
+        tid, technique = "TC-141.1", "OTP verification response manipulation"
         vuln_type = "MFA Bypass (Client-Trusted Response)"
         context = await session_pool.new_anonymous_context()
         try:
@@ -352,7 +369,7 @@ class MfaTestsModule(VulnModule):
         )
         return self._result(tid, technique, FAIL, finding.description, finding=finding)
 
-    # --- TC-140.3 OTP brute-force / missing rate limiting -----------------
+    # --- TC-142.1 OTP brute-force / missing rate limiting -----------------
 
     async def _submit_otp_and_capture_post_response(self, page: "Page", code: str) -> tuple[int | None, str]:
         """One brute-force attempt's full body, extracted from
@@ -391,7 +408,7 @@ class MfaTestsModule(VulnModule):
         return captured.get("status"), captured.get("body", "")
 
     async def _technique_brute_force(self, session_pool: "SessionPool") -> TestCaseResult:
-        tid, technique = "TC-140.3", "OTP brute-force / missing rate limiting"
+        tid, technique = "TC-142.1", "OTP brute-force / missing rate limiting"
         vuln_type = "Missing MFA Rate Limiting"
         context = await session_pool.new_anonymous_context()
         statuses: list[int] = []
@@ -451,7 +468,7 @@ class MfaTestsModule(VulnModule):
         )
         return self._result(tid, technique, FAIL, finding.description, finding=finding)
 
-    # --- TC-140.4 OTP replay ----------------------------------------------
+    # --- TC-143.1 OTP replay ----------------------------------------------
 
     async def _attempt_otp_login(self, session_pool: "SessionPool", code: str) -> tuple[bool, str] | None:
         """One full login-with-this-OTP-code attempt in a fresh,
@@ -480,7 +497,7 @@ class MfaTestsModule(VulnModule):
             await context.close()
 
     async def _technique_otp_replay(self, session_pool: "SessionPool") -> TestCaseResult:
-        tid, technique = "TC-140.4", "OTP replay (reuse of an already-consumed code)"
+        tid, technique = "TC-143.1", "OTP replay (reuse of an already-consumed code)"
         vuln_type = "MFA OTP Replay"
         code = pyotp.TOTP(self.config.totp_secret).now()
 
@@ -512,10 +529,10 @@ class MfaTestsModule(VulnModule):
         )
         return self._result(tid, technique, FAIL, finding.description, finding=finding)
 
-    # --- TC-140.5 Static/weak code acceptance ------------------------------
+    # --- TC-144.1 Static/weak code acceptance ------------------------------
 
     async def _technique_static_code(self, session_pool: "SessionPool") -> TestCaseResult:
-        tid, technique = "TC-140.5", "Static/weak OTP acceptance (000000)"
+        tid, technique = "TC-144.1", "Static/weak OTP acceptance (000000)"
         vuln_type = "MFA Weak/Static Code Accepted"
         real_code = pyotp.TOTP(self.config.totp_secret).now()
         weak_candidates = [c for c in ("000000", "123456", "111111") if c != real_code]

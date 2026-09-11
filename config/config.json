@@ -1,8 +1,13 @@
 {
   "target": {
-    "base_url": "http://192.168.1.73:3001",
-    "login_url": "http://192.168.1.73:3001/#/login",
-    "requires_assisted_login": false
+    "base_url": "https://test.kapturekm.com/kauthor/login",
+    "login_url": "https://test.kapturekm.com/kauthor/login",
+    "requires_assisted_login": false,
+    "crawler_exclude_patterns": [
+      "content=inside_",
+      "survey_questions",
+      "privacypolicy"
+    ]
   },
   "browser": {
     "headless": true,
@@ -26,7 +31,8 @@
     "injection_variants_tests": true,
     "cache_tests": true,
     "business_logic_tests": true,
-    "file_upload_tests": true
+    "file_upload_tests": true,
+    "mfa_tests": true
   },
   "output": {
     "reports_dir": "data/reports",

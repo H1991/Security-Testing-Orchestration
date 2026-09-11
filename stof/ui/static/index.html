@@ -588,6 +588,95 @@
   .feed .msg { color: var(--text); }
   .feed .empty { color: var(--text-faint); }
 
+  /* ---------------------------------------------------------------- scan cockpit (Latest scan) */
+  .scan-cockpit-layout { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; }
+  @media (max-width: 1150px) { .scan-cockpit-layout { grid-template-columns: 1fr; } }
+  .scan-cockpit-card { overflow: hidden; }
+  .scan-cockpit-head { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; padding: 26px 26px 22px; background: linear-gradient(180deg, var(--surface-2), var(--surface) 65%); border-bottom: 1px solid var(--border); }
+  #dashboardScanSelect { display: none !important; }
+  .scan-progress-ring { position: relative; width: 88px; height: 88px; flex: none; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.08)); cursor: pointer; transition: transform 150ms ease; }
+  .scan-progress-ring:hover { transform: scale(1.04); }
+  .scan-progress-ring svg { transform: none; width: 88px; height: 88px; }
+  .spr-track { fill: none; stroke: var(--surface-3); stroke-width: 7; }
+  .spr-fill { fill: none; stroke: var(--accent); stroke-width: 7; stroke-linecap: round; stroke-dasharray: 213.6; stroke-dashoffset: 213.6; transition: stroke-dashoffset 400ms cubic-bezier(.4,0,.2,1), stroke 200ms ease; }
+  .scan-progress-ring[data-state="failed"] .spr-fill { stroke: var(--critical); }
+  .scan-progress-ring[data-state="completed"] .spr-fill { stroke: var(--pass); }
+  .spr-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; pointer-events: none; }
+  .spr-pct { font-size: 19px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text); line-height: 1; letter-spacing: -0.02em; }
+  .spr-label { font-size: 8px; font-weight: 800; letter-spacing: 0.08em; color: var(--text-faint); margin-top: 3px; }
+  .scan-cockpit-title { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin-bottom: 3px; }
+  .scan-cockpit-id { font-size: 17px; font-weight: 800; letter-spacing: -0.01em; background: var(--surface-3); padding: 4px 12px; border-radius: 8px; max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scan-status-pill { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 700; letter-spacing: 0.01em; padding: 5px 13px; border-radius: 999px; box-shadow: inset 0 0 0 1px rgba(0,0,0,0.03); }
+  .scan-status-pill[data-status="running"] { background: var(--accent-soft); color: var(--accent-text); }
+  .scan-status-pill[data-status="completed"] { background: var(--low-soft); color: var(--low); }
+  .scan-status-pill[data-status="completed-critical"] { background: var(--critical-soft); color: var(--critical); }
+  .scan-status-pill[data-status="failed"] { background: var(--critical-soft); color: var(--critical); }
+  .scan-status-pill[data-status="queued"] { background: var(--surface-3); color: var(--text-muted); }
+  .scan-status-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .scan-status-pill[data-status="running"] .scan-status-dot { animation: pulse 1.2s ease-in-out infinite; }
+  #dashboardSub { font-size: 13px; color: var(--text-muted); }
+
+  .scan-pipeline { display: flex; align-items: flex-start; padding: 22px 26px; border-bottom: 1px solid var(--border); overflow-x: auto; background: var(--surface); }
+  .scan-stage { display: flex; flex-direction: column; align-items: center; gap: 8px; min-width: 112px; flex: 0 0 auto; text-align: center; padding: 4px 6px; cursor: pointer; border-radius: 10px; transition: transform 120ms ease; }
+  .scan-stage:not(.pending):hover { transform: translateY(-2px); }
+  .scan-stage:not(.pending):hover .scan-stage-node { box-shadow: 0 4px 12px -2px rgba(0,0,0,0.18); }
+  .scan-stage.pending { cursor: default; }
+  .scan-stage-node { width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center; border: 2.5px solid var(--border); color: var(--text-faint); font-size: 15px; font-weight: 700; background: var(--surface); position: relative; box-shadow: 0 1px 2px rgba(0,0,0,0.04); transition: all 180ms ease; }
+  .scan-stage.done .scan-stage-node { background: var(--pass); border-color: var(--pass); color: #fff; box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--pass) 55%, transparent); }
+  .scan-stage.failed .scan-stage-node { background: var(--critical); border-color: var(--critical); color: #fff; box-shadow: 0 2px 8px -2px color-mix(in srgb, var(--critical) 55%, transparent); }
+  .scan-stage.active .scan-stage-node { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); }
+  .scan-stage.pending .scan-stage-node { color: var(--text-faint); background: var(--surface-2); }
+  .scan-stage.active .scan-stage-node::after { content: ''; position: absolute; inset: -6px; border-radius: 50%; border: 2.5px solid transparent; border-top-color: var(--accent); animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .scan-stage-name { font-size: 12.5px; font-weight: 700; color: var(--text-faint); white-space: nowrap; }
+  .scan-stage.done .scan-stage-name, .scan-stage.active .scan-stage-name { color: var(--text); }
+  .scan-stage-time { font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+  .scan-stage-link { flex: 1 1 24px; min-width: 16px; height: 38px; display: flex; align-items: center; padding: 0 4px; }
+  .scan-stage-link i { display: block; width: 100%; height: 3px; border-radius: 3px; background: var(--border); font-style: normal; }
+  .scan-stage-link.done i { background: var(--pass); }
+
+  .scan-cockpit-tabs { display: flex; gap: 4px; padding: 10px 20px 0; border-bottom: 1px solid var(--border); overflow-x: auto; background: var(--surface-2); }
+  .scan-tab { padding: 10px 16px; font-size: 13px; font-weight: 700; color: var(--text-faint); border-radius: 9px 9px 0 0; display: flex; align-items: center; gap: 7px; white-space: nowrap; background: none; border: none; cursor: pointer; font-family: var(--sans); transition: all 120ms ease; }
+  .scan-tab:hover { color: var(--text-muted); background: rgba(0,0,0,0.03); }
+  .scan-tab.active { color: var(--accent-text); background: var(--surface); box-shadow: inset 0 -2px 0 var(--accent); }
+  .scan-tab-count { background: var(--surface-3); color: var(--text-muted); font-size: 11px; font-weight: 700; border-radius: 999px; padding: 1px 8px; }
+  .scan-tab.active .scan-tab-count { background: var(--accent-soft); color: var(--accent-text); }
+  .scan-cockpit-body { padding: 20px 26px 26px; }
+  .scan-tab-panel[hidden] { display: none; }
+
+  .scan-history-card { padding-bottom: 6px; }
+  .scan-history-list { padding: 8px 12px; display: flex; flex-direction: column; gap: 3px; }
+  .scan-history-row { display: flex; align-items: center; gap: 11px; padding: 11px 12px; border-radius: 10px; cursor: pointer; border: 1px solid transparent; background: none; width: 100%; text-align: left; font-family: var(--sans); transition: all 120ms ease; }
+  .scan-history-row:hover { background: var(--surface-2); box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+  .scan-history-row.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+  .scan-history-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; box-shadow: 0 0 0 3px currentColor; opacity: 0.9; }
+  .scan-history-dot.running { background: var(--accent); color: var(--accent-soft); animation: pulse 1.2s ease-in-out infinite; }
+  .scan-history-dot.completed-critical, .scan-history-dot.failed { background: var(--critical); color: var(--critical-soft); }
+  .scan-history-dot.completed { background: var(--pass); color: var(--low-soft); }
+  .scan-history-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .scan-history-id { font-weight: 700; font-size: 12.5px; color: var(--text); }
+  .scan-history-sub { font-size: 11.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .scan-history-side { text-align: right; display: flex; flex-direction: column; gap: 2px; flex: none; }
+  .scan-history-dur { font-size: 11.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+  .scan-history-find { font-size: 11.5px; font-weight: 700; }
+  .scan-history-find.bad { color: var(--critical); }
+  .scan-history-find.good { color: var(--pass); }
+  .scan-history-foot { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; padding: 11px; font-size: 12.5px; font-weight: 600; color: var(--accent-text); border-top: 1px solid var(--border); background: none; border-left: none; border-right: none; border-bottom: none; cursor: pointer; font-family: var(--sans); }
+  .scan-history-foot:hover { background: var(--surface-2); }
+
+  .art-row { display: flex; align-items: center; gap: 12px; padding: 11px 4px; border-bottom: 1px solid var(--border); }
+  .art-row:last-child { border-bottom: none; }
+  .art-row .art-main { flex: 1; min-width: 0; }
+  .art-row .art-main b { font-size: 13px; display: block; }
+  .art-row .art-main span { display: block; font-size: 12px; color: var(--text-faint); margin-top: 2px; }
+
+  .cockpit-live-mini { max-height: 300px; overflow-y: auto; padding: 6px 10px; display: flex; flex-direction: column; gap: 1px; }
+  .cockpit-live-mini .cline { display: flex; gap: 8px; align-items: baseline; padding: 6px 8px; border-radius: 5px; border-left: 2px solid transparent; font-size: 12.5px; opacity: 0; animation: feedIn 260ms ease forwards; }
+  .cockpit-live-mini .cline.is-find { border-left-color: var(--critical); background: var(--critical-soft); }
+  .cockpit-live-mini .cline .ctime { flex-shrink: 0; color: var(--text-faint); font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 11px; }
+  .cockpit-live-mini .cline .cmsg { color: var(--text); }
+  .cockpit-live-mini .empty { color: var(--text-faint); padding: 10px 8px; font-size: 13px; }
+
   /* toolbar / filters */
   .toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
   .bulk-bar[hidden] { display: none; }
@@ -1155,6 +1244,18 @@
   .statrow .st .sd { font-size: 11px; margin-top: 3px; color: var(--text-muted); }
   .dashboard-ops-divider { display: flex; align-items: center; gap: 12px; margin: 8px 0 22px; color: var(--text-faint); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; font-weight: 700; }
   .dashboard-ops-divider::before, .dashboard-ops-divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .scan-teaser { display: flex; align-items: center; gap: 16px; width: 100%; text-align: left; padding: 16px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); cursor: pointer; font-family: var(--sans); transition: all 140ms ease; }
+  .scan-teaser:hover { border-color: var(--accent); box-shadow: 0 4px 16px -4px rgba(0,0,0,0.12); transform: translateY(-1px); }
+  .scan-teaser-ring { position: relative; width: 52px; height: 52px; flex: none; }
+  .scan-teaser-ring[data-state="failed"] .spr-fill { stroke: var(--critical); }
+  .scan-teaser-ring[data-state="completed"] .spr-fill { stroke: var(--pass); }
+  .scan-teaser-main { flex: 1; min-width: 0; }
+  .scan-teaser-title { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 14.5px; color: var(--text); }
+  .scan-teaser-title span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scan-teaser-sub { font-size: 12.5px; color: var(--text-faint); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scan-teaser-cta { flex: none; font-size: 13px; font-weight: 700; color: var(--accent-text); }
+  #dashboardRunScanBtn.btn-running { background: var(--accent); border-color: var(--accent); animation: btnRunningPulse 2s ease-in-out infinite; }
+  @keyframes btnRunningPulse { 0%, 100% { box-shadow: 0 0 0 0 var(--accent-soft); } 50% { box-shadow: 0 0 0 6px transparent; } }
   .app-card .app-arrow {
     position: absolute; top: 16px; right: 16px; width: 18px; height: 18px; color: var(--text-faint);
     opacity: 0; transform: translateX(-3px); transition: opacity .18s ease, transform .18s ease;
@@ -1412,7 +1513,7 @@
           <h1>Executive overview</h1>
           <p>Every number below is computed from a real scan on disk — nothing here is an estimate.</p>
         </div>
-        <button class="btn btn-primary" type="button" data-runscan>▶ New scan</button>
+        <button class="btn btn-primary" type="button" id="dashboardRunScanBtn" data-runscan>▶ New scan</button>
       </div>
       <div class="statrow" id="execStatRow" style="margin-bottom: 26px;"></div>
 
@@ -1505,52 +1606,144 @@
 
       <!-- Everything above is the executive narrative: verdict, by-
            application, trend, classification, testing thoroughness --
-           in that order. Everything below is operational/practitioner
-           detail (per-technique progress, a live event feed) a manager
-           has no reason to read; kept on the same page for a scan
-           operator's convenience, but visually demarcated and last. -->
+           in that order. Full per-technique/live-feed operational
+           detail lives on its own page now (#/scan-live) -- see that
+           panel's own comment for why -- this is just a teaser into it. -->
       <div class="dashboard-ops-divider"><span>Latest scan — operational detail</span></div>
+      <button type="button" class="scan-teaser" id="dashboardScanTeaser">
+        <div class="scan-teaser-ring" id="teaserRing">
+          <svg viewBox="0 0 80 80" width="52" height="52">
+            <circle class="spr-track" cx="40" cy="40" r="34"></circle>
+            <circle class="spr-fill" id="teaserFillCircle" cx="40" cy="40" r="34" transform="rotate(-90 40 40)"></circle>
+          </svg>
+          <div class="spr-center"><span class="spr-pct" id="teaserPct" style="font-size:13px;">&mdash;</span></div>
+        </div>
+        <div class="scan-teaser-main">
+          <div class="scan-teaser-title">
+            <span id="teaserScanName">No scan selected yet</span>
+            <span class="scan-status-pill" id="teaserStatusPill" hidden></span>
+          </div>
+          <div class="scan-teaser-sub" id="teaserSub">Run one, or pick a past scan from Scan history.</div>
+        </div>
+        <span class="scan-teaser-cta">Open full detail &rarr;</span>
+      </button>
+    </section>
 
+    <!-- ============================================================ LATEST SCAN (live operational detail) -->
+    <!-- Its own page rather than embedded in the Dashboard: per-
+         technique progress and a live event feed are practitioner
+         detail a manager scanning the executive overview has no reason
+         to scroll past, and while a scan is actually running this is
+         where the Dashboard's "New scan" button sends the operator
+         instead (see updateDashboardRunScanState()) -- a focused view
+         to actually watch it, not one more thing buried at the bottom
+         of a long page. Reached via the Dashboard teaser button or the
+         top nav's live-scan indicator, never its own sidebar entry --
+         same "no separate nav item" convention `scan-new` already uses. -->
+    <section class="panel" id="panel-scan-live" aria-labelledby="h1-scan-live">
       <div class="page-head">
         <div>
-          <h1 style="font-size: 17px;">Scan detail</h1>
-          <p id="dashboardSub">No scan selected yet &mdash; run one, or pick a past scan from the Scans tab.</p>
+          <h1 id="h1-scan-live" style="font-size: 17px;">Latest scan — operational detail</h1>
+          <p>Per-technique progress, live event feed, findings, and artifacts for one scan at a time.</p>
         </div>
-        <select class="select" id="dashboardScanSelect" style="display:none;"></select>
+        <button class="btn" type="button" id="scanLiveBack">&larr; Back to Dashboard</button>
       </div>
 
-      <div class="kpis">
-        <div class="kpi"><div class="lbl">Endpoints mapped</div><div class="val" id="kpiEndpoints">&mdash;</div><div class="sub" id="kpiEndpointsSub">&nbsp;</div></div>
-        <div class="kpi"><div class="lbl">Techniques run</div><div class="val" id="kpiTechniques">&mdash;</div><div class="sub" id="kpiTechniquesSub">&nbsp;</div></div>
-        <div class="kpi crit"><div class="lbl">Critical findings</div><div class="val" id="kpiCritical">&mdash;</div><div class="sub">needs immediate triage</div></div>
-        <div class="kpi high"><div class="lbl">High findings</div><div class="val" id="kpiHigh">&mdash;</div><div class="sub">fix before release</div></div>
-        <div class="kpi"><div class="lbl">Total findings</div><div class="val" id="kpiTotal">&mdash;</div><div class="sub" id="kpiTotalSub">&nbsp;</div></div>
-      </div>
-
-      <div class="row-2">
-        <div class="card">
-          <div class="card-head">
-            <h3>Module log</h3>
-            <div class="meta" id="moduleProgressMeta">&mdash;</div>
+      <div class="scan-cockpit-layout">
+        <div class="card scan-cockpit-card">
+          <div class="scan-cockpit-head">
+            <div class="scan-progress-ring" id="scanProgressRing" hidden>
+              <svg viewBox="0 0 80 80" width="72" height="72">
+                <circle class="spr-track" cx="40" cy="40" r="34"></circle>
+                <circle class="spr-fill" id="sprFillCircle" cx="40" cy="40" r="34" transform="rotate(-90 40 40)"></circle>
+              </svg>
+              <div class="spr-center"><span class="spr-pct" id="sprPct">0%</span><span class="spr-label" id="sprLabel">SCANNING</span></div>
+            </div>
+            <div style="flex: 1; min-width: 0;">
+              <div class="scan-cockpit-title">
+                <span class="scan-cockpit-id mono" id="cockpitScanId">&mdash;</span>
+                <span class="scan-status-pill" id="cockpitStatusPill" hidden></span>
+              </div>
+              <p id="dashboardSub">No scan selected yet &mdash; run one, or pick a past scan from Scan history.</p>
+            </div>
+            <!-- Superseded by the Scan history sidebar (renderScanHistorySidebar) --
+                 kept in the DOM only because syncDashboardScanSelect()/
+                 renderDashboardScanSelect() still track `.value` as the
+                 "currently attached scan" bookkeeping elsewhere on this
+                 page; force-hidden via CSS (#dashboardScanSelect rule)
+                 so their own `select.style.display = ""` can never make
+                 this native, unstyleable dropdown (and its native
+                 too-long-text tooltip) visible again. -->
+            <select class="select" id="dashboardScanSelect"></select>
           </div>
-          <div class="card-body" id="moduleProgressList"><div class="card-empty">Run a scan to see per-module progress here.</div></div>
+
+          <div class="scan-pipeline" id="scanPipeline"></div>
+
+          <div class="kpis">
+            <div class="kpi"><div class="lbl">Endpoints mapped</div><div class="val" id="kpiEndpoints">&mdash;</div><div class="sub" id="kpiEndpointsSub">&nbsp;</div></div>
+            <div class="kpi"><div class="lbl">Techniques run</div><div class="val" id="kpiTechniques">&mdash;</div><div class="sub" id="kpiTechniquesSub">&nbsp;</div></div>
+            <div class="kpi crit"><div class="lbl">Critical findings</div><div class="val" id="kpiCritical">&mdash;</div><div class="sub">needs immediate triage</div></div>
+            <div class="kpi high"><div class="lbl">High findings</div><div class="val" id="kpiHigh">&mdash;</div><div class="sub">fix before release</div></div>
+            <div class="kpi"><div class="lbl">Total findings</div><div class="val" id="kpiTotal">&mdash;</div><div class="sub" id="kpiTotalSub">&nbsp;</div></div>
+          </div>
+
+          <div class="scan-cockpit-tabs" id="scanCockpitTabs">
+            <button type="button" class="scan-tab active" data-tab="overview">Overview</button>
+            <button type="button" class="scan-tab" data-tab="findings">Findings <span class="scan-tab-count" id="tabFindingsCount">0</span></button>
+            <button type="button" class="scan-tab" data-tab="logs">Logs</button>
+            <button type="button" class="scan-tab" data-tab="artifacts">Artifacts <span class="scan-tab-count" id="tabArtifactsCount">0</span></button>
+          </div>
+
+          <div class="scan-cockpit-body">
+            <div class="scan-tab-panel" id="scanTabOverview">
+              <div class="row-2" id="cockpitOverviewRow">
+                <div class="card">
+                  <div class="card-head">
+                    <h3>Module log</h3>
+                    <div class="meta" id="moduleProgressMeta">&mdash;</div>
+                  </div>
+                  <div class="card-body" id="moduleProgressList"><div class="card-empty">Run a scan to see per-module progress here.</div></div>
+                </div>
+                <div class="card" id="cockpitLiveMiniCard" hidden>
+                  <div class="card-head"><h3>Live activity</h3><div class="meta">streaming</div></div>
+                  <div class="cockpit-live-mini" id="cockpitLiveMiniList"></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="scan-tab-panel" id="scanTabFindings" hidden>
+              <div class="cov-table-wrap">
+                <table class="cov-table" id="cockpitFindingsTable">
+                  <thead><tr><th>Severity</th><th>Finding</th><th>Endpoint</th><th>Role</th><th></th></tr></thead>
+                  <tbody id="cockpitFindingsTableBody"><tr><td colspan="5" class="card-empty">No findings loaded.</td></tr></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="scan-tab-panel" id="scanTabLogs" hidden>
+              <div class="feed-toolbar">
+                <input type="text" id="feedFilter" placeholder="Filter by module, technique ID, or endpoint&hellip;" />
+                <span class="meta" id="feedMeta">idle</span>
+              </div>
+              <div class="feed-wrap">
+                <div class="feed" id="liveFeed"><div class="empty">Waiting for a scan to start&hellip;</div></div>
+                <button class="feed-jump" id="feedJump" type="button">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
+                  <span id="feedJumpCount">New activity</span>
+                </button>
+              </div>
+            </div>
+
+            <div class="scan-tab-panel" id="scanTabArtifacts" hidden>
+              <div id="cockpitArtifactsList"><div class="card-empty">No report artifacts yet for this scan.</div></div>
+            </div>
+          </div>
         </div>
 
-        <div class="card">
-          <div class="card-head">
-            <h3>Live activity</h3>
-            <div class="meta" id="feedMeta">idle</div>
-          </div>
-          <div class="feed-toolbar">
-            <input type="text" id="feedFilter" placeholder="Filter by module, technique ID, or endpoint&hellip;" />
-          </div>
-          <div class="feed-wrap">
-            <div class="feed" id="liveFeed"><div class="empty">Waiting for a scan to start&hellip;</div></div>
-            <button class="feed-jump" id="feedJump" type="button">
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><path d="M12 5v14M5 12l7 7 7-7"/></svg>
-              <span id="feedJumpCount">New activity</span>
-            </button>
-          </div>
+        <div class="card scan-history-card">
+          <div class="card-head"><h3>Scan history</h3><div class="meta" id="scanHistoryMeta">&mdash;</div></div>
+          <div class="scan-history-list" id="scanHistoryList"><div class="card-empty">No scans yet.</div></div>
+          <button type="button" class="scan-history-foot" id="scanHistoryViewAll" data-panel="scans">View all scans &rarr;</button>
         </div>
       </div>
     </section>
@@ -2682,7 +2875,7 @@
     // "New Scan" is reached via a button, not its own sidebar entry --
     // it keeps the "Scans" nav item highlighted, the same way opening a
     // scan/finding detail keeps its parent panel highlighted below.
-    var navHighlight = name === "scan-new" ? "scans" : name;
+    var navHighlight = name === "scan-new" ? "scans" : name === "scan-live" ? "dashboard" : name;
     navItems.forEach(function (b) {
       var active = b.dataset.panel === navHighlight;
       b.classList.toggle("active", active);
@@ -2710,9 +2903,9 @@
   // action sets it, and the `hashchange` listener is the only place that
   // actually mutates panel/modal visibility -- this avoids the click-
   // handler-vs-listener double-mutation bugs a naive router gets wrong.
-  var VALID_PANELS = ["dashboard", "applications", "scans", "scan-new", "findings", "coverage", "workflows", "integrations", "settings"];
+  var VALID_PANELS = ["dashboard", "applications", "scans", "scan-new", "scan-live", "findings", "coverage", "workflows", "integrations", "settings"];
   var PANEL_TITLES = {
-    dashboard: "Dashboard", applications: "Applications", scans: "Scans", "scan-new": "New Scan", findings: "Findings",
+    dashboard: "Dashboard", applications: "Applications", scans: "Scans", "scan-new": "New Scan", "scan-live": "Latest Scan", findings: "Findings",
     coverage: "Test Cases", workflows: "Workflows", integrations: "Integrations", settings: "Administration",
   };
   function setRoute(hash) {
@@ -2760,6 +2953,21 @@
     }
 
     if (route.panel === "scan-new") openNewScanPage();
+    if (route.panel === "scan-live") {
+      // An explicit scan id in the URL (from the teaser, a history row,
+      // or a bookmarked link) always wins; otherwise attach to whatever
+      // scan is actually running, falling back to the most recent one
+      // so this page is never blank even with nothing currently live.
+      var wantedId = route.parts[1];
+      if (!wantedId) {
+        var running = state.scans.filter(function (s) { return s.status === "running"; });
+        var fallback = running[0] || state.scans.slice().sort(function (a, b) {
+          return (b.started_at || "") < (a.started_at || "") ? -1 : (b.started_at || "") > (a.started_at || "") ? 1 : 0;
+        })[0];
+        wantedId = fallback ? fallback.scan_id : null;
+      }
+      if (wantedId) attachToScan(wantedId);
+    }
     if (route.panel === "coverage" && !state.testCatalogLoaded) loadTestCatalog();
     if (route.panel === "applications") loadApplicationsPanel();
     // Re-render on entering the Scans panel so its per-row severity
@@ -2786,6 +2994,8 @@
     var crumbs = [{ label: "Security Workspace" }].concat(
       route.panel === "scan-new"
         ? [{ label: "Scans", hash: "#/scans" }, { label: "New Scan" }]
+        : route.panel === "scan-live"
+        ? [{ label: "Dashboard", hash: "#/dashboard" }, { label: "Latest Scan" }]
         : [{ label: PANEL_TITLES[route.panel], hash: "#/" + route.panel }],
     );
     if (route.panel === "scans" && route.parts[1]) {
@@ -3994,7 +4204,21 @@ async function loadHealth() {
     pendingScanStep = landingStep || 1;
     setRoute("#/scan-new");
   }
-  document.querySelectorAll("[data-runscan]").forEach(function (b) { b.addEventListener("click", function () { openApplicationInWizard(null, 1); }); });
+  document.querySelectorAll("[data-runscan]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      // The Dashboard's own New-scan button doubles as the running-
+      // scan indicator (see updateDashboardRunScanState()): while a
+      // scan is live it reads "Scan running" and goes to the focused
+      // #/scan-live page instead of opening the wizard. Every other
+      // [data-runscan] button (Applications, Scans) always opens the
+      // wizard unconditionally -- only this one specific button changes.
+      if (b.id === "dashboardRunScanBtn" && state.scans.some(function (s) { return s.status === "running"; })) {
+        setRoute("#/scan-live");
+        return;
+      }
+      openApplicationInWizard(null, 1);
+    });
+  });
   document.getElementById("scanNewCancel").addEventListener("click", goToScans);
   document.getElementById("scanNewCancel2").addEventListener("click", goToScans);
   scanNewConfirm.addEventListener("change", function () { scanNewStart.disabled = !scanNewConfirm.checked; });
@@ -4164,6 +4388,66 @@ async function loadHealth() {
       b.title = capacityMsg;
     });
   }
+
+  // The Dashboard's own New-scan button doubles as a running-scan
+  // indicator: while any scan is live, it reads "Scan running" with a
+  // pulsing dot and its click handler (see the [data-runscan] binding
+  // above) routes to the focused #/scan-live page instead of opening
+  // the New Scan wizard. Reverts to the plain "New scan" button the
+  // moment nothing is running -- called after every loadScans(), so it
+  // never goes stale for longer than that poll/WS-driven refresh cycle.
+  function updateDashboardRunScanState() {
+    var btn = document.getElementById("dashboardRunScanBtn");
+    if (!btn) return;
+    var running = state.scans.filter(function (s) { return s.status === "running"; });
+    if (running.length) {
+      btn.innerHTML = '<span class="scan-status-dot" style="background:#fff;"></span> Scan running' + (running.length > 1 ? " (" + running.length + ")" : "");
+      btn.classList.add("btn-running");
+      btn.title = "A scan is currently running -- click to watch its progress";
+    } else {
+      btn.innerHTML = "&#9654; New scan";
+      btn.classList.remove("btn-running");
+    }
+  }
+
+  // Compact teaser card at the bottom of the Dashboard -- replaces the
+  // full cockpit that used to be embedded here (moved to its own
+  // #/scan-live page, see that panel's comment). Shows the same scan
+  // attachToScan() would, just condensed to one row: mini ring,
+  // name/status, a one-line summary, and a button through to the real
+  // detail page.
+  function renderDashboardScanTeaser() {
+    var teaser = document.getElementById("dashboardScanTeaser");
+    if (!teaser) return;
+    var running = state.scans.filter(function (s) { return s.status === "running"; });
+    var target = running[0] || state.scans.slice().sort(function (a, b) {
+      return (b.started_at || "") < (a.started_at || "") ? -1 : (b.started_at || "") > (a.started_at || "") ? 1 : 0;
+    })[0];
+    if (!target) return;
+    document.getElementById("teaserScanName").textContent = target.name || target.scan_id;
+    var pill = document.getElementById("teaserStatusPill");
+    var crit = 0; // per-severity counts aren't in the list payload -- the pill here is status-only, the real number lives on the detail page's own header.
+    var dataStatus = target.status === "running" ? "running" : target.status === "failed" || target.status === "stopped" ? "failed" : "completed";
+    pill.hidden = false;
+    pill.dataset.status = dataStatus;
+    pill.innerHTML = (target.status === "running" ? '<span class="scan-status-dot"></span>' : "") + target.status.toUpperCase();
+    document.getElementById("teaserSub").textContent = (target.modules || []).join(", ") + " · " + target.target;
+    var pctEl = document.getElementById("teaserPct");
+    var circle = document.getElementById("teaserFillCircle");
+    var pct = target.status === "running" ? 50 : 100; // coarse -- exact % needs per-scan events this list payload doesn't carry; the real ring on #/scan-live is the accurate one.
+    pctEl.textContent = target.status === "running" ? "…" : "100%";
+    circle.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - pct / 100));
+    document.getElementById("teaserRing").dataset.state = dataStatus;
+  }
+  document.getElementById("dashboardScanTeaser").addEventListener("click", function () {
+    var running = state.scans.filter(function (s) { return s.status === "running"; });
+    var target = running[0] || state.scans.slice().sort(function (a, b) {
+      return (b.started_at || "") < (a.started_at || "") ? -1 : (b.started_at || "") > (a.started_at || "") ? 1 : 0;
+    })[0];
+    setRoute("#/scan-live" + (target ? "/" + target.scan_id : ""));
+  });
+  document.getElementById("scanLiveBack").addEventListener("click", function () { setRoute("#/dashboard"); });
+
   stopScanBtn.addEventListener("click", async function () {
     var scanId = stopScanBtn.dataset.scanId;
     if (!scanId) return;
@@ -4315,6 +4599,38 @@ async function loadHealth() {
   document.getElementById("feedJump").addEventListener("click", jumpToLatest);
   document.getElementById("feedFilter").addEventListener("input", function () { filterLiveFeed(this.value); });
 
+  // Corrects a real, confirmed backend bug: every stored "finding" event
+  // carries `TestCaseResult.severity`, which (before modules/base.py's
+  // _make_result() fix) silently defaulted to "Critical" for almost
+  // every module regardless of the attached Finding's REAL severity --
+  // a scan with a genuine 2 Critical / 18 High / 6 Medium / 1 Info split
+  // showed "33 Critical, 0 High" in the live feed and dashboard KPIs,
+  // even though the final saved report (which reads Finding.severity
+  // directly) was always correct. The backend fix only changes NEW
+  // scans going forward; a scan recorded before it keeps the wrong
+  // severity baked into its stored events.jsonl/scan record forever, so
+  // this corrects it client-side using the one source that's always
+  // right: the completed scan's own /findings report (loaded into
+  // state.cockpitSeverityByTechnique by loadCockpitSeverityMap below).
+  // A no-op once every scan on disk predates the bug.
+  function correctEventSeverity(event) {
+    if (event.event !== "finding" || !state.cockpitSeverityByTechnique) return;
+    var real = state.cockpitSeverityByTechnique[event.technique_id];
+    if (real) event.severity = real;
+  }
+  async function loadCockpitSeverityMap(scanId) {
+    state.cockpitSeverityByTechnique = {};
+    try {
+      var report = await api("/api/scans/" + scanId + "/findings");
+      (report.findings || []).forEach(function (f) {
+        if (f.technique_id) state.cockpitSeverityByTechnique[f.technique_id] = f.severity;
+      });
+    } catch (e) {
+      // Best-effort -- a failed fetch just leaves every event's own
+      // (possibly wrong) severity as-is rather than blocking the page.
+    }
+  }
+
   function appendFeedEvent(event) {
     var feed = document.getElementById("liveFeed");
     if (feed.querySelector(".empty")) feed.innerHTML = "";
@@ -4342,6 +4658,34 @@ async function loadHealth() {
       document.getElementById("feedJumpCount").textContent = feedPendingCount + " new";
       jumpBtn.classList.add("show");
     }
+  }
+
+  // Compact mirror of the Logs tab's live feed, shown on the Overview
+  // tab only while a scan is running (see renderOverviewMiniVisibility)
+  // -- same event stream, same EVENT_LABELS formatter, capped to the
+  // most recent 8 lines so it stays a glance-able strip rather than a
+  // second full log. Never a second source of truth: this reads the
+  // exact same `event` objects appendFeedEvent already received.
+  var COCKPIT_MINI_CAP = 8;
+  function appendOverviewMiniEvent(event) {
+    var label = EVENT_LABELS[event.event];
+    if (!label) return;
+    var list = document.getElementById("cockpitLiveMiniList");
+    if (!list) return;
+    if (list.querySelector(".empty")) list.innerHTML = "";
+    var div = document.createElement("div");
+    div.className = "cline" + (event.event === "finding" ? " is-find" : "");
+    var timeStr = event.ts ? new Date(event.ts).toLocaleTimeString([], { hour12: false }) : "";
+    div.innerHTML = '<span class="ctime"></span><span class="cmsg"></span>';
+    div.querySelector(".ctime").textContent = timeStr;
+    div.querySelector(".cmsg").textContent = label(event);
+    list.appendChild(div);
+    while (list.children.length > COCKPIT_MINI_CAP) list.removeChild(list.firstChild);
+    list.scrollTop = list.scrollHeight;
+  }
+  function renderOverviewMiniVisibility(status) {
+    var card = document.getElementById("cockpitLiveMiniCard");
+    if (card) card.hidden = status !== "running";
   }
 
   var moduleRows = {};
@@ -4427,26 +4771,306 @@ async function loadHealth() {
     document.getElementById("feedJump").classList.remove("show");
     moduleRows = {};
     moduleStartTs = {};
+    // Reset both tab badges and the findings/artifacts panel bodies up
+    // front -- without this, switching to a scan that hasn't reached
+    // "complete" yet (a fresh running scan, or one still in discovery)
+    // kept showing whichever scan was attached PREVIOUSLY, since the
+    // eager-count logic below only fires once real data is available.
+    document.getElementById("tabFindingsCount").textContent = "0";
+    document.getElementById("tabArtifactsCount").textContent = "0";
+    document.getElementById("cockpitFindingsTableBody").innerHTML = '<tr><td colspan="5" class="card-empty">No findings loaded.</td></tr>';
+    document.getElementById("cockpitArtifactsList").innerHTML = '<div class="card-empty">No report artifacts yet for this scan.</div>';
     try {
       var s = await api("/api/scans/" + scanId);
+      state.cockpitScan = s;
+      state.cockpitEvents = (s.events || []).slice();
       setDashboardSub(scanId, s.target, s.status === "running" ? "live" : s.status);
+      renderCockpitHeader(s);
+      renderScanPipeline(state.cockpitEvents, s.status);
+      renderOverviewMiniVisibility(s.status);
       setFeedMeta(s.status);
       renderCrawlKpi(s.crawl);
       renderTechniquesKpi(s.modules_state);
       renderLiveFindingsKpi(s.live_findings);
       renderOwaspTestCoverage(s.modules_state);
+      document.getElementById("cockpitLiveMiniList").innerHTML = "";
+      // Loaded BEFORE the event replay below (not after) specifically so
+      // every finding line in the Logs tab/mini-feed renders with the
+      // real, corrected severity from the start, not a flash of the
+      // wrong one -- see loadCockpitSeverityMap()'s own docstring for
+      // why the raw stored events can carry a wrong severity at all.
+      if (s.status === "complete") await loadCockpitSeverityMap(scanId);
+      else state.cockpitSeverityByTechnique = {};
       (s.events || []).forEach(function (event) {
+        correctEventSeverity(event);
         appendFeedEvent(event);
         applyEventToDashboard(event);
+        appendOverviewMiniEvent(event);
       });
       renderModuleLogEmptyState(s.status);
       updateModuleProgressMeta();
       syncDashboardScanSelect(scanId);
+      setCockpitTab("overview");
+      renderScanHistorySidebar();
+      // Tab badges populate immediately rather than only on first click
+      // -- an operator scanning the row of tabs should see real counts
+      // right away, same as every KPI above it.
+      document.getElementById("tabArtifactsCount").textContent = (state.reportsByScan && state.reportsByScan[scanId] || []).length;
+      if (s.status === "complete") renderCockpitFindings();
       if (s.status === "complete" && state.findingsLoaded) refreshFindingsIfVisibleElseInvalidate();
     } catch (e) {
       toast("Could not load scan " + scanId + ": " + e.message, true);
     }
   }
+
+  // ---------------------------------------------------------------- scan cockpit (pipeline, tabs, findings, artifacts, history)
+  // Real phase names `stof/main.py`'s `console.phase(...)` calls emit,
+  // mapped to a short display label -- "CAPTURING EVIDENCE VIA BURP"
+  // and "BUILDING WALKTHROUGH REPORT" are conditional (only appear when
+  // burp.enabled / output.generate_walkthrough are on), so the pipeline
+  // below is built FROM WHATEVER PHASES ACTUALLY FIRED for this scan
+  // rather than a fixed always-N-stages list -- a scan with Burp
+  // disabled genuinely has fewer stages, and showing a fake pending
+  // node for a phase that will never fire would be dishonest.
+  var COCKPIT_PHASE_LABELS = {
+    "CRAWL & ENDPOINT DISCOVERY": "Discovery",
+    "RECONNAISSANCE & ENDPOINT CONTEXT": "Recon",
+    "VULNERABILITY TESTING": "Testing",
+    "CAPTURING EVIDENCE VIA BURP": "Burp capture",
+    "BUILDING WALKTHROUGH REPORT": "Walkthrough",
+  };
+  function renderCockpitHeader(s) {
+    var idEl = document.getElementById("cockpitScanId");
+    idEl.textContent = s.name ? s.name : s.scan_id;
+    idEl.title = s.scan_id;
+    var pill = document.getElementById("cockpitStatusPill");
+    var crit = (s.live_findings || []).filter(function (f) { return f.severity === "Critical"; }).length;
+    var status = s.status, label, dataStatus;
+    if (status === "running") { dataStatus = "running"; label = "Running"; }
+    else if (status === "queued") { dataStatus = "queued"; label = "Queued" + (typeof s.queue_position === "number" ? " (#" + s.queue_position + ")" : ""); }
+    else if (status === "failed") { dataStatus = "failed"; label = "Failed"; }
+    else if (status === "stopped") { dataStatus = "failed"; label = "Stopped"; }
+    else if (crit > 0) { dataStatus = "completed-critical"; label = "Completed · " + crit + " critical finding" + (crit === 1 ? "" : "s"); }
+    else { dataStatus = "completed"; label = "Completed · no critical findings"; }
+    pill.hidden = false;
+    pill.dataset.status = dataStatus;
+    pill.innerHTML = (status === "running" ? '<span class="scan-status-dot"></span>' : "") + label;
+  }
+  function renderScanPipeline(events, status) {
+    var phases = events.filter(function (e) { return e.event === "phase"; }).map(function (e) { return e.title; });
+    var wrap = document.getElementById("scanPipeline");
+    if (!phases.length) { wrap.innerHTML = '<div class="card-empty" style="padding:14px 0;">No phase activity recorded yet for this scan.</div>'; return; }
+    var failed = status === "failed" || status === "stopped";
+    var html = "";
+    phases.forEach(function (title, i) {
+      var isLast = i === phases.length - 1;
+      var cls = "done";
+      if (isLast && status === "running") cls = "active";
+      else if (isLast && failed) cls = "failed";
+      html += '<div class="scan-stage ' + cls + '">' +
+        '<div class="scan-stage-node">' + (cls === "done" ? "&#10003;" : cls === "failed" ? "&#10005;" : "") + '</div>' +
+        '<div class="scan-stage-name"></div><div class="scan-stage-time">' + (cls === "active" ? "in progress&hellip;" : "") + '</div></div>';
+      if (!isLast) html += '<div class="scan-stage-link done"><i></i></div>';
+    });
+    if (status === "running") {
+      // The scan is still between the last-seen phase and whatever
+      // comes next -- an explicit pending node communicates "more is
+      // coming" instead of the stepper looking finished mid-run.
+      html += '<div class="scan-stage-link"><i></i></div><div class="scan-stage pending"><div class="scan-stage-node">&hellip;</div><div class="scan-stage-name">Next</div><div class="scan-stage-time"></div></div>';
+    }
+    wrap.innerHTML = html;
+    wrap.querySelectorAll(".scan-stage-name").forEach(function (el, i) {
+      if (i < phases.length) el.textContent = COCKPIT_PHASE_LABELS[phases[i]] || phases[i];
+    });
+    // Interactive: hover shows the real phase name + status as a native
+    // tooltip, click jumps to Logs (filtered to this scan's real event
+    // stream) -- every stage node is a shortcut into the actual evidence
+    // for that phase, not a decorative marker.
+    wrap.querySelectorAll(".scan-stage").forEach(function (el, i) {
+      if (el.classList.contains("pending")) { el.title = "Waiting for the next phase to start"; return; }
+      var title = phases[i], label = COCKPIT_PHASE_LABELS[title] || title;
+      var stCls = el.className.replace("scan-stage ", "");
+      var statusWord = stCls === "done" ? "complete" : stCls === "active" ? "in progress" : stCls === "failed" ? "failed here" : stCls;
+      el.title = label + " — " + statusWord + ". Click to view this scan's logs.";
+      el.addEventListener("click", function () { setCockpitTab("logs"); });
+    });
+    renderScanProgressRing(status, phases, (state.cockpitScan && state.cockpitScan.modules_state) || {});
+  }
+
+  // Circular progress indicator -- a percentage honestly derived from
+  // real scan state, not a decorative animation:
+  //  - once VULNERABILITY TESTING has started, module completion
+  //    (done / total modules, the same numbers the KPI row already
+  //    shows) is the most accurate signal STOF has, so it takes over;
+  //  - before that, phase position within a typical 5-stage pipeline
+  //    (discovery/recon/testing/[burp]/[walkthrough]) gives a rough
+  //    estimate, deliberately capped below 90% so early phases never
+  //    visually claim to be "almost done" before testing has even begun;
+  //  - a finished scan (complete/failed/stopped) always shows 100% of
+  //    whatever it actually reached, colored green/red accordingly.
+  var COCKPIT_TYPICAL_PHASE_COUNT = 5;
+  var CIRCUMFERENCE = 213.6; // 2 * PI * r(34), matches the SVG circle above
+  function renderScanProgressRing(status, phases, modulesState) {
+    var ring = document.getElementById("scanProgressRing");
+    var pctEl = document.getElementById("sprPct");
+    var labelEl = document.getElementById("sprLabel");
+    var circle = document.getElementById("sprFillCircle");
+    if (!ring) return;
+    if (!phases || !phases.length) { ring.hidden = true; return; }
+    ring.hidden = false;
+
+    var pct, label, state_;
+    var moduleEntries = Object.keys(modulesState || {}).map(function (k) { return modulesState[k]; });
+    var inTesting = phases.indexOf("VULNERABILITY TESTING") !== -1;
+
+    if (status === "complete") { pct = 100; label = "COMPLETE"; state_ = "completed"; }
+    else if (status === "failed" || status === "stopped") {
+      pct = Math.round(Math.min(1, phases.length / COCKPIT_TYPICAL_PHASE_COUNT) * 100);
+      label = status === "failed" ? "FAILED" : "STOPPED";
+      state_ = "failed";
+    } else {
+      state_ = "running";
+      if (inTesting && moduleEntries.length) {
+        var done = moduleEntries.filter(function (m) { return m.status === "complete"; }).length;
+        pct = Math.round((done / moduleEntries.length) * 100);
+        label = "TESTING " + done + "/" + moduleEntries.length;
+      } else {
+        pct = Math.min(88, Math.round((phases.length / COCKPIT_TYPICAL_PHASE_COUNT) * 100));
+        var lastPhase = phases[phases.length - 1];
+        label = (COCKPIT_PHASE_LABELS[lastPhase] || lastPhase || "SCANNING").toUpperCase();
+      }
+    }
+    ring.dataset.state = state_;
+    pctEl.textContent = pct + "%";
+    labelEl.textContent = label;
+    circle.style.strokeDashoffset = String(CIRCUMFERENCE * (1 - pct / 100));
+  }
+
+  // ---- tabs ----
+  function setCockpitTab(tab) {
+    state.cockpitTab = tab;
+    document.querySelectorAll("#scanCockpitTabs .scan-tab").forEach(function (b) { b.classList.toggle("active", b.dataset.tab === tab); });
+    ["overview", "findings", "logs", "artifacts"].forEach(function (t) {
+      var panel = document.getElementById("scanTab" + t.charAt(0).toUpperCase() + t.slice(1));
+      if (panel) panel.hidden = t !== tab;
+    });
+    if (tab === "findings") renderCockpitFindings();
+    else if (tab === "artifacts") renderCockpitArtifacts();
+  }
+  document.getElementById("scanCockpitTabs").addEventListener("click", function (e) {
+    var btn = e.target.closest(".scan-tab");
+    if (btn) setCockpitTab(btn.dataset.tab);
+  });
+
+  // ---- findings tab: scoped to the currently attached scan only,
+  // reusing the same severity-pill convention and finding-detail route
+  // (#/findings/<scanId>/<findingId>) the full Findings panel already
+  // uses -- no separate detail UI to build/maintain.
+  async function renderCockpitFindings() {
+    var scanId = state.activeScanId;
+    var body = document.getElementById("cockpitFindingsTableBody");
+    if (!scanId) { body.innerHTML = '<tr><td colspan="5" class="card-empty">No scan selected.</td></tr>'; return; }
+    body.innerHTML = '<tr><td colspan="5" class="card-empty">Loading findings&hellip;</td></tr>';
+    try {
+      var report = await api("/api/scans/" + scanId + "/findings");
+      var findings = report.findings || [];
+      document.getElementById("tabFindingsCount").textContent = findings.length;
+      // This IS the authoritative severity per finding (Layer 10's
+      // extract_findings() reads Finding.severity directly) -- overrides
+      // the KPI row's own live_findings-derived counts, which come from
+      // TestCaseResult.severity and could be stale/wrong for any scan
+      // run before the severity-passthrough fix in modules/base.py's
+      // _make_result() (confirmed live: a real 2/18/6/1 split showed as
+      // "33 Critical, 0 High" from live_findings alone). Only applied
+      // for a scan whose real findings are actually in hand here --
+      // a still-running scan keeps using the live-feed counts, since
+      // this authoritative list doesn't exist yet.
+      if (state.cockpitScan && state.cockpitScan.status === "complete") {
+        var sevCounts = { Critical: 0, High: 0 };
+        findings.forEach(function (f) { if (sevCounts[f.severity] !== undefined) sevCounts[f.severity]++; });
+        document.getElementById("kpiCritical").textContent = sevCounts.Critical;
+        document.getElementById("kpiHigh").textContent = sevCounts.High;
+        document.getElementById("kpiTotal").textContent = findings.length;
+      }
+      if (!findings.length) { body.innerHTML = '<tr><td colspan="5" class="card-empty">No findings for this scan.</td></tr>'; return; }
+      var sevOrder = { Critical: 0, High: 1, Medium: 2, Low: 3, Info: 4 };
+      findings = findings.slice().sort(function (a, b) { return (sevOrder[a.severity] || 9) - (sevOrder[b.severity] || 9); });
+      body.innerHTML = "";
+      findings.forEach(function (f) {
+        var tr = document.createElement("tr");
+        var endpoint = typeof f.endpoint === "object" && f.endpoint ? (f.endpoint.method + " " + f.endpoint.url) : (f.endpoint || "—");
+        tr.innerHTML =
+          '<td><span class="sev ' + f.severity + '">' + f.severity + '</span></td>' +
+          '<td><div class="finding-name"></div></td>' +
+          '<td class="mono" style="font-size:12px;color:var(--text-muted);"></td>' +
+          '<td></td>' +
+          '<td style="text-align:right;"><span style="font-size:12.5px;font-weight:600;color:var(--accent-text);">View &rarr;</span></td>';
+        tr.children[1].querySelector(".finding-name").textContent = f.vuln_type || "Unnamed finding";
+        tr.children[2].textContent = endpoint;
+        tr.children[3].textContent = f.user_role || "—";
+        tr.style.cursor = "pointer";
+        tr.addEventListener("click", function () { setRoute("#/findings/" + scanId + "/" + f.finding_id); });
+        body.appendChild(tr);
+      });
+    } catch (e) {
+      body.innerHTML = '<tr><td colspan="5" class="card-empty">Could not load findings: ' + e.message + '</td></tr>';
+    }
+  }
+
+  // ---- artifacts tab: real report files for this scan, reusing the
+  // already-loaded state.reportsByScan map (populated by loadScans())
+  // instead of a fresh API call.
+  function renderCockpitArtifacts() {
+    var scanId = state.activeScanId;
+    var list = document.getElementById("cockpitArtifactsList");
+    var reports = (scanId && state.reportsByScan && state.reportsByScan[scanId]) || [];
+    document.getElementById("tabArtifactsCount").textContent = reports.length;
+    if (!reports.length) { list.innerHTML = '<div class="card-empty">No report artifacts yet for this scan.</div>'; return; }
+    list.innerHTML = reports.map(function (r) {
+      var kb = r.size_bytes ? (r.size_bytes / 1024).toFixed(0) + " KB" : "";
+      return '<div class="art-row"><div class="art-main"><b class="mono"></b><span></span></div>' +
+        '<a class="btn btn-sm" href="/api/reports/' + encodeURIComponent(r.filename) + '" target="_blank" rel="noopener">Download</a></div>';
+    }).join("");
+    list.querySelectorAll(".art-row").forEach(function (el, i) {
+      var r = reports[i];
+      el.querySelector("b").textContent = r.filename;
+      var kb = r.size_bytes ? (r.size_bytes / 1024).toFixed(0) + " KB" : "";
+      el.querySelector("span").textContent = r.type + (kb ? " · " + kb : "") + (r.modified_at ? " · " + new Date(r.modified_at).toLocaleString() : "");
+    });
+  }
+
+  // ---- scan history sidebar: last 6 runs, reusing state.scans (already
+  // loaded by loadScans()) -- no separate fetch.
+  function renderScanHistorySidebar() {
+    var list = document.getElementById("scanHistoryList");
+    var meta = document.getElementById("scanHistoryMeta");
+    var rows = (state.scans || []).slice().sort(function (a, b) {
+      return (b.started_at || "") < (a.started_at || "") ? -1 : (b.started_at || "") > (a.started_at || "") ? 1 : 0;
+    }).slice(0, 6);
+    if (!rows.length) { list.innerHTML = '<div class="card-empty">No scans yet.</div>'; meta.textContent = "—"; return; }
+    meta.textContent = "last " + rows.length + " run" + (rows.length === 1 ? "" : "s");
+    list.innerHTML = rows.map(function (s) {
+      return '<button type="button" class="scan-history-row" data-sid=""><span class="scan-history-dot"></span>' +
+        '<div class="scan-history-main"><span class="scan-history-id"></span><span class="scan-history-sub"></span></div>' +
+        '<div class="scan-history-side"><span class="scan-history-dur"></span></div></button>';
+    }).join("");
+    list.querySelectorAll(".scan-history-row").forEach(function (el, i) {
+      var s = rows[i];
+      el.dataset.sid = s.scan_id;
+      el.classList.toggle("active", s.scan_id === state.activeScanId);
+      var dotCls = s.status === "running" ? "running" : s.status === "failed" || s.status === "stopped" ? "failed" : "completed";
+      el.querySelector(".scan-history-dot").className = "scan-history-dot " + dotCls;
+      el.querySelector(".scan-history-id").textContent = s.name || s.scan_id;
+      el.querySelector(".scan-history-sub").textContent = (s.modules || []).join(", ") + (s.started_at ? " · " + new Date(s.started_at).toLocaleDateString() : "");
+      var hasEnded = s.finished_at && s.status !== "running";
+      el.querySelector(".scan-history-dur").textContent = s.status === "running" ? "live" :
+        (s.started_at ? formatScanDuration(new Date(s.started_at), hasEnded ? new Date(s.finished_at) : new Date()) : "—");
+      el.addEventListener("click", function () { attachToScan(s.scan_id); });
+    });
+  }
+  document.getElementById("scanHistoryViewAll").addEventListener("click", function () { setRoute("#/scans"); });
+  document.getElementById("scanProgressRing").addEventListener("click", function () { setCockpitTab("overview"); });
+  document.getElementById("scanProgressRing").title = "Overall scan progress — click for the module breakdown";
 
   // Builds the "scan <id> · <target> · <status>" line with DOM nodes
   // instead of string-concatenated innerHTML -- `target` comes from
@@ -4628,12 +5252,20 @@ async function loadHealth() {
       if (event.scan_id === state.activeScanId) {
         appendFeedEvent(inner);
         applyEventToDashboard(inner);
+        appendOverviewMiniEvent(inner);
+        (state.cockpitEvents = state.cockpitEvents || []).push(inner);
+        if (inner.event === "phase") renderScanPipeline(state.cockpitEvents, "running");
         if (inner.event === "crawl_completed") renderCrawlKpi({ endpoint_count: inner.endpoint_count, forms: inner.forms, apis: inner.apis, pages: inner.pages });
         if (inner.event === "module_started" || inner.event === "module_completed") {
           // Re-derive modules_state client-side from the running feed
           // rather than re-fetching -- appendFeedEvent/applyEventToDashboard
           // already updated moduleRows; techniques-run KPI needs the same source.
-          api("/api/scans/" + event.scan_id).then(function (s) { renderTechniquesKpi(s.modules_state); }).catch(function () {});
+          api("/api/scans/" + event.scan_id).then(function (s) {
+            renderTechniquesKpi(s.modules_state);
+            if (state.cockpitScan) state.cockpitScan.modules_state = s.modules_state;
+            var phaseTitles = (state.cockpitEvents || []).filter(function (e) { return e.event === "phase"; }).map(function (e) { return e.title; });
+            renderScanProgressRing("running", phaseTitles, s.modules_state);
+          }).catch(function () {});
         }
         if (inner.event === "finding") {
           var totalEl = document.getElementById("kpiTotal");
@@ -4650,6 +5282,9 @@ async function loadHealth() {
         if (event.scan_id === state.activeScanId) {
           setFeedMeta(inner.status);
           document.getElementById("dashboardSub").innerHTML = 'scan <code class="inline">' + event.scan_id + '</code> &middot; ' + inner.status;
+          renderScanPipeline(state.cockpitEvents || [], inner.status);
+          renderOverviewMiniVisibility(inner.status);
+          if (state.cockpitScan) { state.cockpitScan.status = inner.status; renderCockpitHeader(state.cockpitScan); }
           if (inner.status === "complete" && state.findingsLoaded) refreshFindingsIfVisibleElseInvalidate();
         }
         if (inner.status === "complete") {
@@ -4707,7 +5342,10 @@ async function loadHealth() {
       });
       renderScans();
       renderDashboardScanSelect();
+      renderScanHistorySidebar();
       syncStopScanButton();
+      updateDashboardRunScanState();
+      renderDashboardScanTeaser();
       document.getElementById("navScanCount").textContent = state.scans.length;
       renderFindingsScanFilterOptions();
       if (state.findingsLoaded) refreshFindingsIfVisibleElseInvalidate();
