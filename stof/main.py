@@ -46,6 +46,7 @@ from stof.core.console import DEFAULT_LOG_DIR, ScanConsole, attach_file_logging,
 from stof.core.logger import get_logger
 from stof.core.module_registry import VULN_MODULE_NAMES
 from stof.core.test_orchestrator import build_test_plan
+from stof.core.traffic_guard import TrafficGuard, derive_allowed_origins
 from stof.crawler.crawler import CrawlerConfig, verify_auth_required
 from stof.crawler.crawler import crawl as run_crawler
 from stof.crawler.endpoint_store import Endpoint, write_endpoints
@@ -1110,7 +1111,7 @@ async def _run_crawl(
     login_provider = _build_login_provider(config)
     jwt_provider = JWTAuthProvider(token_url=config.target.jwt_token_url)
     workflow_login_provider = WorkflowLoginProvider(WorkflowRepository())
-    session_store = SessionStore(db_path=Path("data") / "stof.db")
+    session_store = SessionStore(db_path=Path("data") / "stof.db", target=config.target.base_url)
     session_manager = SessionManager(
         users=users_by_role,
         providers={"form_login": login_provider, "jwt": jwt_provider, "recorded_workflow": workflow_login_provider},
@@ -1119,10 +1120,22 @@ async def _run_crawl(
 
     headless = config.browser.headless if headless_override is None else headless_override
 
+    # One guard for this whole crawl: every request any role's context
+    # sends -- crawl navigation's own API-context probes, the OpenAPI/
+    # hidden-param discovery sweeps -- is scope-checked against the
+    # target's own origin(s) and appended to one running audit log, the
+    # same choke point `_run_test()` uses for the vuln-testing phase.
+    # Crawl audit entries accumulate across runs (no scan_id to key a
+    # fresh file by here) -- append-only is the right default for an
+    # audit trail anyway.
+    traffic_guard = TrafficGuard(
+        allowed_origins=derive_allowed_origins(config.target.base_url),
+        audit_path=Path(config.output.evidence_dir) / "audit_log_crawl.jsonl",
+    )
     echo(f"[CRAWL] Crawling {config.target.base_url} as role(s) {', '.join(crawl_roles)}...")
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=headless, slow_mo=config.browser.slowmo_ms or None)
-        session_pool = SessionPool(browser, ignore_https_errors=True)
+        session_pool = SessionPool(browser, ignore_https_errors=True, guard=traffic_guard)
         await _attach_assisted_login_contexts(pw, config, session_pool, session_manager, login_provider, users_by_role, echo)
         try:
             # One shared PassiveEngine across every role's crawl in this
@@ -1306,7 +1319,7 @@ async def _run_test(
         login_provider = _build_login_provider(config)
         jwt_provider = JWTAuthProvider(token_url=config.target.jwt_token_url)
         workflow_login_provider = WorkflowLoginProvider(WorkflowRepository())
-        session_store = SessionStore(db_path=Path("data") / "stof.db")
+        session_store = SessionStore(db_path=Path("data") / "stof.db", target=config.target.base_url)
         session_manager = SessionManager(
             users=users_by_role,
             providers={"form_login": login_provider, "jwt": jwt_provider, "recorded_workflow": workflow_login_provider},
@@ -1325,9 +1338,23 @@ async def _run_test(
         recon_report = None
         walkthroughs: list = []
         module_rows: list[tuple[str, dict[str, int]]] = []
+        # One guard per scan: every request any module actually sends
+        # through a `SessionPool`-vended context -- not just the ones
+        # that produce a Finding -- is scope-checked against the
+        # target's own origin(s) and appended to this scan's own audit
+        # log, colocated with its evidence under
+        # `<evidence_dir>/<scan_id>/audit_log.jsonl`. This is the single
+        # choke point closing two real gaps: only 3 of 31 module files
+        # previously routed their requests through `rate_limiter.py`'s
+        # own throttle at all, and nothing anywhere recorded the exact
+        # traffic sent to the target independent of whether it hit.
+        traffic_guard = TrafficGuard(
+            allowed_origins=derive_allowed_origins(config.target.base_url),
+            audit_path=Path(config.output.evidence_dir) / scan_id / "audit_log.jsonl",
+        )
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=headless, slow_mo=config.browser.slowmo_ms or None)
-            session_pool = SessionPool(browser, ignore_https_errors=True)
+            session_pool = SessionPool(browser, ignore_https_errors=True, guard=traffic_guard)
             await _attach_assisted_login_contexts(pw, config, session_pool, session_manager, login_provider, users_by_role, console.echo)
             evidence = EvidenceCollector(scan_id=scan_id, base_dir=Path(config.output.evidence_dir))
 
@@ -1459,7 +1486,7 @@ async def _run_test(
                                 click.echo(f"[STOF]  (old browser was already unusable: {exc})")
                             try:
                                 browser = await pw.chromium.launch(headless=headless, slow_mo=config.browser.slowmo_ms or None)
-                                session_pool = SessionPool(browser, ignore_https_errors=True)
+                                session_pool = SessionPool(browser, ignore_https_errors=True, guard=traffic_guard)
                                 click.echo("[STOF]  ✓ browser restarted, continuing scan")
                             except Exception as exc:
                                 click.echo(f"[STOF]  ✗ could not restart the browser ({exc}) -- remaining modules will likely fail the same way")

@@ -1130,3 +1130,39 @@ async def test_tls_certificate_fails_when_handshake_raises(monkeypatch):
     assert by_id["TC-017.15"].status == FAIL
     assert by_id["TC-017.15"].finding.severity == "Medium"  # cvss_score=6.5 -- Medium per the CVSS v3.1 scale (4.0-6.9)
     assert "hostname mismatch" in by_id["TC-017.15"].finding.description
+
+
+# ---------------------------------------------------------------------------
+# Efficiency: _probe_paths runs its wordlist sweep concurrently, not one
+# path at a time -- same real, live-measured inefficiency
+# hidden_param_discovery.py's own candidate loop had.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_probe_paths_runs_the_wordlist_concurrently():
+    import asyncio
+
+    max_in_flight = 0
+    in_flight = 0
+
+    async def _get(url, **kwargs):
+        nonlocal max_in_flight, in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return _response(200, "distinct body " + url)
+        finally:
+            in_flight -= 1
+
+    context = AsyncMock()
+    context.request.get = AsyncMock(side_effect=_get)
+    module = ConfigurationTestsModule()
+
+    await module._probe_paths(context, "https://x.example", ("/a", "/b", "/c", "/d", "/e"))
+
+    # A purely sequential loop would never exceed 1 in flight at once
+    # (plus the baseline control probe, which happens first and alone);
+    # this asserts the wordlist paths themselves actually overlapped.
+    assert max_in_flight > 1

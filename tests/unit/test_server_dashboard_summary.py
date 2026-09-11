@@ -3,7 +3,7 @@ GET /api/dashboard/summary in stof/ui/server.py -- extracted out of the
 endpoint itself so the OWASP portfolio breakdown and scan-duration
 stats are testable without spinning up the FastAPI app or touching disk.
 """
-from stof.ui.server import _attack_surface_summary, _duration_stats, _group_by_target, _owasp_totals, _technologies_from_recon
+from stof.ui.server import _attack_surface_summary, _duration_stats, _group_by_target, _normalize_target_url, _owasp_totals, _technologies_from_recon
 
 
 def _report(findings=None, duration_seconds=None):
@@ -228,3 +228,56 @@ def test_group_by_target_sorted_most_recently_scanned_first():
 
 def test_group_by_target_empty_for_no_reports():
     assert _group_by_target([]) == []
+
+
+def test_group_by_target_merges_the_same_target_scanned_under_different_schemes():
+    """Real bug, live-confirmed: the same real application scanned
+    under both http and https across its history used to show up as
+    TWO separate 'applications' in the rollup -- e.g. demo.testfire.net
+    scanned as `https://` 8 times and `http://` 3 times looked like two
+    unrelated targets. Must merge into one."""
+    reports = [
+        _target_report("https://demo.testfire.net", "s1", "2026-01-01T00:00:00Z", total=5),
+        _target_report("http://demo.testfire.net", "s2", "2026-01-02T00:00:00Z", total=7),
+    ]
+
+    groups = _group_by_target(reports)
+
+    assert len(groups) == 1
+    assert groups[0]["scan_count"] == 2
+
+
+def test_group_by_target_merges_a_trailing_slash_variant():
+    reports = [
+        _target_report("https://a.example", "s1", "2026-01-01T00:00:00Z"),
+        _target_report("https://a.example/", "s2", "2026-01-02T00:00:00Z"),
+    ]
+
+    groups = _group_by_target(reports)
+
+    assert len(groups) == 1
+    assert groups[0]["scan_count"] == 2
+
+
+def test_group_by_target_display_target_is_the_most_recent_raw_string():
+    """Merged rows still display a real URL (not the normalized form) --
+    specifically the raw string from the MOST RECENT scan, since
+    reports arrive oldest-to-newest."""
+    reports = [
+        _target_report("http://demo.testfire.net", "s1", "2026-01-01T00:00:00Z"),
+        _target_report("https://demo.testfire.net", "s2", "2026-01-05T00:00:00Z"),
+    ]
+
+    groups = _group_by_target(reports)
+
+    assert groups[0]["target"] == "https://demo.testfire.net"
+
+
+def test_normalize_target_url_strips_scheme_trailing_slash_and_lowercases():
+    assert _normalize_target_url("https://Demo.TestFire.net/") == "demo.testfire.net"
+    assert _normalize_target_url("http://demo.testfire.net") == "demo.testfire.net"
+
+
+def test_normalize_target_url_handles_none_and_empty():
+    assert _normalize_target_url(None) == ""
+    assert _normalize_target_url("") == ""

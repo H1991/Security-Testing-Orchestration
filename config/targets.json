@@ -59,23 +59,25 @@
       "scan_intensity": "standard",
       "allow_state_changing_probes": true,
       "created_at": "2026-09-08T06:59:50.974145+00:00",
-      "updated_at": "2026-09-11T09:53:07.605968+00:00",
+      "updated_at": "2026-09-11T16:38:29.352318+00:00",
       "roles": [
         {
           "id": "admin-01",
           "role": "admin",
           "username": "admin",
-          "auth_type": "form_login",
+          "auth_type": "recorded_workflow",
           "password_set": true,
-          "totp_secret_set": false
+          "totp_secret_set": false,
+          "login_workflow_id": "wf-20260722-b8d4d7"
         },
         {
           "id": "user-01",
           "role": "normal",
           "username": "jsmith",
-          "auth_type": "form_login",
+          "auth_type": "recorded_workflow",
           "password_set": true,
-          "totp_secret_set": false
+          "totp_secret_set": false,
+          "login_workflow_id": "wf-20260722-b8d4d7"
         }
       ]
     },
@@ -134,26 +136,7 @@
           "totp_secret_set": true
         }
       ]
-    },
-    {
-      "id": "xtroy",
-      "name": "xtroy",
-      "app_type": "web",
-      "environment": "production",
-      "base_url": "https://test.com",
-      "login_url": "https://test.com/login",
-      "username_selector": null,
-      "password_selector": null,
-      "submit_selector": null,
-      "crawler_exclude_patterns": null,
-      "idor_candidate_ids": null,
-      "requires_assisted_login": false,
-      "roles": [],
-      "scan_intensity": "standard",
-      "allow_state_changing_probes": false,
-      "created_at": "2026-09-11T10:44:25.248445+00:00",
-      "updated_at": "2026-09-11T11:57:45.454059+00:00"
     }
   ],
-  "active_target_id": "demo-testfire-net"
+  "active_target_id": "owasp-juice-shop"
 }

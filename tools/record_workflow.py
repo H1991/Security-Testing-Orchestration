@@ -1,27 +1,33 @@
 #!/usr/bin/env python3
-"""Standalone workflow recorder — no STOF install required.
+"""All-in-one workflow recorder — no manual setup, no STOF install required.
 
-Copy this ONE file to the tester's own machine, then:
+Copy this ONE file to the tester's own machine (it needs a real screen —
+this launches a real, visible browser window for a human to click
+through), then just:
 
-    pip install playwright
-    playwright install chromium
-    google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/stof-chrome-debug &
-    python3 record_workflow.py --output checkout-flow.json
+    python3 record_workflow.py --name admin_login
 
-Attaches to that already-open, already-visible Chrome/Edge over CDP (the
-same technique `stof/recorder/recorder.py` uses inside the full package)
-and captures clicks, form fills, and navigations while the tester drives
-the target application by hand. Because Playwright stays connected to
-the browser across page loads, a single run captures a full multi-step
-business workflow (login, checkout, an admin wizard, ...) with no
-manual re-trigger per page.
+That single command handles everything a tester used to have to do by
+hand across four separate steps: it creates its own local virtual
+environment (`.stof_recorder_env`, next to this file — reused on every
+later run, so only the FIRST run ever pays the install cost), installs
+Playwright and the Chromium build it drives, launches that Chromium
+with remote debugging enabled, and attaches to it to start recording.
+Walk through the real flow in the window that opens — login, checkout,
+an admin wizard, whatever the workflow needs — then press Enter in this
+terminal to stop. The browser this script launched closes automatically
+when it's done (pass --keep-browser-open to leave it running instead).
+
+Already have your own debuggable browser open (e.g. your normal daily
+Chrome, restarted once with remote debugging on)? Pass --cdp-endpoint
+to attach to that instead of having this script launch its own.
 
 The output is the same neutral-action JSON `WorkflowRunner` already
-replays (see CLAUDE.md Layer 3A) — upload it to the STOF console's
-Workflows panel ("Upload workflow") or drop it straight into
-`data/workflows/` on the STOF server. Nothing here talks to a STOF
-server; recording is fully offline and local to whichever machine runs
-this script.
+replays (see CLAUDE.md Layer 3A) — saved as `<name>.json` — upload it to
+the STOF console's Workflows panel ("Upload workflow") or drop it
+straight into `data/workflows/` on the STOF server. Nothing here talks
+to a STOF server; recording is fully offline and local to whichever
+machine runs this script.
 
 Credentials: pass --username/--password to have matching `fill` values
 tokenised as {{user.username}} / {{user.password}} instead of being
@@ -33,14 +39,24 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
+import subprocess
 import sys
+import tempfile
+import time
 import uuid
+import venv
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CDP_ENDPOINT = "http://localhost:9222"
+DEFAULT_DEBUG_PORT = 9222
 REDACTED_PLACEHOLDER = "{{REDACTED}}"
+
+# Marks a re-exec'd invocation (see `_ensure_venv_and_bootstrap`) so the
+# bootstrap step never loops on itself.
+_BOOTSTRAP_FLAG = "--_bootstrapped"
+_VENV_DIR_NAME = ".stof_recorder_env"
 
 _BINDING_NAME = "__stofRecordEvent"
 
@@ -87,6 +103,59 @@ _CAPTURE_SCRIPT = f"""
   }}, true);
 }})();
 """
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap: venv + Playwright + Chromium install, then re-exec inside it.
+# EVERYTHING above and including this section must run with only the
+# standard library available -- nothing here may `import playwright`,
+# since a first-ever run has neither the venv nor the package yet.
+# ---------------------------------------------------------------------------
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _ensure_venv_and_bootstrap(argv: list[str]) -> None:
+    """Creates (or reuses) a local venv with Playwright + its Chromium
+    build installed, then re-execs THIS SAME FILE inside that venv's own
+    interpreter with `_BOOTSTRAP_FLAG` appended so the next run of
+    `main()` skips straight to recording instead of bootstrapping again.
+    `os.execv` replaces this process outright (never returns on
+    success) -- there is deliberately no second Python process left
+    running once this hands off."""
+    script_path = Path(__file__).resolve()
+    venv_dir = script_path.parent / _VENV_DIR_NAME
+    py = _venv_python(venv_dir)
+
+    if not py.exists():
+        print(f"[setup] creating a virtual environment at '{venv_dir}' (one-time) ...")
+        venv.EnvBuilder(with_pip=True).create(venv_dir)
+
+    # Cheap "is this already set up" probe -- keeps every run AFTER the
+    # first one fast (no pip/playwright-install round trip just to
+    # confirm nothing changed). Every subprocess call in this function
+    # runs a FIXED argument list (this script's own venv interpreter,
+    # literal pip/playwright sub-commands) -- never shell=True, never a
+    # string built from user input -- the exact shape ruff's S603 exists
+    # to flag as a *possibility* elsewhere, not an actual risk here.
+    probe = subprocess.run([str(py), "-c", "import playwright.sync_api"], capture_output=True, check=False)  # noqa: S603
+    if probe.returncode != 0:
+        print("[setup] installing playwright (one-time) ...")
+        subprocess.run([str(py), "-m", "pip", "install", "--quiet", "playwright"], check=True)  # noqa: S603
+        print("[setup] installing the Chromium build playwright drives (one-time download) ...")
+        subprocess.run([str(py), "-m", "playwright", "install", "chromium"], check=True)  # noqa: S603
+
+    print("[setup] ready\n")
+    os.execv(str(py), [str(py), str(script_path), *argv, _BOOTSTRAP_FLAG])  # noqa: S606 -- fixed argv, not a shell command
+
+
+# ---------------------------------------------------------------------------
+# Recording (only ever runs inside the bootstrapped venv, above)
+# ---------------------------------------------------------------------------
 
 
 class EventHandler:
@@ -154,6 +223,43 @@ def tokenize_credentials(
     return tokenized
 
 
+def _launch_debug_chromium(debug_port: int, user_data_dir: Path) -> subprocess.Popen:
+    """Starts Playwright's OWN installed Chromium build (not a system
+    `google-chrome` this script has no control over the presence of)
+    with remote debugging enabled, and waits for that debug port to
+    actually answer before returning -- the exact same
+    `--remote-debugging-port`/`--user-data-dir` shape the STOF console's
+    own "Record live" feature (and this script's own older, manual
+    instructions) already document, just launched automatically instead
+    of requiring the tester to type it into a second terminal."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as playwright:
+        executable = playwright.chromium.executable_path
+
+    user_data_dir.mkdir(parents=True, exist_ok=True)
+    process = subprocess.Popen([  # noqa: S603 -- fixed argv (playwright's own resolved executable path + literal flags), never shell=True or user input
+        executable,
+        f"--remote-debugging-port={debug_port}",
+        f"--user-data-dir={user_data_dir}",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ])
+
+    import urllib.error
+    import urllib.request
+
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            urllib.request.urlopen(f"http://localhost:{debug_port}/json/version", timeout=1)
+            return process
+        except (urllib.error.URLError, ConnectionError, OSError):
+            time.sleep(0.4)
+    process.terminate()
+    raise SystemExit(f"Chromium started but its debug port never came up at localhost:{debug_port} within 30s.")
+
+
 async def record(cdp_endpoint: str, output_path: Path, username: str | None, password: str | None) -> Path:
     from playwright.async_api import async_playwright
 
@@ -162,8 +268,8 @@ async def record(cdp_endpoint: str, output_path: Path, username: str | None, pas
             browser = await playwright.chromium.connect_over_cdp(cdp_endpoint)
         except Exception as exc:
             raise SystemExit(
-                f"could not connect to a browser at {cdp_endpoint} -- start one first with "
-                f"remote debugging enabled (see the top of this file for the exact command). "
+                f"could not connect to a browser at {cdp_endpoint} -- if you passed --cdp-endpoint "
+                f"yourself, start that browser first with remote debugging enabled. "
                 f"Original error: {exc}"
             ) from exc
         print(f"[record] attached to browser over CDP at {cdp_endpoint}")
@@ -179,9 +285,12 @@ async def record(cdp_endpoint: str, output_path: Path, username: str | None, pas
 
         await handler.detach()
         target_url = page.url
-        # No browser.close(): this is the tester's own real browser,
-        # CDP-attached -- closing it here would end their whole
-        # browsing session, not just disconnect this script.
+        # No browser.close(): whether this is the tester's own real
+        # browser (--cdp-endpoint) or one this script launched itself,
+        # closing it here would end the whole session out from under
+        # whichever caller owns cleanup -- `main()` below handles
+        # terminating a self-launched browser explicitly, after this
+        # returns.
 
     tokenized = tokenize_credentials(handler.actions, username, password)
     workflow = {
@@ -196,15 +305,47 @@ async def record(cdp_endpoint: str, output_path: Path, username: str | None, pas
     return output_path
 
 
-def main() -> None:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--output", required=True, help="path to write the workflow JSON to, e.g. checkout-flow.json")
-    parser.add_argument("--cdp-endpoint", default=DEFAULT_CDP_ENDPOINT, help=f"CDP endpoint of the already-running browser (default: {DEFAULT_CDP_ENDPOINT})")
+    parser.add_argument("--name", required=True, help="a short name for this workflow, e.g. admin_login -- also becomes the output filename (<name>.json)")
+    parser.add_argument("--output", default=None, help="override the output path (defaults to '<name>.json')")
+    parser.add_argument("--cdp-endpoint", default=None, help="attach to an already-running debuggable browser instead of launching one (e.g. http://localhost:9222)")
+    parser.add_argument("--debug-port", type=int, default=DEFAULT_DEBUG_PORT, help=f"port to launch the self-managed Chromium's remote debugging on (default: {DEFAULT_DEBUG_PORT}) -- ignored with --cdp-endpoint")
+    parser.add_argument("--keep-browser-open", action="store_true", help="leave the browser this script launched running after recording stops (ignored with --cdp-endpoint, which never closes a browser it didn't launch)")
     parser.add_argument("--username", default=None, help="value to tokenise as {{user.username}} wherever it's typed")
     parser.add_argument("--password", default=None, help="value to tokenise as {{user.password}} wherever it's typed")
-    args = parser.parse_args()
+    return parser
 
-    asyncio.run(record(args.cdp_endpoint, Path(args.output), args.username, args.password))
+
+def main() -> None:
+    argv = sys.argv[1:]
+    if _BOOTSTRAP_FLAG not in argv:
+        _ensure_venv_and_bootstrap(argv)
+        return  # os.execv() above never returns on success; this is just belt-and-suspenders
+
+    argv = [a for a in argv if a != _BOOTSTRAP_FLAG]
+    args = _build_parser().parse_args(argv)
+    output_path = Path(args.output) if args.output else Path(f"{args.name}.json")
+
+    if args.cdp_endpoint:
+        asyncio.run(record(args.cdp_endpoint, output_path, args.username, args.password))
+        return
+
+    user_data_dir = Path(tempfile.gettempdir()) / "stof-chrome-debug"
+    print("[record] launching a debuggable Chromium (a real, visible window should appear) ...")
+    chrome_process = _launch_debug_chromium(args.debug_port, user_data_dir)
+    try:
+        asyncio.run(record(f"http://localhost:{args.debug_port}", output_path, args.username, args.password))
+    finally:
+        if args.keep_browser_open:
+            print("[record] leaving the browser open (--keep-browser-open)")
+        else:
+            chrome_process.terminate()
+            try:
+                chrome_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                chrome_process.kill()
+            print("[record] closed the browser this script launched")
 
 
 if __name__ == "__main__":

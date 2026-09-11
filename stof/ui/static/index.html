@@ -1292,6 +1292,128 @@
   .grid8 .tile { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; }
   .grid8 .tile .tv { font-size: 21px; font-weight: 800; letter-spacing: -.3px; font-family: var(--mono); }
   .grid8 .tile .tl { font-size: 11.5px; color: var(--text-muted); margin-top: 2px; }
+
+  /* ---- Workflows: step list + usage chips (panel-workflows / wfDetail modal) ---- */
+  .wf-steps { display: flex; flex-direction: column; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .wf-step { display: flex; align-items: flex-start; gap: 10px; background: var(--surface); padding: 9px 12px; }
+  .wf-step-n { flex: none; width: 20px; text-align: right; font-family: var(--mono); font-size: 11px; color: var(--text-faint); padding-top: 2px; }
+  .wf-step-act { flex: none; font-family: var(--mono); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; background: var(--surface-2); color: var(--text-muted); padding: 2px 7px; border-radius: 5px; margin-top: 1px; }
+  .wf-step-body { min-width: 0; flex: 1; }
+  .wf-step-target { font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+  .wf-step-val { font-family: var(--mono); font-size: 11.5px; color: var(--text-faint); margin-top: 3px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .wf-secret-chip { display: inline-flex; align-items: center; gap: 3px; font-size: 9.5px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--high); background: var(--high-soft); padding: 1px 6px; border-radius: 99px; }
+  .wf-empty { padding: 22px; text-align: center; color: var(--text-faint); font-size: 13px; background: var(--surface-2); border: 1px dashed var(--border); border-radius: 10px; }
+  .wf-usage-card { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; margin-bottom: 8px; background: var(--surface); }
+  .wf-usage-card:last-child { margin-bottom: 0; }
+  .wf-usage-card b { font-size: 13px; }
+  .wf-usage-card span { display: block; font-size: 11.5px; color: var(--text-muted); margin-top: 1px; }
+  .wf-usage-role { margin-left: auto; font-family: var(--mono); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px; background: var(--accent-soft); color: var(--accent-text); padding: 3px 8px; border-radius: 99px; flex: none; }
+  .wf-used-badge { display: inline-flex; align-items: center; font-size: 11px; font-weight: 700; color: var(--accent-text); background: var(--accent-soft); padding: 2px 8px; border-radius: 99px; white-space: nowrap; }
+  #wfTable tbody tr.wf-row { transition: background 100ms ease; }
+  #wfTable tbody tr.wf-row:hover { background: var(--surface-2); }
+  #wfTable tbody tr.wf-row .icon-btn-sm { opacity: .55; transition: opacity 100ms ease; }
+  #wfTable tbody tr.wf-row:hover .icon-btn-sm { opacity: 1; }
+
+  /* ---- Workflows: stat cards, filter chips, sortable headers ---- */
+  .wf-stat-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 14px; margin-bottom: 16px; }
+  @media (max-width: 1100px) { .wf-stat-grid { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 640px) { .wf-stat-grid { grid-template-columns: repeat(2, 1fr); } }
+  .wf-stat-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius, 12px); box-shadow: var(--shadow); padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; }
+  .wf-stat-card .wf-sl { font-size: 11px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: .5px; }
+  .wf-stat-card .wf-sv { font-size: 22px; font-weight: 700; letter-spacing: -.3px; font-variant-numeric: tabular-nums; }
+  .wf-stat-card .wf-sd { font-size: 11.5px; color: var(--text-muted); }
+  .wf-toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+  .wf-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .wf-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--text-muted); padding: 5px 12px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; transition: border-color 100ms ease, background 100ms ease, color 100ms ease; }
+  .wf-chip:hover { border-color: var(--border); }
+  .wf-chip b { font-weight: 700; opacity: .65; }
+  .wf-chip.on { background: var(--text); color: var(--surface); border-color: var(--text); }
+  .wf-chip.on b { color: var(--surface); opacity: .7; }
+  #wfSearchWrap { margin-left: auto; max-width: 320px; width: 100%; }
+  .wf-sortable th.sortable { cursor: pointer; user-select: none; }
+  .wf-sortable th.sortable:hover { color: var(--text); }
+  .wf-si { margin-left: 4px; font-size: 9px; display: inline-block; min-width: 8px; }
+
+  /* ---- Workflows: slide-in drawer (detail + live validation) ---- */
+  .wf-drawer-overlay { position: fixed; inset: 0; background: rgba(10, 14, 18, 0.45); opacity: 0; pointer-events: none; transition: opacity 200ms ease; z-index: 70; }
+  .wf-drawer-overlay.open { opacity: 1; pointer-events: auto; }
+  .wf-drawer { position: fixed; top: 0; right: 0; bottom: 0; width: min(720px, 100vw); background: var(--surface); border-left: 1px solid var(--border); box-shadow: -16px 0 48px rgba(10, 14, 18, 0.18); transform: translateX(102%); transition: transform 260ms cubic-bezier(.2,.9,.3,1); z-index: 80; display: flex; flex-direction: column; }
+  .wf-drawer.open { transform: none; }
+  .wf-drawer-head { padding: 20px 24px 16px; border-bottom: 1px solid var(--border); flex: none; }
+  .wf-drawer-title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .wf-drawer-title-row h2 { font-family: var(--mono); font-size: 17px; font-weight: 700; word-break: break-all; }
+  .wf-drawer-meta { font-size: 12.5px; color: var(--text-muted); }
+  .wf-drawer-tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 14px; }
+  .wf-drawer-actions { display: flex; align-items: center; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
+  .wf-role-select { height: 34px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 0 10px; font-size: 12.5px; color: var(--text); width: 100%; }
+  .wf-validate-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .wf-validate-picker label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: .4px; }
+  @media (max-width: 620px) { .wf-validate-picker { grid-template-columns: 1fr; } }
+
+  /* ---- Workflows: "New workflow" method-choice cards ---- */
+  .wf-methods { display: flex; flex-direction: column; gap: 10px; }
+  .wf-mcard { display: flex; gap: 14px; padding: 14px 16px; border: 1.5px solid var(--border); border-radius: 12px; cursor: pointer; transition: border-color 120ms ease, background 120ms ease; align-items: flex-start; }
+  .wf-mcard:hover { border-color: var(--border); }
+  .wf-mcard.on { border-color: var(--accent); background: var(--accent-soft); }
+  .wf-mcard .wf-mc-radio { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--border); flex: none; margin-top: 3px; position: relative; }
+  .wf-mcard.on .wf-mc-radio { border-color: var(--accent); }
+  .wf-mcard.on .wf-mc-radio::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--accent); }
+  .wf-mcard .wf-mc-body { flex: 1; min-width: 0; }
+  .wf-mcard .wf-mc-body b { font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .wf-mc-tag { font-size: 10px; font-weight: 700; letter-spacing: .4px; color: var(--accent-text); background: var(--accent-soft); padding: 2px 7px; border-radius: 99px; }
+  .wf-mcard .wf-mc-body span { display: block; font-size: 12.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
+
+  /* ---- Workflows: "New workflow" 3-step wizard chrome ---- */
+  .modal.modal-md { width: 560px; padding-bottom: 20px; }
+  .wf-wiz-eyebrow { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; color: var(--accent-text); text-transform: uppercase; margin-bottom: 6px; }
+  .wf-wiz-steps { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
+  .wf-wiz-dot { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 600; color: var(--text-faint); transition: color 180ms ease; }
+  .wf-wiz-dot i { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--border); display: grid; place-items: center; font-size: 11px; font-style: normal; flex: none; transition: background 180ms ease, border-color 180ms ease, color 180ms ease; }
+  .wf-wiz-dot.on { color: var(--accent-text); }
+  .wf-wiz-dot.on i { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .wf-wiz-dot.done i { background: var(--low); border-color: var(--low); color: #fff; }
+  .wf-wiz-line { width: 26px; height: 1.5px; background: var(--border); flex: none; }
+  .wf-wiz-section-title { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 16px; }
+  .wf-field-group { margin-bottom: 16px; }
+  .wf-field-group:last-of-type { margin-bottom: 0; }
+  .wf-field-group label:not(.check) { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+  .wf-field-group input[type="checkbox"] { accent-color: var(--accent); }
+  .wf-wiz-fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 500px) { .wf-wiz-fgrid { grid-template-columns: 1fr; } }
+  .wf-review-list { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  .wf-review-list > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 13px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .wf-review-list > div:last-child { border-bottom: none; }
+  .wf-review-list dt { color: var(--text-faint); }
+  .wf-review-list dd { font-weight: 600; text-align: right; max-width: 320px; word-break: break-all; }
+  .wf-drop { border: 1.5px dashed var(--border); border-radius: 10px; padding: 22px 14px; text-align: center; cursor: pointer; transition: border-color 120ms ease, background 120ms ease; }
+  .wf-drop:hover, .wf-drop.drag { border-color: var(--accent); background: var(--accent-soft); }
+  .wf-drop b { display: block; font-size: 13px; }
+  .wf-drop span { display: block; font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .wf-upload-ok { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--low); background: var(--low-soft); border-radius: 10px; padding: 11px 13px; margin-top: 10px; font-size: 12.5px; color: var(--low); }
+  .wf-drawer-body { flex: 1; overflow-y: auto; padding: 20px 24px 28px; }
+  .wf-drawer-section-title { font-size: 12.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; margin: 18px 0 10px; }
+  .wf-drawer-section-title:first-child { margin-top: 0; }
+
+  /* Live/last-run step status -- reuses .wf-step's own base layout,
+     adds a left status bar + status dot so a validation's real
+     per-step outcome reads at a glance without a separate legend. */
+  .wf-step { position: relative; border-left: 3px solid transparent; }
+  .wf-step.ok { border-left-color: var(--low); }
+  .wf-step.fail { border-left-color: var(--critical); background: var(--critical-soft); }
+  .wf-step.pending { opacity: .5; }
+  .wf-step-status { flex: none; width: 16px; height: 16px; border-radius: 50%; margin-top: 2px; display: grid; place-items: center; }
+  .wf-step-status.ok { background: var(--low-soft); color: var(--low); }
+  .wf-step-status.fail { background: var(--critical-soft); color: var(--critical); }
+  .wf-step-status.pending { background: var(--surface-2); color: var(--text-faint); }
+  .wf-step-status.running { background: var(--accent-soft); color: var(--accent-text); }
+  .wf-step-status.running::after { content: ''; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; border-top-color: transparent; animation: wfspin .7s linear infinite; }
+  @keyframes wfspin { to { transform: rotate(360deg); } }
+  .wf-step-err { font-size: 11.5px; color: var(--critical); margin-top: 4px; }
+  .wf-run-banner { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 10px; font-size: 12.5px; margin-bottom: 12px; }
+  .wf-run-banner.running { background: var(--accent-soft); color: var(--accent-text); }
+  .wf-run-banner.success { background: var(--low-soft); color: var(--low); }
+  .wf-run-banner.failed { background: var(--critical-soft); color: var(--critical); }
+  .wf-run-dot { width: 8px; height: 8px; border-radius: 50%; background: currentColor; flex: none; animation: pulse 1.4s infinite; }
   .app-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
   .app-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius, 12px);
@@ -2422,38 +2544,38 @@
       <div class="page-head">
         <div>
           <h1 id="h1-workflows">Workflows</h1>
-          <p>Record yourself performing a real multi-step flow once (login, checkout, a signup wizard) — pick it from the checklist when you start a scan and it's replayed early, extending what the crawler alone can reach.</p>
+          <p>Recorded browser journeys that unlock authenticated surfaces scanning alone can't reach. Attach one to a role in Credentials and it replays before the crawl starts.</p>
         </div>
-        <div style="display:flex; gap:8px;">
-          <input type="file" id="uploadWorkflowInput" accept="application/json,.json" hidden />
-          <button class="btn btn-primary" id="uploadWorkflowBtn">⇧ Upload a workflow</button>
-        </div>
-      </div>
-
-      <div class="card" style="margin-bottom: 16px;">
-        <div class="card-head">
-          <h3>How to record a workflow</h3>
-          <div class="meta">runs on your own machine</div>
-        </div>
-        <div class="card-body" style="padding: 16px 18px;">
-          <p style="margin:0 0 14px; font-size: 13.5px; color: var(--text-muted); line-height: 1.6;">
-            Recording always happens on your own laptop with a small standalone script, fully offline from this
-            server — no debug port needs to be reachable over the network, no matter where this console is deployed.
-          </p>
-          <ol class="steps">
-            <li>Download the recorder script below.</li>
-            <li>On your own machine: <code class="inline">pip install playwright</code> then <code class="inline">playwright install chromium</code>.</li>
-            <li>Start a debuggable browser: <code class="inline">google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/stof-chrome-debug &amp;</code></li>
-            <li>Run it: <code class="inline">python3 record_workflow.py --output my-flow.json</code></li>
-            <li>Walk through the real flow in that browser window — login, checkout, whatever the test case needs. Every click, fill, and page change is captured, across as many pages as the flow needs.</li>
-            <li>Press Enter in the terminal to stop and save <code class="inline">my-flow.json</code>.</li>
-            <li>Bring that file back here and click <b>Upload a workflow</b> above to import it.</li>
-          </ol>
-          <button type="button" class="btn btn-primary" id="downloadRecorderBtn" style="margin-top:14px;">⇩ Download record_workflow.py</button>
+        <div style="display:flex; gap:8px; flex-wrap: wrap;">
+          <button class="btn" id="wfGuideBtn">Recording guide</button>
+          <button class="btn btn-primary" id="newWorkflowBtn">+ New workflow</button>
         </div>
       </div>
 
-      <div class="reports-list" id="workflowsList"><div class="card-empty">No workflows recorded yet — download the recorder script below to capture one.</div></div>
+      <div class="wf-stat-grid" id="wfStatRow"></div>
+
+      <div class="wf-toolbar">
+        <div class="wf-chips" id="wfChips"></div>
+        <div class="search" id="wfSearchWrap">
+          <input type="text" id="wfSearch" placeholder="Search by name or target&hellip;" />
+        </div>
+      </div>
+
+      <div class="cov-table-wrap">
+        <table class="cov-table wf-sortable" id="wfTable">
+          <thead>
+            <tr>
+              <th class="sortable" data-sort="name">Workflow<span class="wf-si"></span></th>
+              <th class="sortable" data-sort="target">Target<span class="wf-si"></span></th>
+              <th class="cov-col-num sortable" data-sort="steps">Steps<span class="wf-si"></span></th>
+              <th class="sortable" data-sort="recorded">Recorded<span class="wf-si"></span></th>
+              <th class="sortable" data-sort="usage">Used by<span class="wf-si"></span></th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="wfTableBody"><tr><td colspan="6" class="cov-loading">Loading workflows&hellip;</td></tr></tbody>
+        </table>
+      </div>
     </section>
 
     <!-- ============================================================ INTEGRATIONS -->
@@ -2807,6 +2929,77 @@
     </div>
   </div>
 </div>
+
+<!-- ============================================================ WORKFLOWS: new workflow (method choice) -->
+<div class="modal-backdrop" id="wfNewBackdrop">
+  <div class="modal modal-md">
+    <p class="wf-wiz-eyebrow">NEW WORKFLOW</p>
+    <h3>Create a workflow</h3>
+    <p style="font-size: 12.5px; color: var(--text-muted); margin: 6px 0 18px;">Recorded it already with the offline script or a teammate's copy? Fill in the details and upload the file — that's it.</p>
+    <div id="wfWizBody"></div>
+    <div class="modal-actions">
+      <button class="btn" id="wfWizCancel">Cancel</button>
+      <button class="btn btn-primary" id="wfWizNext">Create workflow</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ WORKFLOWS: recording guide -->
+<div class="modal-backdrop" id="wfGuideBackdrop">
+  <div class="modal modal-wide" style="border-top-color: var(--accent);">
+    <button class="modal-x" id="wfGuideClose" aria-label="Close">&times;</button>
+    <div class="modal-wide-head">
+      <span class="modal-wide-eyebrow">Recording guide</span>
+      <h3 style="font-family: var(--sans); word-break: normal;">Capture a workflow — one command</h3>
+      <p class="modal-wide-meta">Runs entirely on your own machine. Nothing talks to this server until you upload the result.</p>
+    </div>
+    <div style="padding: 22px 26px;">
+      <p style="font-size: 13.5px; color: var(--text-muted); line-height: 1.6; margin-bottom: 14px;">
+        This single script sets itself up (its own virtual environment, Playwright, and the Chromium build it drives — first run only), launches a real, visible debuggable browser window for you, and records while you click through the flow — no manual pip/playwright-install steps.
+      </p>
+      <ol class="steps">
+        <li>Download the script below onto any machine with a real screen.</li>
+        <li>Run it: <code class="inline">python3 record_workflow.py --name admin_login</code></li>
+        <li>A browser window opens on its own — walk through the flow in it (login, checkout, whatever the test case needs), then press Enter in the terminal to stop. The window closes itself when it's done.</li>
+        <li>Bring <code class="inline">admin_login.json</code> back here and click <b>New workflow</b> to upload it with its details.</li>
+      </ol>
+      <p style="font-size: 12px; color: var(--text-faint); margin: 8px 0 0;">Already have your own debuggable browser running? <code class="inline">--cdp-endpoint http://localhost:9222</code> attaches to that instead of launching a new one. <code class="inline">--username</code>/<code class="inline">--password</code> tokenise matching typed values instead of storing them literally.</p>
+      <button type="button" class="btn" id="wfDownloadRecorderBtn" style="margin-top: 10px;">⇩ Download record_workflow.py</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ WORKFLOWS: detail drawer -->
+<div class="wf-drawer-overlay" id="wfDrawerOverlay"></div>
+<aside class="wf-drawer" id="wfDrawer" aria-label="Workflow detail">
+  <div class="wf-drawer-head">
+    <div class="wf-drawer-title-row">
+      <h2 id="wfDetailName"></h2>
+      <span style="flex:1"></span>
+      <button class="icon-btn-sm" id="wfDetailClose" aria-label="Close">&times;</button>
+    </div>
+    <p class="wf-drawer-meta" id="wfDetailMeta">&mdash;</p>
+    <div class="grid8 wf-drawer-tiles" id="wfDetailTiles"></div>
+    <div class="wf-validate-picker" id="wfValidatePicker">
+      <label>Application<select class="wf-role-select" id="wfValidationTarget"></select></label>
+      <label>Account<select class="wf-role-select" id="wfValidationRole"></select></label>
+    </div>
+    <div class="wf-drawer-actions">
+      <button class="btn btn-primary" id="wfRunValidationBtn">▶ Run validation</button>
+      <button class="btn" id="wfAttachBtn">Save attachment</button>
+      <span style="flex:1"></span>
+      <button class="btn" id="wfDetailExport">⇩ Export JSON</button>
+      <button class="btn" style="border-color: var(--critical); color: var(--critical);" id="wfDetailDelete">Delete</button>
+    </div>
+  </div>
+  <div class="wf-drawer-body">
+    <div id="wfRunBanner"></div>
+    <h4 class="wf-drawer-section-title">Steps</h4>
+    <div id="wfDetailSteps"></div>
+    <h4 class="wf-drawer-section-title">Used by</h4>
+    <div id="wfDetailUsage"></div>
+  </div>
+</aside>
 
 <div class="modal-backdrop" id="changePinBackdrop">
   <div class="modal">
@@ -7023,15 +7216,26 @@ async function loadHealth() {
     var plotH = H - padBottom - padTop;
     var plotW = W - padL - padR;
     var maxTotal = Math.max.apply(null, trend.map(function (t) { return t.total; }).concat([4]));
-    var step = Math.pow(10, Math.floor(Math.log10(Math.max(maxTotal, 1))));
-    if (maxTotal / step <= 2) step /= 2;
+    // "Nice" tick step (1/2/5 x a power of ten) instead of dividing
+    // axisMax into 4 numerically-equal-but-ugly fractions -- the old
+    // rule produced gridlines like 0/38/75/113/150 for a max of 139,
+    // which reads as broken/miscalculated even though the math was
+    // technically right. Real chart libraries always snap to 1/2/5
+    // steps; this does the same, so gridlines land on round numbers
+    // (0/50/100/150) regardless of what the real max happens to be.
+    function _niceStep(roughStep) {
+      var mag = Math.pow(10, Math.floor(Math.log10(Math.max(roughStep, 1e-9))));
+      var norm = roughStep / mag;
+      var niceNorm = norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 5 ? 5 : 10;
+      return niceNorm * mag;
+    }
+    var step = _niceStep(maxTotal / 4);
     var axisMax = Math.ceil(maxTotal / step) * step || 4;
     var n = trend.length;
     var xFor = function (i) { return n === 1 ? padL + plotW / 2 : padL + (i / (n - 1)) * plotW; };
     var yFor = function (v) { return padTop + plotH - (v / axisMax) * plotH; };
 
-    for (var g = 0; g <= 4; g++) {
-      var gv = (axisMax / 4) * g;
+    for (var gv = 0; gv <= axisMax + step * 0.001; gv += step) {
       var gy = yFor(gv);
       var gline = document.createElementNS(SVG_NS, "line");
       gline.setAttribute("class", "grid-line");
@@ -7161,6 +7365,9 @@ async function loadHealth() {
     var colW = plotW / n;
     var appByKey = {};
     apps.forEach(function (a) { appByKey[a.key] = a; });
+    var lastLabelText = null;
+    var lastLabelX = null;
+    var lastLabelEl = null;
     trend.forEach(function (t, i) {
       var x = xFor(i);
       var key = normalizeTargetUrl(t.target) || "unknown";
@@ -7191,12 +7398,41 @@ async function loadHealth() {
         showLabel = i % everyK === 0 && (n - 1 - i) >= everyK;
       }
       if (showLabel) {
-        var label = document.createElementNS(SVG_NS, "text");
-        label.setAttribute("x", x); label.setAttribute("y", H - 6);
-        label.setAttribute("text-anchor", n === 1 ? "middle" : (i === 0 ? "start" : i === n - 1 ? "end" : "middle"));
-        label.setAttribute("class", "axis-label");
-        label.textContent = t.generated_at ? new Date(t.generated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : t.scan_id.slice(0, 6);
-        svg.appendChild(label);
+        var labelText = t.generated_at ? new Date(t.generated_at).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : t.scan_id.slice(0, 6);
+        // Multiple applications can each have a scan on the same real
+        // calendar day -- their index-spaced x positions can both
+        // still qualify for a label under the spacing rule above,
+        // which used to print the same date string twice, back to
+        // back (confirmed live: "3 Sept 3 Sept 3 Sept"). Skip a label
+        // that would repeat the text immediately to its left -- the
+        // data point itself (dot/line) is untouched, only the
+        // redundant text is dropped.
+        if (labelText !== lastLabelText) {
+          // The very last label is forced regardless of the spacing
+          // rule above (it's the most-recent scan, always worth
+          // showing) -- but that can still land pixel-close to the
+          // previously-drawn label when scans cluster near the end of
+          // the range (confirmed live: "10 Sept" at x=578 and "11 Sept"
+          // at x=636, 57px of point-to-point spacing -- clear of
+          // minGapPx=44, but the two labels' actual glyphs still
+          // touched, since minGapPx is tuned for anchor-point/dot
+          // spacing, not real text width, and these two anchor
+          // differently -- "middle" vs the final one's "end"). A wider,
+          // text-width-aware threshold here, not the same minGapPx.
+          var lastLabelGapPx = 64;
+          if (i === n - 1 && lastLabelEl && lastLabelX !== null && (x - lastLabelX) < lastLabelGapPx) {
+            lastLabelEl.remove();
+          }
+          lastLabelText = labelText;
+          lastLabelX = x;
+          var label = document.createElementNS(SVG_NS, "text");
+          label.setAttribute("x", x); label.setAttribute("y", H - 6);
+          label.setAttribute("text-anchor", n === 1 ? "middle" : (i === 0 ? "start" : i === n - 1 ? "end" : "middle"));
+          label.setAttribute("class", "axis-label");
+          label.textContent = labelText;
+          svg.appendChild(label);
+          lastLabelEl = label;
+        }
       }
     });
   }
@@ -7621,68 +7857,713 @@ async function loadHealth() {
   });
 
   // ---------------------------------------------------------------- workflows / recording
-  async function loadWorkflows() {
-    try {
-      var workflows = await api("/api/workflows");
-      document.getElementById("navWorkflowsCount").textContent = workflows.length;
-      var list = document.getElementById("workflowsList");
-      list.innerHTML = "";
-      if (!workflows.length) { list.innerHTML = '<div class="card-empty">No workflows recorded yet — download the recorder script below to capture one.</div>'; return; }
-      workflows.forEach(function (w) {
-        var el = document.createElement("details");
-        el.className = "report-item";
-        var when = w.recorded_at ? new Date(w.recorded_at).toLocaleString() : "—";
-        el.innerHTML =
-          '<summary><span class="ficon">WF</span><div class="rmeta"><div class="rn"></div><div class="rd"></div></div><span class="chev">›</span></summary>' +
-          '<div class="rbody"><span></span></div>';
-        el.querySelector(".rn").textContent = w.name;
-        el.querySelector(".rd").textContent = when + " · " + w.action_count + " action(s)";
-        el.querySelector(".rbody span").textContent = "Target: " + w.target_url + " — select it under \"Recorded workflows to replay\" when starting a new scan.";
-        var delBtn = document.createElement("button");
-        delBtn.className = "btn"; delBtn.textContent = "Delete";
-        delBtn.style.borderColor = "var(--critical)"; delBtn.style.color = "var(--critical)"; delBtn.style.marginTop = "10px";
-        delBtn.addEventListener("click", async function (e) {
-          e.preventDefault();
-          var ok = await askConfirm('Delete workflow "' + w.name + '"?', "This permanently removes the recorded workflow file. This cannot be undone.", true);
-          if (!ok) return;
-          try {
-            await api("/api/workflows/" + w.workflow_id, { method: "DELETE" });
-            toast("Deleted " + w.name);
-            loadWorkflows();
-          } catch (err) {
-            toast("Could not delete workflow: " + err.message, true);
-          }
-        });
-        el.querySelector(".rbody").appendChild(delBtn);
-        list.appendChild(el);
+  var ACTION_LABEL = { navigate: "navigate", click: "click", fill: "fill", select: "select", press: "press", wait_for: "wait", assert: "assert" };
+  // A workflow action's own `value` is the one place a literal
+  // credential-shaped token (`{{user.password}}`, written by
+  // stof/recorder/exporter.py's own `tokenize_credentials()`) ever
+  // appears in this UI -- masked the same way a real password field
+  // would be, not printed plainly just because it's a template token
+  // rather than a live secret.
+  function isSecretActionValue(v) { return /\{\{\s*user\.password\s*\}\}/i.test(String(v || "")); }
+
+  function wfUsageMap(targets) {
+    // workflow_id -> [{target, role}] -- computed client-side from the
+    // real per-role `login_workflow_id` field already returned by
+    // GET /api/targets (stof/ui/targets.py's own `user_entries()`),
+    // not a separate reverse-index STOF doesn't maintain server-side.
+    var map = {};
+    (targets || []).forEach(function (t) {
+      (t.roles || []).forEach(function (r) {
+        if (r.auth_type !== "recorded_workflow" || !r.login_workflow_id) return;
+        if (!map[r.login_workflow_id]) map[r.login_workflow_id] = [];
+        map[r.login_workflow_id].push({ target: t.name, role: r.role });
       });
+    });
+    return map;
+  }
+
+  async function loadWorkflows() {
+    var tbody = document.getElementById("wfTableBody");
+    try {
+      var results = await Promise.all([api("/api/workflows"), api("/api/targets")]);
+      state.workflows = results[0];
+      state.wfTargets = results[1].targets || [];
+      state.wfUsage = wfUsageMap(state.wfTargets);
+      document.getElementById("navWorkflowsCount").textContent = state.workflows.length;
+      renderWfStatRow();
+      renderWfTable();
     } catch (e) {
-      toast("Could not load workflows: " + e.message, true);
+      tbody.innerHTML = '<tr><td colspan="6" class="cov-loading">Could not load workflows: ' + escapeHtml(e.message) + "</td></tr>";
     }
   }
 
-  document.getElementById("downloadRecorderBtn").addEventListener("click", function () {
+  function renderWfStatRow() {
+    var row = document.getElementById("wfStatRow");
+    var w = state.workflows || [];
+    if (!w.length) { row.innerHTML = ""; return; }
+    var totalSteps = w.reduce(function (a, x) { return a + x.action_count; }, 0);
+    var targets = {}; w.forEach(function (x) { targets[x.target_url] = true; });
+    var inUse = w.filter(function (x) { return (state.wfUsage[x.workflow_id] || []).length > 0; }).length;
+    var mostRecent = w.reduce(function (a, x) { return (!a || (x.recorded_at && x.recorded_at > a.recorded_at)) ? x : a; }, null);
+    var avgSteps = Math.round(totalSteps / w.length);
+    var cells = [
+      ["Workflows", w.length, ""],
+      ["Total steps", totalSteps, "across every recording"],
+      ["Applications covered", Object.keys(targets).length, ""],
+      ["In use", inUse, inUse ? "attached to a role" : "not attached to any role yet"],
+      ["Avg steps", avgSteps, "per recording"],
+      ["Most recent", mostRecent && mostRecent.recorded_at ? new Date(mostRecent.recorded_at).toLocaleDateString() : "—", mostRecent ? mostRecent.name : ""],
+    ];
+    row.innerHTML = cells.map(function () { return '<div class="wf-stat-card"><div class="wf-sl"></div><div class="wf-sv"></div><div class="wf-sd"></div></div>'; }).join("");
+    row.querySelectorAll(".wf-stat-card").forEach(function (el, i) {
+      el.querySelector(".wf-sl").textContent = cells[i][0];
+      el.querySelector(".wf-sv").textContent = cells[i][1];
+      el.querySelector(".wf-sd").textContent = cells[i][2];
+    });
+  }
+
+  // ---------------------------------------------------------------- workflows: filter chips + sortable table
+  var wfState = { filter: "all", sortKey: null, sortDir: 1 };
+  var WF_SORT = {
+    name: function (a, b) { return a.name.localeCompare(b.name); },
+    target: function (a, b) { return (a.target_url || "").localeCompare(b.target_url || ""); },
+    steps: function (a, b) { return a.action_count - b.action_count; },
+    recorded: function (a, b) { return (b.recorded_at || "").localeCompare(a.recorded_at || ""); },
+    usage: function (a, b) { return (state.wfUsage[a.workflow_id] || []).length - (state.wfUsage[b.workflow_id] || []).length; },
+  };
+
+  function renderWfChips() {
+    var w = state.workflows || [];
+    var counts = {
+      all: w.length,
+      inuse: w.filter(function (x) { return (state.wfUsage[x.workflow_id] || []).length > 0; }).length,
+      unattached: w.filter(function (x) { return !(state.wfUsage[x.workflow_id] || []).length; }).length,
+    };
+    document.getElementById("wfChips").innerHTML = [["all", "All"], ["inuse", "In use"], ["unattached", "Not attached"]]
+      .map(function (pair) {
+        return '<button type="button" class="wf-chip' + (wfState.filter === pair[0] ? " on" : "") + '" data-wfchip="' + pair[0] + '">' + pair[1] + " <b>" + counts[pair[0]] + "</b></button>";
+      }).join("");
+  }
+
+  function wfFilteredSorted() {
+    var all = state.workflows || [];
+    var list = wfState.filter === "inuse" ? all.filter(function (x) { return (state.wfUsage[x.workflow_id] || []).length > 0; })
+      : wfState.filter === "unattached" ? all.filter(function (x) { return !(state.wfUsage[x.workflow_id] || []).length; })
+      : all.slice();
+    var q = (document.getElementById("wfSearch").value || "").trim().toLowerCase();
+    if (q) list = list.filter(function (w) { return (w.name + " " + (w.target_url || "")).toLowerCase().indexOf(q) !== -1; });
+    if (wfState.sortKey) {
+      var cmp = WF_SORT[wfState.sortKey], dir = wfState.sortDir;
+      list.sort(function (a, b) { return cmp(a, b) * dir; });
+    }
+    return list;
+  }
+
+  function paintWfSortHeads() {
+    document.querySelectorAll("#wfTable th.sortable").forEach(function (th) {
+      th.querySelector(".wf-si").textContent = wfState.sortKey === th.dataset.sort ? (wfState.sortDir === 1 ? "▲" : "▼") : "";
+    });
+  }
+
+  function renderWfTable() {
+    var tbody = document.getElementById("wfTableBody");
+    var all = state.workflows || [];
+    renderWfChips();
+    var rows = wfFilteredSorted();
+    if (!all.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="cov-loading">No workflows recorded yet &mdash; click <b>Record live</b> or <b>Upload workflow</b> above to capture one.</td></tr>';
+      return;
+    }
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="6" class="cov-loading">No workflow matches the current filter.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map(function () {
+      return '<tr class="wf-row" style="cursor:pointer;"><td><b class="mono wf-name"></b></td>' +
+        '<td class="mono wf-target"></td>' +
+        '<td class="cov-col-num wf-steps-count"></td>' +
+        '<td class="wf-recorded"></td>' +
+        '<td class="wf-usage"></td>' +
+        '<td class="actions-cell"><div class="row-actions"><button type="button" class="icon-btn-sm wf-del-btn" title="Delete" aria-label="Delete">&times;</button></div></td></tr>';
+    }).join("");
+    tbody.querySelectorAll("tr").forEach(function (rowEl, i) {
+      var w = rows[i];
+      rowEl.querySelector(".wf-name").textContent = w.name;
+      var targetEl = rowEl.querySelector(".wf-target");
+      targetEl.textContent = w.target_url || "—";
+      targetEl.title = w.target_url || "";
+      rowEl.querySelector(".wf-steps-count").textContent = w.action_count;
+      rowEl.querySelector(".wf-recorded").textContent = w.recorded_at ? new Date(w.recorded_at).toLocaleString() : "—";
+      var usage = state.wfUsage[w.workflow_id] || [];
+      var usageEl = rowEl.querySelector(".wf-usage");
+      usageEl.innerHTML = usage.length
+        ? '<span class="wf-used-badge">' + usage.length + " role" + (usage.length > 1 ? "s" : "") + "</span>"
+        : '<span class="small" style="color: var(--text-faint);">not attached</span>';
+      rowEl.addEventListener("click", function () { openWorkflowDetail(w.workflow_id); });
+      rowEl.querySelector(".wf-del-btn").addEventListener("click", function (e) {
+        e.stopPropagation();
+        deleteWorkflow(w);
+      });
+    });
+  }
+
+  document.getElementById("wfChips").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-wfchip]");
+    if (!b) return;
+    wfState.filter = b.dataset.wfchip;
+    renderWfTable();
+  });
+  document.querySelectorAll("#wfTable th.sortable").forEach(function (th) {
+    th.addEventListener("click", function () {
+      var key = th.dataset.sort;
+      if (wfState.sortKey === key) wfState.sortDir *= -1; else { wfState.sortKey = key; wfState.sortDir = 1; }
+      paintWfSortHeads();
+      renderWfTable();
+    });
+  });
+
+  async function deleteWorkflow(w) {
+    var usage = state.wfUsage[w.workflow_id] || [];
+    var warning = usage.length
+      ? "It is currently used by " + usage.length + " role(s) (" + usage.map(function (u) { return u.target + " / " + u.role; }).join(", ") + ") — they will fall back to unauthenticated scanning until another workflow is attached.\n\n"
+      : "";
+    var ok = await askConfirm('Delete workflow "' + w.name + '"?', warning + "This permanently removes the recorded workflow file. This cannot be undone.", true);
+    if (!ok) return;
+    try {
+      await api("/api/workflows/" + w.workflow_id, { method: "DELETE" });
+      toast("Deleted " + w.name);
+      closeWfDetail();
+      loadWorkflows();
+    } catch (err) {
+      toast("Could not delete workflow: " + err.message, true);
+    }
+  }
+
+  document.getElementById("wfSearch").addEventListener("input", renderWfTable);
+
+  // ---------------------------------------------------------------- workflows: detail drawer
+  var wfDrawer = document.getElementById("wfDrawer");
+  var wfDrawerOverlay = document.getElementById("wfDrawerOverlay");
+  var wfDetailCurrent = null;
+  var wfValidationPoll = null;
+
+  function openWfDrawer() { wfDrawer.classList.add("open"); wfDrawerOverlay.classList.add("open"); }
+  function closeWfDetail() {
+    wfDrawer.classList.remove("open"); wfDrawerOverlay.classList.remove("open");
+    wfDetailCurrent = null;
+    wfValidationStopPolling();
+  }
+  wfDrawerOverlay.addEventListener("click", closeWfDetail);
+  document.getElementById("wfDetailClose").addEventListener("click", closeWfDetail);
+
+  function renderWfSteps(actions, stepResults) {
+    // `stepResults` (from a real validation run) is optional -- when
+    // present, each step's real ok/fail/pending status overlays the
+    // static step list instead of a second, separate view. `undefined`
+    // for a step index means "not reached yet" (validation stopped
+    // earlier, or hasn't started), rendered as pending, never guessed.
+    var stepsEl = document.getElementById("wfDetailSteps");
+    stepsEl.innerHTML = actions.length ? '<div class="wf-steps"></div>' : '<div class="wf-empty">This recording has no captured steps.</div>';
+    if (!actions.length) return;
+    var stepsWrap = stepsEl.querySelector(".wf-steps");
+    actions.forEach(function (a, i) {
+      var target = a.selector || a.url || "";
+      var result = stepResults ? stepResults[i] : null;
+      var el = document.createElement("div");
+      el.className = "wf-step" + (result ? " " + result.status : (stepResults ? " pending" : ""));
+      el.innerHTML =
+        (stepResults ? '<span class="wf-step-status ' + (result ? result.status : "pending") + '">' + (result ? (result.status === "ok" ? "✓" : result.status === "fail" ? "✕" : "") : "") + "</span>" : '<span class="wf-step-n">' + (i + 1) + "</span>") +
+        '<span class="wf-step-act">' + escapeHtml(ACTION_LABEL[a.type] || a.type) + '</span>' +
+        '<div class="wf-step-body"><div class="wf-step-target"></div>' +
+        (a.value != null ? '<div class="wf-step-val"></div>' : '') +
+        (result && result.status === "fail" && result.error ? '<div class="wf-step-err"></div>' : '') +
+        '</div>' +
+        (result && result.ms != null ? '<span class="wf-step-n" style="width:auto;">' + result.ms + 'ms</span>' : '');
+      el.querySelector(".wf-step-target").textContent = target || (a.timeout_ms ? "up to " + a.timeout_ms + "ms" : "—");
+      if (a.value != null) {
+        var valEl = el.querySelector(".wf-step-val");
+        var secretVal = isSecretActionValue(a.value);
+        valEl.textContent = "value: " + (secretVal ? "•••••••• (from credentials)" : a.value);
+        if (secretVal) valEl.innerHTML += ' <span class="wf-secret-chip">secret</span>';
+      }
+      if (result && result.status === "fail" && result.error) el.querySelector(".wf-step-err").textContent = result.error;
+      stepsWrap.appendChild(el);
+    });
+  }
+
+  // Validating a workflow needs the RIGHT application's own credentials,
+  // not whichever target happens to be globally active right now (a
+  // real bug this two-step picker closes -- confirmed live: with Juice
+  // Shop active, validating a demo.testfire.net workflow used to
+  // silently reach for Juice Shop's account). Application picked first,
+  // narrows the Account dropdown to that application's own configured
+  // roles only, matching how `_target_role_credentials()` resolves
+  // credentials server-side (same target_id + role pair, never guessed).
+  function wfRolesForTarget(targetId) {
+    var profile = (state.wfTargets || []).find(function (t) { return t.id === targetId; });
+    return profile ? (profile.roles || []).filter(function (r) { return r.username && r.password_set; }) : [];
+  }
+
+  function populateWfValidationRoleOptions(workflowId, targetId) {
+    var sel = document.getElementById("wfValidationRole");
+    var runBtn = document.getElementById("wfRunValidationBtn");
+    var roles = wfRolesForTarget(targetId);
+    if (!roles.length) {
+      sel.innerHTML = '<option value="">No accounts with a saved password</option>';
+      runBtn.disabled = true; runBtn.title = "Add a password for a role on this application in Credentials first";
+      return;
+    }
+    var attached = (state.wfUsage[workflowId] || []).filter(function (u) { return u.target === (state.wfTargets.find(function (t) { return t.id === targetId; }) || {}).name; }).map(function (u) { return u.role; });
+    sel.innerHTML = roles.map(function (r) {
+      return '<option value="' + escapeHtml(r.role) + '">' + escapeHtml(r.role) + " (" + escapeHtml(r.username) + ")" + (attached.indexOf(r.role) !== -1 ? " — attached" : "") + "</option>";
+    }).join("");
+    // Default to a role this workflow is actually attached to on THIS
+    // application, when there is one -- the most likely credential set
+    // an operator means when they click "Run validation."
+    var preferred = roles.find(function (r) { return attached.indexOf(r.role) !== -1; });
+    if (preferred) sel.value = preferred.role;
+    runBtn.disabled = false; runBtn.title = "";
+  }
+
+  function populateWfValidationTargets(doc) {
+    var sel = document.getElementById("wfValidationTarget");
+    var targets = state.wfTargets || [];
+    var runBtn = document.getElementById("wfRunValidationBtn");
+    if (!targets.length) {
+      sel.innerHTML = '<option value="">No applications configured</option>';
+      document.getElementById("wfValidationRole").innerHTML = "";
+      runBtn.disabled = true; runBtn.title = "Add an application under Applications first";
+      return;
+    }
+    sel.innerHTML = targets.map(function (t) { return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + "</option>"; }).join("");
+    // Default to whichever application's base_url matches this
+    // workflow's own recorded target_url -- a PREFIX match (not exact
+    // equality): a recorded workflow's target_url is very often a deep
+    // link (e.g. ".../bank/main.jsp"), while a target profile's own
+    // base_url is normally just the bare origin -- exact-string
+    // equality would miss that real, common case entirely. Same
+    // normalizeTargetUrl() the dashboard's own by-target rollup uses,
+    // so a scheme/trailing-slash difference doesn't break the match
+    // either.
+    var recordedKey = normalizeTargetUrl(doc.target_url);
+    var matched = targets.find(function (t) { return recordedKey.indexOf(normalizeTargetUrl(t.base_url)) === 0; });
+    sel.value = matched ? matched.id : targets[0].id;
+    populateWfValidationRoleOptions(doc.workflow_id, sel.value);
+  }
+
+  document.getElementById("wfValidationTarget").addEventListener("change", function () {
+    if (wfDetailCurrent) populateWfValidationRoleOptions(wfDetailCurrent.workflow_id, this.value);
+  });
+
+  function renderWfDrawerTilesAndUsage(doc) {
+    var actions = doc.actions || [];
+    document.getElementById("wfDetailTiles").innerHTML =
+      '<div class="tile"><div class="tv">' + actions.length + '</div><div class="tl">Steps</div></div>' +
+      '<div class="tile"><div class="tv">' + actions.filter(function (a) { return a.type === "navigate"; }).length + '</div><div class="tl">Navigations</div></div>' +
+      '<div class="tile"><div class="tv">' + actions.filter(function (a) { return a.type === "fill"; }).length + '</div><div class="tl">Fields filled</div></div>' +
+      '<div class="tile"><div class="tv">' + (state.wfUsage[doc.workflow_id] || []).length + '</div><div class="tl">Roles using it</div></div>';
+
+    var usageEl = document.getElementById("wfDetailUsage");
+    var usage = state.wfUsage[doc.workflow_id] || [];
+    usageEl.innerHTML = usage.length
+      ? usage.map(function (u) { return '<div class="wf-usage-card"><div><b></b><span>login role</span></div><span class="wf-usage-role"></span></div>'; }).join("")
+      : '<div class="wf-empty">Not attached to any role yet &mdash; pick an application/account above and click Save attachment.</div>';
+    usageEl.querySelectorAll(".wf-usage-card").forEach(function (el, i) {
+      el.querySelector("b").textContent = usage[i].target;
+      el.querySelector(".wf-usage-role").textContent = usage[i].role;
+    });
+  }
+
+  async function openWorkflowDetail(workflowId) {
+    var doc;
+    try {
+      doc = await api("/api/workflows/" + workflowId);
+    } catch (err) {
+      toast("Could not load workflow: " + err.message, true);
+      return;
+    }
+    wfDetailCurrent = doc;
+    document.getElementById("wfDetailName").textContent = doc.name;
+    document.getElementById("wfDetailMeta").textContent = (doc.recorded_at ? new Date(doc.recorded_at).toLocaleString() : "recorded date unknown") + " · " + doc.target_url;
+    document.getElementById("wfRunBanner").innerHTML = "";
+
+    renderWfSteps(doc.actions || [], null);
+    populateWfValidationTargets(doc);
+    renderWfDrawerTilesAndUsage(doc);
+
+    openWfDrawer();
+  }
+
+  // Re-renders the drawer's own data (tiles, Used-by list, the Workflows
+  // table's usage badges) after a real write -- WITHOUT touching the
+  // Application/Account pickers. `openWorkflowDetail`'s own
+  // `populateWfValidationTargets` recomputes a "best guess" default
+  // every time it runs, which used to fight the operator's own just-made
+  // choice: pick "normal", click Save attachment, and the picker would
+  // snap back to "admin" (whichever role the URL-prefix/attached-role
+  // heuristic preferred) -- LOOKING like the save silently failed, even
+  // though it had actually written correctly (confirmed live: the real
+  // config/targets.json entry was always right; only the picker's own
+  // redisplay was wrong). The two selects keep showing exactly what the
+  // operator just saved.
+  async function refreshWfDrawerAfterAttach(workflowId) {
+    await loadWorkflows(); // refreshes state.wfUsage/wfTargets from the real, just-written config
+    if (!wfDetailCurrent || wfDetailCurrent.workflow_id !== workflowId) return;
+    renderWfDrawerTilesAndUsage(wfDetailCurrent);
+  }
+
+  document.getElementById("wfDetailExport").addEventListener("click", function () {
+    if (!wfDetailCurrent) return;
+    var blob = new Blob([JSON.stringify(wfDetailCurrent, null, 2)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = wfDetailCurrent.name + ".json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 4000);
+  });
+  document.getElementById("wfDetailDelete").addEventListener("click", function () {
+    if (wfDetailCurrent) deleteWorkflow(wfDetailCurrent);
+  });
+
+  // ---------------------------------------------------------------- workflows: run validation (real, live)
+  function wfValidationStopPolling() { if (wfValidationPoll) { clearInterval(wfValidationPoll); wfValidationPoll = null; } }
+
+  function renderRunBanner(status, text) {
+    document.getElementById("wfRunBanner").innerHTML =
+      '<div class="wf-run-banner ' + status + '">' + (status === "running" ? '<span class="wf-run-dot"></span>' : "") + escapeHtml(text) + "</div>";
+  }
+
+  async function startWorkflowValidation() {
+    if (!wfDetailCurrent) return;
+    var targetId = document.getElementById("wfValidationTarget").value;
+    var role = document.getElementById("wfValidationRole").value;
+    if (!targetId || !role) { toast("Pick an application and account to validate with", true); return; }
+    var runBtn = document.getElementById("wfRunValidationBtn");
+    runBtn.disabled = true;
+    try {
+      await api("/api/workflows/" + wfDetailCurrent.workflow_id + "/validate", { method: "POST", body: JSON.stringify({ target_id: targetId, role: role }) });
+    } catch (err) {
+      toast("Could not start validation: " + err.message, true);
+      runBtn.disabled = false;
+      return;
+    }
+    renderRunBanner("running", "Validating with '" + role + "'…");
+    renderWfSteps(wfDetailCurrent.actions || [], []);
+    wfValidationPoll = setInterval(pollWorkflowValidation, 900);
+  }
+
+  async function pollWorkflowValidation() {
+    if (!wfDetailCurrent) { wfValidationStopPolling(); return; }
+    var session;
+    try {
+      session = await api("/api/workflows/validate/current");
+    } catch (err) {
+      return; // transient poll failure -- retry next tick, no per-tick toast spam
+    }
+    if (session.status === "idle" || session.workflow_id !== wfDetailCurrent.workflow_id) return;
+    var byIndex = {};
+    (session.step_results || []).forEach(function (r) { byIndex[r.index] = r; });
+    renderWfSteps(wfDetailCurrent.actions || [], byIndex);
+    document.getElementById("wfRunValidationBtn").disabled = session.status === "starting" || session.status === "running";
+
+    if (session.status === "success") {
+      wfValidationStopPolling();
+      renderRunBanner("success", "Passed — " + session.total_steps + " step(s) in " + (session.duration_ms / 1000).toFixed(1) + "s");
+      document.getElementById("wfRunValidationBtn").disabled = false;
+    } else if (session.status === "failed") {
+      wfValidationStopPolling();
+      renderRunBanner("failed", "Failed" + (session.error ? " — " + session.error : "") + " (" + (session.step_results || []).length + " of " + session.total_steps + " step(s) attempted)");
+      document.getElementById("wfRunValidationBtn").disabled = false;
+    }
+  }
+
+  document.getElementById("wfRunValidationBtn").addEventListener("click", startWorkflowValidation);
+
+  document.getElementById("wfAttachBtn").addEventListener("click", async function () {
+    if (!wfDetailCurrent) return;
+    var targetId = document.getElementById("wfValidationTarget").value;
+    var role = document.getElementById("wfValidationRole").value;
+    if (!targetId || !role) { toast("Pick an application and account to attach it to", true); return; }
+    var btn = this;
+    btn.disabled = true;
+    var workflowId = wfDetailCurrent.workflow_id;
+    try {
+      await attachWorkflowToRole(targetId, role, workflowId);
+      toast('Attached to "' + role + '" — it will replay at login on the next scan of this application');
+      await refreshWfDrawerAfterAttach(workflowId);
+      // The two pickers still show exactly targetId/role, untouched --
+      // reassert them anyway in case a role's own attachment elsewhere
+      // changed what populateWfValidationRoleOptions would now render
+      // for this application (e.g. an "— attached" suffix moving to a
+      // different option's label).
+      populateWfValidationRoleOptions(workflowId, targetId);
+      document.getElementById("wfValidationTarget").value = targetId;
+      document.getElementById("wfValidationRole").value = role;
+    } catch (err) {
+      toast("Could not save the attachment: " + err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // ---------------------------------------------------------------- workflows: recording guide modal
+  var wfGuideBackdrop = document.getElementById("wfGuideBackdrop");
+  document.getElementById("wfGuideBtn").addEventListener("click", function () { wfGuideBackdrop.classList.add("open"); });
+  document.getElementById("wfGuideClose").addEventListener("click", function () { wfGuideBackdrop.classList.remove("open"); });
+  wfGuideBackdrop.addEventListener("click", function (e) { if (e.target === wfGuideBackdrop) wfGuideBackdrop.classList.remove("open"); });
+  document.getElementById("wfDownloadRecorderBtn").addEventListener("click", function () {
     window.location.href = API + "/api/recordings/standalone-script";
   });
 
-  var uploadWorkflowInput = document.getElementById("uploadWorkflowInput");
-  document.getElementById("uploadWorkflowBtn").addEventListener("click", function () {
-    uploadWorkflowInput.value = "";
-    uploadWorkflowInput.click();
-  });
-  uploadWorkflowInput.addEventListener("change", async function () {
-    var file = uploadWorkflowInput.files[0];
-    if (!file) return;
-    var form = new FormData();
-    form.append("file", file, file.name);
-    try {
-      var result = await api("/api/workflows/upload", { method: "POST", headers: {}, body: form });
-      toast('Workflow "' + result.name + '" uploaded (' + result.action_count + ' action(s))');
-      loadWorkflows();
-    } catch (err) {
-      toast("Could not upload workflow: " + err.message, true);
+
+  // Shared by the workflow-detail drawer's "Save attachment"/"Run
+  // validation" and the "New workflow" form below: the one real write
+  // that actually makes a workflow usable in a scan -- `PUT /api/
+  // targets/{id}` with a partial role update (per that endpoint's own
+  // "only the roles you name are touched" convention). Switches the
+  // role's `auth_type` to "recorded_workflow" too, not just the
+  // `login_workflow_id` -- attaching a recording only takes effect at
+  // scan time if the role is actually configured to use it as its
+  // login method.
+  async function attachWorkflowToRole(targetId, role, workflowId) {
+    return api("/api/targets/" + targetId, {
+      method: "PUT",
+      body: JSON.stringify({ roles: [{ role: role, auth_type: "recorded_workflow", login_workflow_id: workflowId }] }),
+    });
+  }
+
+  // Populates an "attach to account" <select>'s options for one
+  // application -- only roles that actually have a saved password
+  // (nothing to attach a login-replacing workflow onto otherwise).
+  // "Don't attach yet" stays a real, valid choice: the file still
+  // uploads either way, just without wiring it to a role's login.
+  function wfRecordRoleOptionsHtml(targetId) {
+    var roles = wfRolesForTarget(targetId);
+    if (!roles.length) return '<option value="">No accounts with a saved password on this application</option>';
+    return '<option value="">Don’t attach yet</option>' + roles.map(function (r) {
+      return '<option value="' + escapeHtml(r.role) + '">' + escapeHtml(r.role) + " (" + escapeHtml(r.username) + ")</option>";
+    }).join("");
+  }
+
+  // ---------------------------------------------------------------- workflows: "New workflow" 3-step wizard
+  // Method (1) -> Details (2, shared by all three methods -- name,
+  // application, account, entry URL/file) -> Review (3) -> the actual
+  // method-specific action. Real gap this closes: the details used to
+  // be collected AFTER already committing to a method (each method had
+  // its own separate, inconsistent little form) -- collecting them
+  // once, up front, before doing anything, matches how every other
+  // multi-step creation flow in this console already works (see the
+  // Applications wizard) and is what an operator naturally expects.
+  var wfNewBackdrop = document.getElementById("wfNewBackdrop");
+  var wfWiz = { step: 1, method: "record", name: "", targetId: "", role: "", url: "", validate: true, uploadedFile: null };
+
+  function wfWizReset() {
+    wfWiz = { step: 1, method: "record", name: "", targetId: "", role: "", url: "", validate: true, uploadedFile: null };
+  }
+
+  function renderWfWizSteps() {
+    var labels = ["Method", "Details", "Review"];
+    document.getElementById("wfWizSteps").innerHTML = [1, 2, 3].map(function (n, i) {
+      var cls = n < wfWiz.step ? "done" : n === wfWiz.step ? "on" : "";
+      return (i > 0 ? '<span class="wf-wiz-line"></span>' : "") +
+        '<span class="wf-wiz-dot ' + cls + '"><i>' + (n < wfWiz.step ? "✓" : n) + "</i>" + labels[i] + "</span>";
+    }).join("");
+  }
+
+  function wfWizMethodCardHtml(method, title, tag, desc) {
+    return '<div class="wf-mcard' + (wfWiz.method === method ? " on" : "") + '" data-method="' + method + '">' +
+      '<span class="wf-mc-radio"></span><div class="wf-mc-body"><b>' + title + (tag ? ' <span class="wf-mc-tag">' + tag + "</span>" : "") + "</b><span>" + desc + "</span></div></div>";
+  }
+
+  function renderWfWizStep1() {
+    document.getElementById("wfWizBody").innerHTML =
+      '<p class="wf-wiz-section-title">How do you want to create this workflow?</p>' +
+      '<div class="wf-methods" id="wfMethods">' +
+      wfWizMethodCardHtml("record", "Record in your browser", "Recommended", "Attach to a real, visible browser window and click through the journey once. Nothing leaves your machine until you save.") +
+      wfWizMethodCardHtml("upload", "Upload an existing recording", "", "Already have a workflow.json from a previous session or a teammate? Import it directly.") +
+      wfWizMethodCardHtml("manual", "Start a manual draft", "", "Create a workflow with just an entry URL — add the real steps later by re-recording over it.") +
+      "</div>";
+    document.getElementById("wfMethods").addEventListener("click", function (e) {
+      var card = e.target.closest(".wf-mcard");
+      if (!card) return;
+      wfWiz.method = card.dataset.method;
+      document.querySelectorAll("#wfMethods .wf-mcard").forEach(function (c) { c.classList.toggle("on", c === card); });
+    });
+  }
+
+  function renderWfWizStep2() {
+    var targets = state.wfTargets || [];
+    var isUpload = wfWiz.method === "upload";
+    var body = document.getElementById("wfWizBody");
+    body.innerHTML =
+      '<p class="wf-wiz-section-title">Workflow details</p>' +
+      '<div class="wf-field-group"><label>Workflow name</label><input type="text" id="wfWizName" placeholder="e.g. test_login" value="' + escapeHtml(wfWiz.name) + '" /></div>' +
+      '<div class="wf-field-group wf-wiz-fgrid">' +
+      '<div><label>Application</label><select class="wf-role-select" id="wfWizApp"><option value="">Not sure yet</option>' + targets.map(function (t) { return '<option value="' + escapeHtml(t.id) + '"' + (t.id === wfWiz.targetId ? " selected" : "") + ">" + escapeHtml(t.name) + "</option>"; }).join("") + "</select></div>" +
+      "<div><label>Attach to account</label><select class=\"wf-role-select\" id=\"wfWizRole\"><option value=\"\">Pick an application first</option></select></div>" +
+      "</div>" +
+      (isUpload
+        ? '<div class="wf-field-group"><div class="wf-drop" id="wfWizDrop"><b>Drop workflow.json here</b><span>or <span class="mini-link" id="wfWizBrowse" style="color:var(--accent-text); cursor:pointer; font-weight:600;">browse files</span></span></div><input type="file" id="wfWizFileInput" accept="application/json,.json" hidden /><div id="wfWizUploadResult"></div></div>'
+        : '<div class="wf-field-group"><label>Entry URL</label><input type="text" id="wfWizUrl" placeholder="https://app.example/login" value="' + escapeHtml(wfWiz.url) + '" /><p id="wfWizUrlHint" style="font-size:11px; color:var(--text-faint); margin-top:6px;" hidden>Auto-filled from the application you picked — edit it if the workflow starts somewhere else.</p></div>' +
+          (wfWiz.method === "record" ? '<div class="wf-field-group"><label class="check" style="display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--text); cursor:pointer;"><input type="checkbox" id="wfWizValidate" style="width:15px; height:15px;" ' + (wfWiz.validate ? "checked" : "") + " /><span>Run validation immediately after creating</span></label></div>" : ""));
+
+    var appSel = document.getElementById("wfWizApp");
+    var roleSel = document.getElementById("wfWizRole");
+    var urlField = document.getElementById("wfWizUrl");
+    // Tracks whether the operator has typed their own URL -- once they
+    // have, switching Application again must NOT silently overwrite
+    // what they typed. Before that, though, it should keep following
+    // the application picker (confirmed live: only auto-filling once,
+    // when the field was still empty, meant picking a DIFFERENT
+    // application afterward left the previous one's URL behind --
+    // looking like the auto-fill "didn't work").
+    var urlManuallyEdited = !isUpload && wfWiz.url && wfWiz.targetId && wfWiz.url !== ((targets.find(function (t) { return t.id === wfWiz.targetId; }) || {}).login_url || (targets.find(function (t) { return t.id === wfWiz.targetId; }) || {}).base_url);
+    if (urlField) {
+      urlField.addEventListener("input", function () { urlManuallyEdited = true; document.getElementById("wfWizUrlHint").hidden = true; });
     }
+    function refreshRoleOptions() {
+      roleSel.innerHTML = appSel.value ? wfRecordRoleOptionsHtml(appSel.value) : '<option value="">Pick an application first</option>';
+      if (wfWiz.role) roleSel.value = wfWiz.role;
+    }
+    appSel.addEventListener("change", function () {
+      var app = targets.find(function (t) { return t.id === appSel.value; });
+      if (app && urlField && !urlManuallyEdited) {
+        urlField.value = app.login_url || app.base_url || "";
+        document.getElementById("wfWizUrlHint").hidden = false;
+      }
+      refreshRoleOptions();
+    });
+    refreshRoleOptions();
+
+    if (isUpload) {
+      var drop = document.getElementById("wfWizDrop");
+      var fileInput = document.getElementById("wfWizFileInput");
+      function showStagedFile(file) {
+        wfWiz.uploadedFile = file;
+        document.getElementById("wfWizUploadResult").innerHTML = '<div class="wf-upload-ok">✓ ' + escapeHtml(file.name) + " staged — continue to review</div>";
+        if (!document.getElementById("wfWizName").value.trim()) document.getElementById("wfWizName").value = file.name.replace(/\.json$/i, "");
+      }
+      drop.addEventListener("click", function () { fileInput.click(); });
+      document.getElementById("wfWizBrowse").addEventListener("click", function (e) { e.stopPropagation(); fileInput.click(); });
+      fileInput.addEventListener("change", function () { if (fileInput.files[0]) showStagedFile(fileInput.files[0]); });
+      ["dragover", "dragenter"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("drag"); }); });
+      drop.addEventListener("dragleave", function () { drop.classList.remove("drag"); });
+      drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("drag"); if (e.dataTransfer.files[0]) showStagedFile(e.dataTransfer.files[0]); });
+      if (wfWiz.uploadedFile) showStagedFile(wfWiz.uploadedFile);
+    }
+  }
+
+  function renderWfWizStep3() {
+    var targets = state.wfTargets || [];
+    var appName = (targets.find(function (t) { return t.id === wfWiz.targetId; }) || {}).name;
+    var methodLabel = { record: "Record in your browser", upload: "Upload an existing recording", manual: "Start a manual draft" }[wfWiz.method];
+    document.getElementById("wfWizBody").innerHTML =
+      '<p style="font-size:13px; font-weight:700; margin-bottom:12px;">Review</p>' +
+      '<div class="wf-review-list">' +
+      "<div><dt>Method</dt><dd>" + escapeHtml(methodLabel) + "</dd></div>" +
+      "<div><dt>Name</dt><dd class=\"mono\">" + escapeHtml(wfWiz.name) + "</dd></div>" +
+      "<div><dt>Application</dt><dd>" + (appName ? escapeHtml(appName) : "Not sure yet") + "</dd></div>" +
+      "<div><dt>Account</dt><dd>" + (wfWiz.role ? escapeHtml(wfWiz.role) : "Not attached yet") + "</dd></div>" +
+      (wfWiz.method === "upload"
+        ? "<div><dt>File</dt><dd class=\"mono\" style=\"font-size:11.5px;\">" + escapeHtml(wfWiz.uploadedFile ? wfWiz.uploadedFile.name : "—") + "</dd></div>"
+        : "<div><dt>Entry URL</dt><dd class=\"mono\" style=\"font-size:11.5px;\">" + escapeHtml(wfWiz.url || "—") + "</dd></div>") +
+      (wfWiz.method === "record" ? "<div><dt>Validate on create</dt><dd>" + (wfWiz.validate ? "Yes" : "No") + "</dd></div>" : "") +
+      "</div>";
+  }
+
+  function renderWfWiz() {
+    renderWfWizSteps();
+    if (wfWiz.step === 1) renderWfWizStep1();
+    else if (wfWiz.step === 2) renderWfWizStep2();
+    else renderWfWizStep3();
+    document.getElementById("wfWizBack").style.visibility = wfWiz.step === 1 ? "hidden" : "visible";
+    document.getElementById("wfWizNext").textContent = wfWiz.step === 3 ? "Create workflow" : "Continue";
+  }
+
+  document.getElementById("newWorkflowBtn").addEventListener("click", function () {
+    wfWizReset();
+    renderWfWiz();
+    wfNewBackdrop.classList.add("open");
   });
+  document.getElementById("wfWizCancel").addEventListener("click", function () { wfNewBackdrop.classList.remove("open"); });
+  wfNewBackdrop.addEventListener("click", function (e) { if (e.target === wfNewBackdrop) wfNewBackdrop.classList.remove("open"); });
+  document.getElementById("wfWizBack").addEventListener("click", function () {
+    if (wfWiz.step === 1) return;
+    wfWizStashStep2();
+    wfWiz.step--;
+    renderWfWiz();
+  });
+
+  function wfWizStashStep2() {
+    if (wfWiz.step !== 2) return;
+    wfWiz.name = (document.getElementById("wfWizName").value || "").trim();
+    wfWiz.targetId = document.getElementById("wfWizApp").value;
+    wfWiz.role = document.getElementById("wfWizRole").value;
+    if (wfWiz.method !== "upload") {
+      wfWiz.url = (document.getElementById("wfWizUrl").value || "").trim();
+      if (wfWiz.method === "record") wfWiz.validate = document.getElementById("wfWizValidate").checked;
+    }
+  }
+
+  document.getElementById("wfWizNext").addEventListener("click", async function () {
+    if (wfWiz.step === 1) { wfWiz.step = 2; renderWfWiz(); return; }
+    if (wfWiz.step === 2) {
+      wfWizStashStep2();
+      if (!wfWiz.name) { toast("Give the workflow a name", true); return; }
+      if (wfWiz.method === "upload" && !wfWiz.uploadedFile) { toast("Drop or browse for a workflow.json file", true); return; }
+      if (wfWiz.method !== "upload" && !wfWiz.url) { toast("Give it an entry URL", true); return; }
+      wfWiz.step = 3;
+      renderWfWiz();
+      return;
+    }
+    await wfWizCreate();
+  });
+
+  async function wfWizCreate() {
+    var btn = document.getElementById("wfWizNext");
+    btn.disabled = true;
+    try {
+      if (wfWiz.method === "record") {
+        wfNewBackdrop.classList.remove("open");
+        wfRecordBackdrop.classList.add("open");
+        wfRecordRenderIdle();
+      } else if (wfWiz.method === "upload") {
+        var form = new FormData();
+        form.append("file", wfWiz.uploadedFile, wfWiz.name + ".json");
+        var uploadResult = await api("/api/workflows/upload", { method: "POST", headers: {}, body: form });
+        if (wfWiz.targetId && wfWiz.role) {
+          try { await attachWorkflowToRole(wfWiz.targetId, wfWiz.role, uploadResult.workflow_id); } catch (attachErr) { toast("Uploaded, but could not attach it: " + attachErr.message, true); }
+        }
+        toast('"' + wfWiz.name + '" uploaded (' + uploadResult.action_count + " action(s))");
+        wfNewBackdrop.classList.remove("open");
+        loadWorkflows();
+      } else {
+        // Manual draft -- a workflow whose only action is navigating to
+        // the entry URL, built client-side and imported through the
+        // SAME real `/api/workflows/upload` endpoint the Upload method
+        // uses, not a separate ad-hoc creation route.
+        var draftDoc = {
+          workflow_id: "wf-" + Date.now().toString(16),
+          target_url: wfWiz.url,
+          recorded_at: new Date().toISOString(),
+          actions: [{ type: "navigate", url: wfWiz.url }],
+        };
+        var blob = new Blob([JSON.stringify(draftDoc, null, 2)], { type: "application/json" });
+        var draftForm = new FormData();
+        draftForm.append("file", blob, wfWiz.name + ".json");
+        var draftResult = await api("/api/workflows/upload", { method: "POST", headers: {}, body: draftForm });
+        if (wfWiz.targetId && wfWiz.role) {
+          try { await attachWorkflowToRole(wfWiz.targetId, wfWiz.role, draftResult.workflow_id); } catch (attachErr) { toast("Draft created, but could not attach it: " + attachErr.message, true); }
+        }
+        toast('"' + wfWiz.name + '" created as a draft — add real steps by re-recording over it');
+        wfNewBackdrop.classList.remove("open");
+        loadWorkflows();
+      }
+    } catch (err) {
+      toast("Could not create the workflow: " + err.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  }
 
   // ---------------------------------------------------------------- boot
   async function boot() {

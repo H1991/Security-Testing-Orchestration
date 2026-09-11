@@ -24,6 +24,10 @@ dashboard/
 dummy_showcase/
 
 .venv/
+# tools/record_workflow.py's own self-bootstrapped venv -- created next
+# to the script on whichever machine actually runs it (the tester's own
+# laptop, in the common case), never meant to be committed.
+tools/.stof_recorder_env/
 __pycache__/
 *.pyc
 .pytest_cache/

@@ -489,6 +489,34 @@ class ConfigurationTestsModule(VulnModule):
             return None
         return self._fingerprint(resp.status, body)
 
+    async def _probe_one_path(self, context, origin: str, path: str) -> "tuple[str, int, str] | None":
+        """One path's own probe -- split out of `_probe_paths` so the
+        whole wordlist can run CONCURRENTLY (`asyncio.gather`) instead
+        of one path at a time. Real, live-measured gap this closes:
+        this loop used to `await` each path in strict sequence across
+        all three call sites that share it (admin panels ~40 paths,
+        listable dirs ~23, sample files ~45 -- up to ~108 sequential
+        round-trips per scan), even though the concurrency budget
+        every request already flows through (`core.rate_limiter.
+        throttled()` directly, or -- for a real scan -- uniformly via
+        `TrafficGuard` at the `SessionPool`-vended context level, see
+        `stof/engine/guarded_context.py`) was sitting unused. Same
+        transient-error propagation as before: `asyncio.gather`'s
+        default (no `return_exceptions`) re-raises the first exception
+        and cancels the rest, which is exactly "a network blip aborts
+        the whole sweep, not a silent partial PASS" -- unchanged
+        behavior, just concurrent instead of sequential."""
+        url = f"{origin}{path}"
+        try:
+            resp = await context.request.get(url, max_redirects=0)
+            body = await resp.text()
+        except Exception as exc:
+            if _is_transient_error(exc):
+                raise
+            _log.warning(f"configuration probe failed for {url}: {exc}")
+            return None
+        return url, resp.status, body
+
     async def _probe_paths(self, context, base_url: str, paths: tuple[str, ...]) -> list[tuple[str, int, str]]:
         """Returns [(url, status, body), ...] for every path whose response
         is distinct from the baseline control probe -- base_url + path
@@ -500,20 +528,15 @@ class ConfigurationTestsModule(VulnModule):
         up reported as a clean PASS."""
         origin = base_url.split("/#/")[0].rstrip("/")
         baseline = await self._control_fingerprint(context, origin)
+        probed = await asyncio.gather(*(self._probe_one_path(context, origin, path) for path in paths))
         results = []
-        for path in paths:
-            url = f"{origin}{path}"
-            try:
-                resp = await context.request.get(url, max_redirects=0)
-                body = await resp.text()
-            except Exception as exc:
-                if _is_transient_error(exc):
-                    raise
-                _log.warning(f"configuration probe failed for {url}: {exc}")
+        for hit in probed:
+            if hit is None:
                 continue
-            if baseline is not None and self._fingerprint(resp.status, body) == baseline:
+            url, status, body = hit
+            if baseline is not None and self._fingerprint(status, body) == baseline:
                 continue
-            results.append((url, resp.status, body))
+            results.append((url, status, body))
         return results
 
     async def _technique_admin_panel(self, endpoints, session_pool, evidence) -> TestCaseResult:

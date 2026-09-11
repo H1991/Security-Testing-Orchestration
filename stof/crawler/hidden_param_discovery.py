@@ -46,6 +46,7 @@ chance to test it in the first place.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import secrets
 from dataclasses import dataclass, field
@@ -152,6 +153,31 @@ def _add_param(url: str, name: str) -> str:
     return f"{url}{separator}{name}={secrets.token_hex(4)}"
 
 
+async def _probe_candidate(context, endpoint_url: str, name: str, control_fp: tuple[int, str] | None, min_content_length: int) -> str | None:
+    """One candidate parameter's own probe-and-compare -- split out so
+    `_discover_for_endpoint` can run every candidate CONCURRENTLY
+    (`asyncio.gather`) instead of one at a time. Real, live-measured
+    gap this closes: this loop used to `await` each of a target's
+    ~110 candidates in strict sequence, even though
+    `core.rate_limiter.throttled()` (which `_probe` already routes
+    every request through) already permits up to
+    `rate_limiter.MAX_CONCURRENT_REQUESTS` (6 by default) requests in
+    flight at once -- the concurrency budget existed, this code just
+    never used it, making a full scan's crawl/discovery phase take
+    roughly `MAX_CONCURRENT_REQUESTS`x longer than it needed to.
+    Returns `name` if it's a real, newly-discovered parameter, `None`
+    otherwise -- the caller just filters `None`s out, so result order
+    (which `asyncio.gather` preserves anyway) never mattered."""
+    probe = await _probe(context, _add_param(endpoint_url, name))
+    if probe is None:
+        return None
+    status, body = probe
+    if len(body) < min_content_length:
+        return None
+    fp = _fingerprint(status, body)
+    return name if (control_fp is None or fp != control_fp) else None
+
+
 async def _discover_for_endpoint(context, endpoint: Endpoint, config: HiddenParamConfig) -> Endpoint | None:
     """One endpoint's sweep: a control probe (a definitely-fake
     parameter name) establishes the baseline, then every candidate is
@@ -167,19 +193,12 @@ async def _discover_for_endpoint(context, endpoint: Endpoint, config: HiddenPara
     control_status, control_body = control_probe
     control_fp = _fingerprint(control_status, control_body) if len(control_body) >= config.min_content_length else None
 
-    discovered: list[str] = []
-    for name in config.candidate_params:
-        if name in endpoint.parameters:
-            continue  # already known from the crawl itself -- nothing new to learn
-        probe = await _probe(context, _add_param(endpoint.url, name))
-        if probe is None:
-            continue
-        status, body = probe
-        if len(body) < config.min_content_length:
-            continue
-        fp = _fingerprint(status, body)
-        if control_fp is None or fp != control_fp:
-            discovered.append(name)
+    candidates = [name for name in config.candidate_params if name not in endpoint.parameters]
+    results = await asyncio.gather(*(
+        _probe_candidate(context, endpoint.url, name, control_fp, config.min_content_length)
+        for name in candidates
+    ))
+    discovered = [name for name in results if name is not None]
 
     if not discovered:
         return None

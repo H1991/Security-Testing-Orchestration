@@ -2187,7 +2187,13 @@ def set_manual_session(body: ManualSessionRequest) -> dict:
         cookies=cookies,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=body.expires_hours),
     )
-    SessionStore(db_path=SESSIONS_DB_PATH).save(session)
+    # Scoped to the currently-configured target -- `SessionStore`'s own
+    # row key is now (role, target), not role alone (see that module's
+    # docstring for the cross-target session-leak bug this closes), so
+    # a scan later run against THIS target must seed with the same
+    # target string a real scan will load with.
+    target = (_read_json(CONFIG_PATH) or {}).get("target", {}).get("base_url", "")
+    SessionStore(db_path=SESSIONS_DB_PATH, target=target).save(session)
     return {"role": body.role, "cookie_count": len(cookies), "expires_at": session.expires_at.isoformat()}
 
 
@@ -2195,7 +2201,8 @@ def set_manual_session(body: ManualSessionRequest) -> dict:
 def clear_manual_session(role: str) -> dict:
     from stof.session.session_store import SessionStore
 
-    SessionStore(db_path=SESSIONS_DB_PATH).delete(role)
+    target = (_read_json(CONFIG_PATH) or {}).get("target", {}).get("base_url", "")
+    SessionStore(db_path=SESSIONS_DB_PATH, target=target).delete(role)
     return {"role": role, "cleared": True}
 
 
@@ -2537,6 +2544,234 @@ async def delete_workflow(workflow_id: str) -> dict:
     raise HTTPException(404, f"no workflow '{workflow_id}'")
 
 
+# ---------------------------------------------------------------------------
+# Workflow validation -- "does this recording actually still work" is a
+# real question the Workflows console page has no honest way to answer
+# today (STOF can only replay a workflow as part of a full scan, never
+# standalone). This launches one real headless browser, replays the
+# workflow's own real actions step by step via the exact same
+# `execute_action()` dispatch a real scan's `WorkflowLoginProvider`/
+# `PlaywrightEngine.replay()` use (see `stof/engine/playwright_engine.py`),
+# and reports genuine per-step pass/fail -- never a fabricated result.
+# Same starting/running/success/failed polling shape as Recording and
+# Verify Login above (one in-flight validation at a time, GET /current
+# to poll) -- deliberately not a new pattern.
+#
+# Explicitly NOT built: persisted history across runs, a pass-rate
+# trend/sparkline, or any "AI-detected selector drift" suggestion --
+# none of that is real, tracked data, and this project's own standard
+# (established this session) is to never synthesize a number or a
+# signal that isn't actually measured. Each validation is a fresh,
+# honest, single data point; nothing about a PAST run is remembered
+# past this one in-memory session.
+class WorkflowValidationSession:
+    def __init__(self, validation_id: str, workflow_id: str, target_id: str, role: str) -> None:
+        self.validation_id = validation_id
+        self.workflow_id = workflow_id
+        self.target_id = target_id
+        self.role = role
+        self.status = "starting"  # starting | running | success | failed
+        self.error: str | None = None
+        self.total_steps = 0
+        # [{index, type, target, status: "ok"|"fail"|"pending", ms, error}]
+        # -- populated incrementally as each step actually completes, so
+        # a poller sees real live progress, not a result computed only
+        # after the fact.
+        self.step_results: list[dict[str, object]] = []
+        self.final_url: str | None = None
+        self.screenshot_data_url: str | None = None
+        self.duration_ms: int | None = None
+        self._started_at = time.monotonic()
+        self.done_event = asyncio.Event()
+
+
+class WorkflowValidationRegistry:
+    def __init__(self) -> None:
+        self.current: WorkflowValidationSession | None = None
+
+
+WORKFLOW_VALIDATIONS = WorkflowValidationRegistry()
+
+
+def _describe_action(action) -> tuple[str, str]:
+    """(type, human-readable target) for one `NeutralAction` -- the
+    same fields the Workflows page's own step list already displays,
+    reused here so a live validation's step rows show the identical
+    target text as the static Steps view above it."""
+    target = action.selector or action.url or ""
+    if not target and action.timeout_ms:
+        target = f"up to {action.timeout_ms}ms"
+    return action.type, target
+
+
+def _resolve_workflow_for_validation(session: WorkflowValidationSession):
+    """(resolved `Workflow` with credential tokens filled in) for
+    `session`'s own `workflow_id`/`target_id`/`role` -- raises
+    `ValueError`/`WorkflowNotFoundError` for the caller to turn into an
+    honest `failed` status, never a silent fallback. Split out of
+    `_run_workflow_validation` purely to keep that function's own
+    cyclomatic complexity within this project's B-rank gate.
+
+    Deliberately does NOT go through the global `config/users.json` /
+    `load_users()` path the way a real scan does -- that file only ever
+    reflects whichever ONE target is currently *active* (see
+    `_activate_target()`'s own docstring), so a workflow recorded
+    against a target that isn't the active one would silently validate
+    with the WRONG account's credentials, or none at all. Instead this
+    reads straight from the target PROFILE `session.target_id` names
+    (`config/targets.json`) and that profile's own per-target `.env`
+    secret (`target_store.env_key(role, target_id)`) -- the exact same
+    real secret `_activate_target()` itself copies into the global env
+    var on activation, just read directly here instead of requiring
+    that target to be switched to first. Confirmed live: Verify Login
+    hit this identical class of bug before its own fix (see
+    `_activate_target()`'s comment on the same issue)."""
+    from stof.workflows.repository import WorkflowRepository
+
+    username, password = _target_role_credentials(session.target_id, session.role)
+    repository = WorkflowRepository(WORKFLOWS_DIR)
+    workflow = repository.get(session.workflow_id)
+    return _substitute_credential_tokens(workflow, username, password)
+
+
+def _target_role_credentials(target_id: str, role: str) -> tuple[str, str]:
+    """(username, password) for one role on one target PROFILE -- see
+    `_resolve_workflow_for_validation`'s own docstring for why this
+    reads the per-target `.env` secret directly instead of going
+    through the globally-active `config/users.json`."""
+    doc = _load_targets_doc()
+    profile = target_store.find(doc, target_id)
+    if profile is None:
+        raise ValueError(f"no target profile '{target_id}'")
+    role_entry = next((r for r in profile.get("roles", []) if r["role"] == role), None)
+    target_label = profile.get("name", target_id)
+    if role_entry is None or not role_entry.get("username"):
+        raise ValueError(f"no configured account for role '{role}' on '{target_label}'")
+    if not role_entry.get("password_set"):
+        raise ValueError(f"role '{role}' on '{target_label}' has no password saved -- set one in Credentials first")
+
+    password = _read_dotenv_value(ENV_PATH, target_store.env_key(role, target_id))
+    if password is None:
+        raise ValueError(f"role '{role}' on '{target_label}' is marked as having a password, but it could not be read back")
+    return role_entry["username"], password
+
+
+def _substitute_credential_tokens(workflow, username: str, password: str):
+    from dataclasses import replace
+
+    resolved_actions = [
+        replace(action, value=password) if action.value == "{{user.password}}"
+        else replace(action, value=username) if action.value == "{{user.username}}"
+        else action
+        for action in workflow.actions
+    ]
+    return replace(workflow, actions=resolved_actions)
+
+
+async def _replay_validation_steps(page, actions, session: WorkflowValidationSession) -> None:
+    """Runs every action in order via the same `execute_action()`
+    dispatch a real scan's workflow replay uses, recording a real
+    per-step result as each one actually completes (so a poller sees
+    genuine live progress) -- stops at the first failure, same
+    "abort the sweep, don't fake the rest" rule this project applies
+    everywhere else."""
+    from stof.engine.playwright_engine import execute_action
+
+    for i, action in enumerate(actions):
+        action_type, target = _describe_action(action)
+        step_started = time.monotonic()
+        try:
+            await execute_action(page, action.to_dict())
+            session.step_results.append({
+                "index": i, "type": action_type, "target": target, "status": "ok",
+                "ms": int((time.monotonic() - step_started) * 1000),
+            })
+        except Exception as exc:
+            session.step_results.append({
+                "index": i, "type": action_type, "target": target, "status": "fail",
+                "ms": int((time.monotonic() - step_started) * 1000), "error": _short_error(exc),
+            })
+            session.error = _short_error(exc)
+            return
+
+
+async def _run_workflow_validation(session: WorkflowValidationSession) -> None:
+    from playwright.async_api import async_playwright
+
+    from stof.workflows.repository import WorkflowNotFoundError
+
+    try:
+        resolved = _resolve_workflow_for_validation(session)
+    except (WorkflowNotFoundError, ValueError) as exc:
+        session.status = "failed"
+        session.error = str(exc)
+        session.duration_ms = int((time.monotonic() - session._started_at) * 1000)
+        session.done_event.set()
+        return
+    except Exception as exc:
+        session.status = "failed"
+        session.error = _short_error(exc)
+        session.duration_ms = int((time.monotonic() - session._started_at) * 1000)
+        session.done_event.set()
+        return
+
+    session.total_steps = len(resolved.actions)
+    session.status = "running"
+
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            context = await browser.new_context(viewport={"width": 1280, "height": 800}, ignore_https_errors=True)
+            page = await context.new_page()
+            await _replay_validation_steps(page, resolved.actions, session)
+            session.final_url = page.url
+            try:
+                png_bytes = await page.screenshot(type="png")
+                session.screenshot_data_url = "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+            except Exception as exc:
+                _log.warning(f"workflow validation '{session.validation_id}' screenshot failed: {exc}")
+            await browser.close()
+        session.status = "failed" if session.error else "success"
+    except Exception as exc:
+        session.status = "failed"
+        session.error = _short_error(exc)
+    finally:
+        session.duration_ms = int((time.monotonic() - session._started_at) * 1000)
+        session.done_event.set()
+
+
+class ValidateWorkflowRequest(BaseModel):
+    target_id: str
+    role: str
+
+
+@app.post("/api/workflows/{workflow_id}/validate")
+async def start_workflow_validation(workflow_id: str, body: ValidateWorkflowRequest) -> dict:
+    if WORKFLOW_VALIDATIONS.current is not None and WORKFLOW_VALIDATIONS.current.status in ("starting", "running"):
+        raise HTTPException(409, "a workflow validation is already running -- wait for it to finish")
+    validation_id = f"val-{uuid.uuid4().hex[:8]}"
+    session = WorkflowValidationSession(validation_id, workflow_id, body.target_id, body.role)
+    WORKFLOW_VALIDATIONS.current = session
+    task = asyncio.create_task(_run_workflow_validation(session))
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return {"validation_id": validation_id, "status": session.status}
+
+
+@app.get("/api/workflows/validate/current")
+def get_current_workflow_validation() -> dict:
+    session = WORKFLOW_VALIDATIONS.current
+    if session is None:
+        return {"status": "idle"}
+    return {
+        "validation_id": session.validation_id, "workflow_id": session.workflow_id,
+        "target_id": session.target_id, "role": session.role,
+        "status": session.status, "error": session.error, "total_steps": session.total_steps,
+        "step_results": session.step_results, "final_url": session.final_url,
+        "screenshot_data_url": session.screenshot_data_url, "duration_ms": session.duration_ms,
+    }
+
+
 @app.post("/api/scans")
 async def start_scan(body: StartScanRequest) -> dict:
     if not body.confirm_authorized:
@@ -2876,6 +3111,24 @@ async def global_stream(websocket: WebSocket) -> None:
         GLOBAL_SUBSCRIBERS.discard(websocket)
 
 
+def _normalize_target_url(url: str | None) -> str:
+    """Mirrors the client's own `normalizeTargetUrl()` (index.html) --
+    strips the scheme and any trailing slash, lowercases -- so a
+    target scanned under both http and https (or with/without a
+    trailing slash) across its history groups as ONE application, the
+    same way the dashboard's own trend chart already does client-side.
+
+    Real gap this closed: `_group_by_target()` used to key on the raw
+    `target` string with no normalization at all, so
+    `https://demo.testfire.net` and `http://demo.testfire.net` (the
+    exact same real target, scanned under both schemes across its
+    history) showed up as two separate "applications" in the by-target
+    rollup -- confirmed live via `/api/dashboard/summary` after running
+    fresh scans this session and finding the same target split across
+    multiple rows."""
+    return re.sub(r"/+$", "", re.sub(r"^[a-zA-Z]+://", "", (url or "").strip())).lower()
+
+
 def _group_by_target(reports: list[dict]) -> list[dict]:
     """Real per-application rollup -- every distinct `target` a report
     was ever generated against, with its own actual scan count and
@@ -2883,15 +3136,24 @@ def _group_by_target(reports: list[dict]) -> list[dict]:
     portfolio-shaped "N applications" tile: this shows the REAL
     targets STOF has scanned (however many that actually is), not a
     fabricated count. `reports` is already sorted oldest-to-newest by
-    the caller, so the last entry seen for a target is its latest scan."""
+    the caller, so the last entry seen for a target is its latest scan.
+
+    Grouped by `_normalize_target_url()`, not the raw string -- see
+    that function's own docstring. `entry["target"]` is the most
+    recently seen RAW target string for that normalized key (not the
+    normalized form itself), so the UI still displays a real URL, just
+    without double-counting the same application under a second
+    scheme."""
     by_target: dict[str, dict] = {}
     order: list[str] = []
     for r in reports:
         target = r.get("target") or "unknown target"
-        if target not in by_target:
-            order.append(target)
-            by_target[target] = {"target": target, "scan_count": 0}
-        entry = by_target[target]
+        key = _normalize_target_url(target) or "unknown target"
+        if key not in by_target:
+            order.append(key)
+            by_target[key] = {"target": target, "scan_count": 0}
+        entry = by_target[key]
+        entry["target"] = target  # most-recently-seen raw string wins as the display value
         entry["scan_count"] += 1
         entry["latest_scan_id"] = r.get("scan_id")
         entry["latest_generated_at"] = r.get("generated_at")

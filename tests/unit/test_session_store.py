@@ -1,6 +1,4 @@
 """Unit tests for Layer 5 — stof.session.session_store."""
-from datetime import datetime, timezone
-
 from stof.session.models import Session
 from stof.session.session_store import SessionStore
 
@@ -113,3 +111,102 @@ def test_save_preserves_none_expiry_and_invalid_flag(tmp_path):
 
     assert loaded.expires_at is None
     assert loaded.is_valid is False
+
+
+# ---------------------------------------------------------------------------
+# Cross-target isolation -- the real bug two concurrent scans against
+# different targets hit: `role` alone used to be the whole key, so a
+# scan against target B's "admin" role would silently load and reuse
+# target A's still-unexpired "admin" session (cookies included). See
+# session_store.py's own module docstring for the live incident this
+# closes.
+# ---------------------------------------------------------------------------
+
+
+def test_same_role_on_different_targets_does_not_collide(tmp_path):
+    db_path = tmp_path / "stof.db"
+    store_a = SessionStore(db_path=db_path, target="https://a.example")
+    store_b = SessionStore(db_path=db_path, target="https://b.example")
+
+    session_a = Session(user_id="admin-a", role="admin", auth_type="form_login", cookies={"JSESSIONID": "a-cookie"})
+    session_b = Session(user_id="admin-b", role="admin", auth_type="form_login", cookies={"JSESSIONID": "b-cookie"})
+    store_a.save(session_a)
+    store_b.save(session_b)
+
+    assert store_a.load("admin").cookies == {"JSESSIONID": "a-cookie"}
+    assert store_b.load("admin").cookies == {"JSESSIONID": "b-cookie"}
+
+
+def test_load_all_only_returns_sessions_for_this_store_own_target(tmp_path):
+    db_path = tmp_path / "stof.db"
+    store_a = SessionStore(db_path=db_path, target="https://a.example")
+    store_b = SessionStore(db_path=db_path, target="https://b.example")
+    store_a.save(_session("admin"))
+    store_a.save(_session("normal"))
+    store_b.save(_session("admin"))
+
+    assert set(store_a.load_all()) == {"admin", "normal"}
+    assert set(store_b.load_all()) == {"admin"}
+
+
+def test_delete_on_one_target_does_not_affect_the_same_role_on_another_target(tmp_path):
+    db_path = tmp_path / "stof.db"
+    store_a = SessionStore(db_path=db_path, target="https://a.example")
+    store_b = SessionStore(db_path=db_path, target="https://b.example")
+    store_a.save(_session("admin"))
+    store_b.save(_session("admin"))
+
+    store_a.delete("admin")
+
+    assert store_a.load("admin") is None
+    assert store_b.load("admin") is not None
+
+
+def test_save_overwrites_only_the_same_role_and_target_pair(tmp_path):
+    db_path = tmp_path / "stof.db"
+    store_a = SessionStore(db_path=db_path, target="https://a.example")
+    store_b = SessionStore(db_path=db_path, target="https://b.example")
+    store_a.save(_session("admin"))
+    store_b.save(_session("admin"))
+
+    updated = Session(user_id="admin-01", role="admin", auth_type="form_login", cookies={"JSESSIONID": "updated"})
+    store_a.save(updated)
+
+    assert store_a.load("admin").cookies == {"JSESSIONID": "updated"}
+    assert store_b.load("admin").cookies == {"JSESSIONID": "abc"}  # untouched
+
+
+def test_migrates_a_pre_existing_role_only_table_without_raising(tmp_path):
+    """A `data/stof.db` created before per-target scoping existed had
+    `role TEXT PRIMARY KEY` and no `target` column at all. Opening it
+    with the new schema must migrate cleanly (dropping the old cache
+    table, per this module's own docstring), not raise or silently
+    keep the old, collision-prone schema."""
+    import sqlite3
+
+    db_path = tmp_path / "stof.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+            role TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            auth_type TEXT NOT NULL,
+            cookies TEXT NOT NULL,
+            headers TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT,
+            is_valid INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO sessions VALUES ('admin', 'sid', 'uid', 'form_login', '{}', '{}', '2026-01-01T00:00:00+00:00', NULL, 1)"
+    )
+    conn.commit()
+    conn.close()
+
+    store = SessionStore(db_path=db_path, target="https://a.example")  # must not raise
+
+    assert store.load("admin") is None  # old, pre-migration row is gone, not silently reused across targets

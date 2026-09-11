@@ -1,4 +1,6 @@
 """Unit tests for Layer 7 -- stof.crawler.hidden_param_discovery."""
+import asyncio
+
 import pytest
 
 from stof.crawler.endpoint_store import Endpoint
@@ -200,3 +202,41 @@ async def test_discover_survives_a_probe_failure_for_one_endpoint():
 async def test_discover_returns_empty_list_for_no_endpoints():
     context = _FakeContext(lambda url: (200, BASELINE_BODY))
     assert await discover_hidden_params(context, []) == []
+
+
+# ---------------------------------------------------------------------------
+# Efficiency: candidate probes run concurrently, not one at a time
+# ---------------------------------------------------------------------------
+
+
+class _ConcurrencyTrackingContext:
+    """Each `get()` sleeps briefly and records how many were in flight
+    at once -- proves the candidate-probe loop actually overlaps its
+    requests (`asyncio.gather`) instead of awaiting them one at a time,
+    the real, live-measured inefficiency this change fixes."""
+
+    def __init__(self):
+        self.in_flight = 0
+        self.max_in_flight = 0
+        self.request = self
+
+    async def get(self, url: str, **kwargs):
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        try:
+            await asyncio.sleep(0.01)
+            return _FakeResponse(200, BASELINE_BODY)
+        finally:
+            self.in_flight -= 1
+
+
+@pytest.mark.asyncio
+async def test_candidate_probes_for_one_endpoint_run_concurrently():
+    endpoint = Endpoint(url="https://x.example/page", method="GET", endpoint_type="page")
+    context = _ConcurrencyTrackingContext()
+
+    await discover_hidden_params(context, [endpoint], HiddenParamConfig(candidate_params=("a", "b", "c", "d", "e")))
+
+    # A purely sequential loop would never exceed 1 in flight at once;
+    # this asserts real overlap happened.
+    assert context.max_in_flight > 1

@@ -12,11 +12,13 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from stof.core.logger import get_logger
+from stof.engine.guarded_context import GuardedBrowserContext
 
 if TYPE_CHECKING:
     from playwright.async_api import Browser, BrowserContext, Playwright
 
     from stof.config import BrowserConfig
+    from stof.core.traffic_guard import TrafficGuard
 
 _log = get_logger("engine.multi_session")
 
@@ -41,7 +43,7 @@ def _to_playwright_cookies(cookies: dict[str, str], url: str) -> list[dict[str, 
 
 
 class SessionPool:
-    def __init__(self, browser: "Browser", ignore_https_errors: bool = False) -> None:
+    def __init__(self, browser: "Browser", ignore_https_errors: bool = False, guard: "TrafficGuard | None" = None) -> None:
         self._browser = browser
         # Off by default -- silently trusting bad certs isn't something
         # a security testing tool should do out of the box. Turn it on
@@ -55,6 +57,19 @@ class SessionPool:
         # separately so `close()`/`close_all()` can skip them.
         self._external_roles: set[str] = set()
         self._lock = asyncio.Lock()
+        # `None` (the default) means zero behavior change from before
+        # this existed -- every existing caller/test that constructs a
+        # `SessionPool` directly with no guard gets back the raw
+        # Playwright context exactly as before. A real scan
+        # (`main.py`'s `_run_test`/`_run_crawl`) passes a real
+        # `TrafficGuard` explicitly, and every context this pool vends
+        # from that point on is wrapped in `GuardedBrowserContext` --
+        # scope-enforced, uniformly rate-limited, and audit-logged --
+        # with zero changes needed in any `VulnModule` or crawler
+        # function, since they only ever ask this pool for "the context
+        # for this role," never how it was obtained (same reasoning
+        # `attach_external_context`'s own docstring already gives).
+        self._guard = guard
 
     @classmethod
     async def launch(
@@ -62,6 +77,7 @@ class SessionPool:
         playwright: "Playwright",
         browser_config: "BrowserConfig",
         ignore_https_errors: bool = False,
+        guard: "TrafficGuard | None" = None,
     ) -> "SessionPool":
         """Launch a Chromium browser per Layer 1's `Config.browser`."""
         browser = await playwright.chromium.launch(
@@ -69,7 +85,12 @@ class SessionPool:
             slow_mo=browser_config.slowmo_ms or None,
             proxy={"server": browser_config.proxy} if browser_config.proxy else None,
         )
-        return cls(browser, ignore_https_errors=ignore_https_errors)
+        return cls(browser, ignore_https_errors=ignore_https_errors, guard=guard)
+
+    def _guarded(self, context: "BrowserContext", role: str | None) -> "BrowserContext":
+        if self._guard is None:
+            return context
+        return GuardedBrowserContext(context, self._guard, role)  # type: ignore[return-value]
 
     async def get_context(self, role: str) -> "BrowserContext":
         async with self._lock:
@@ -78,7 +99,7 @@ class SessionPool:
                 context = await self._browser.new_context(ignore_https_errors=self._ignore_https_errors)
                 self._contexts[role] = context
                 _log.info(f"created browser context for role '{role}'")
-            return context
+            return self._guarded(context, role)
 
     async def attach_external_context(self, role: str, context: "BrowserContext") -> None:
         """Assisted login (`stof/auth/assisted_login.py`): registers a
@@ -121,7 +142,8 @@ class SessionPool:
         unlike role contexts, it's never tracked in `self._contexts` so
         `close_all()`/`shutdown()` won't also close it out from under
         an in-flight caller."""
-        return await self._browser.new_context(ignore_https_errors=self._ignore_https_errors)
+        context = await self._browser.new_context(ignore_https_errors=self._ignore_https_errors)
+        return self._guarded(context, role=None)
 
     async def close(self, role: str) -> None:
         async with self._lock:
