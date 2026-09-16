@@ -1350,46 +1350,50 @@
   .wf-validate-picker label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-faint); text-transform: uppercase; letter-spacing: .4px; }
   @media (max-width: 620px) { .wf-validate-picker { grid-template-columns: 1fr; } }
 
-  /* ---- Workflows: "New workflow" method-choice cards ---- */
-  .wf-methods { display: flex; flex-direction: column; gap: 10px; }
-  .wf-mcard { display: flex; gap: 14px; padding: 14px 16px; border: 1.5px solid var(--border); border-radius: 12px; cursor: pointer; transition: border-color 120ms ease, background 120ms ease; align-items: flex-start; }
-  .wf-mcard:hover { border-color: var(--border); }
-  .wf-mcard.on { border-color: var(--accent); background: var(--accent-soft); }
-  .wf-mcard .wf-mc-radio { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid var(--border); flex: none; margin-top: 3px; position: relative; }
-  .wf-mcard.on .wf-mc-radio { border-color: var(--accent); }
-  .wf-mcard.on .wf-mc-radio::after { content: ''; position: absolute; inset: 3px; border-radius: 50%; background: var(--accent); }
-  .wf-mcard .wf-mc-body { flex: 1; min-width: 0; }
-  .wf-mcard .wf-mc-body b { font-size: 13.5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .wf-mc-tag { font-size: 10px; font-weight: 700; letter-spacing: .4px; color: var(--accent-text); background: var(--accent-soft); padding: 2px 7px; border-radius: 99px; }
-  .wf-mcard .wf-mc-body span { display: block; font-size: 12.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.5; }
-
-  /* ---- Workflows: "New workflow" 3-step wizard chrome ---- */
-  .modal.modal-md { width: 560px; padding-bottom: 20px; }
-  .wf-wiz-eyebrow { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; color: var(--accent-text); text-transform: uppercase; margin-bottom: 6px; }
-  .wf-wiz-steps { display: flex; align-items: center; gap: 8px; margin-top: 16px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
-  .wf-wiz-dot { display: flex; align-items: center; gap: 7px; font-size: 11.5px; font-weight: 600; color: var(--text-faint); transition: color 180ms ease; }
-  .wf-wiz-dot i { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid var(--border); display: grid; place-items: center; font-size: 11px; font-style: normal; flex: none; transition: background 180ms ease, border-color 180ms ease, color 180ms ease; }
-  .wf-wiz-dot.on { color: var(--accent-text); }
-  .wf-wiz-dot.on i { background: var(--accent); border-color: var(--accent); color: #fff; }
-  .wf-wiz-dot.done i { background: var(--low); border-color: var(--low); color: #fff; }
-  .wf-wiz-line { width: 26px; height: 1.5px; background: var(--border); flex: none; }
-  .wf-wiz-section-title { font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 16px; }
-  .wf-field-group { margin-bottom: 16px; }
+  /* ---- Workflows: "New workflow" single-form chrome ---- */
+  .modal.modal-md { width: 560px; padding: 26px 26px 22px; }
+  .modal.modal-md .wf-wiz-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 20px; }
+  .modal.modal-md .wf-wiz-icon {
+    flex: none; width: 38px; height: 38px; border-radius: 10px; display: grid; place-items: center;
+    background: var(--accent-soft); color: var(--accent-text); font-size: 17px;
+  }
+  .wf-wiz-eyebrow { font-size: 10.5px; font-weight: 700; letter-spacing: .1em; color: var(--accent-text); text-transform: uppercase; margin-bottom: 4px; }
+  .modal.modal-md h3 { font-size: 17.5px; margin-bottom: 4px; }
+  .modal.modal-md > p:not(.wf-wiz-eyebrow) { margin: 0; }
+  .wf-field-group { margin-bottom: 20px; }
   .wf-field-group:last-of-type { margin-bottom: 0; }
-  .wf-field-group label:not(.check) { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 6px; }
+  .wf-field-group label:not(.check) { display: block; font-size: 12px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .3px; margin-bottom: 8px; }
   .wf-field-group input[type="checkbox"] { accent-color: var(--accent); }
-  .wf-wiz-fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .wf-input {
+    width: 100%; box-sizing: border-box; font-family: var(--sans); font-size: 14px; padding: 10px 13px;
+    border-radius: 10px; border: 1.5px solid var(--border); background: var(--surface); color: var(--text);
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  .wf-input::placeholder { color: var(--text-faint); }
+  .wf-input:focus, .wf-role-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .wf-role-select { height: 40px; border: 1.5px solid var(--border); border-radius: 10px; background: var(--surface); padding: 0 12px; font-size: 13.5px; color: var(--text); width: 100%; box-sizing: border-box; transition: border-color 120ms ease, box-shadow 120ms ease; }
+  .wf-wiz-fgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   @media (max-width: 500px) { .wf-wiz-fgrid { grid-template-columns: 1fr; } }
-  .wf-review-list { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-  .wf-review-list > div { display: flex; justify-content: space-between; gap: 16px; padding: 9px 13px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
-  .wf-review-list > div:last-child { border-bottom: none; }
-  .wf-review-list dt { color: var(--text-faint); }
-  .wf-review-list dd { font-weight: 600; text-align: right; max-width: 320px; word-break: break-all; }
-  .wf-drop { border: 1.5px dashed var(--border); border-radius: 10px; padding: 22px 14px; text-align: center; cursor: pointer; transition: border-color 120ms ease, background 120ms ease; }
-  .wf-drop:hover, .wf-drop.drag { border-color: var(--accent); background: var(--accent-soft); }
-  .wf-drop b { display: block; font-size: 13px; }
+  .wf-drop {
+    border: 1.5px dashed var(--border); border-radius: 12px; padding: 26px 16px; text-align: center; cursor: pointer;
+    background: var(--surface-2); transition: border-color 120ms ease, background 120ms ease, transform 120ms ease;
+  }
+  .wf-drop:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .wf-drop.drag { border-color: var(--accent); background: var(--accent-soft); transform: scale(0.99); }
+  .wf-drop .wf-drop-icon { font-size: 20px; margin-bottom: 6px; color: var(--text-faint); }
+  .wf-drop:hover .wf-drop-icon, .wf-drop.drag .wf-drop-icon { color: var(--accent-text); }
+  .wf-drop b { display: block; font-size: 13.5px; }
   .wf-drop span { display: block; font-size: 12px; color: var(--text-muted); margin-top: 4px; }
-  .wf-upload-ok { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--low); background: var(--low-soft); border-radius: 10px; padding: 11px 13px; margin-top: 10px; font-size: 12.5px; color: var(--low); }
+  .wf-drop .mini-link { text-decoration: underline; text-underline-offset: 2px; }
+  .wf-upload-ok { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--low); background: var(--low-soft); border-radius: 10px; padding: 11px 13px; margin-top: 10px; font-size: 12.5px; color: var(--low); font-weight: 600; }
+  .wf-check-row {
+    display: flex; align-items: center; gap: 11px; font-size: 13px; color: var(--text); cursor: pointer;
+    border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: var(--surface-2);
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .wf-check-row:hover { border-color: var(--accent); }
+  .wf-check-row input { width: 16px; height: 16px; flex: none; }
+  .modal.modal-md .modal-actions { margin-top: 24px; padding-top: 18px; border-top: 1px solid var(--border); }
   .wf-drawer-body { flex: 1; overflow-y: auto; padding: 20px 24px 28px; }
   .wf-drawer-section-title { font-size: 12.5px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: .4px; margin: 18px 0 10px; }
   .wf-drawer-section-title:first-child { margin-top: 0; }
@@ -2933,9 +2937,14 @@
 <!-- ============================================================ WORKFLOWS: new workflow (method choice) -->
 <div class="modal-backdrop" id="wfNewBackdrop">
   <div class="modal modal-md">
-    <p class="wf-wiz-eyebrow">NEW WORKFLOW</p>
-    <h3>Create a workflow</h3>
-    <p style="font-size: 12.5px; color: var(--text-muted); margin: 6px 0 18px;">Recorded it already with the offline script or a teammate's copy? Fill in the details and upload the file — that's it.</p>
+    <div class="wf-wiz-head">
+      <span class="wf-wiz-icon">＋</span>
+      <div>
+        <p class="wf-wiz-eyebrow">New workflow</p>
+        <h3>Create a workflow</h3>
+        <p style="font-size: 12.5px; color: var(--text-muted); margin-top: 2px;">Recorded it already with the offline script or a teammate's copy? Fill in the details and upload the file — that's it.</p>
+      </div>
+    </div>
     <div id="wfWizBody"></div>
     <div class="modal-actions">
       <button class="btn" id="wfWizCancel">Cancel</button>
@@ -8354,129 +8363,50 @@ async function loadHealth() {
   // multi-step creation flow in this console already works (see the
   // Applications wizard) and is what an operator naturally expects.
   var wfNewBackdrop = document.getElementById("wfNewBackdrop");
-  var wfWiz = { step: 1, method: "record", name: "", targetId: "", role: "", url: "", validate: true, uploadedFile: null };
+  var wfWiz = { name: "", targetId: "", role: "", validate: true, uploadedFile: null };
 
   function wfWizReset() {
-    wfWiz = { step: 1, method: "record", name: "", targetId: "", role: "", url: "", validate: true, uploadedFile: null };
+    wfWiz = { name: "", targetId: "", role: "", validate: true, uploadedFile: null };
   }
 
-  function renderWfWizSteps() {
-    var labels = ["Method", "Details", "Review"];
-    document.getElementById("wfWizSteps").innerHTML = [1, 2, 3].map(function (n, i) {
-      var cls = n < wfWiz.step ? "done" : n === wfWiz.step ? "on" : "";
-      return (i > 0 ? '<span class="wf-wiz-line"></span>' : "") +
-        '<span class="wf-wiz-dot ' + cls + '"><i>' + (n < wfWiz.step ? "✓" : n) + "</i>" + labels[i] + "</span>";
-    }).join("");
-  }
-
-  function wfWizMethodCardHtml(method, title, tag, desc) {
-    return '<div class="wf-mcard' + (wfWiz.method === method ? " on" : "") + '" data-method="' + method + '">' +
-      '<span class="wf-mc-radio"></span><div class="wf-mc-body"><b>' + title + (tag ? ' <span class="wf-mc-tag">' + tag + "</span>" : "") + "</b><span>" + desc + "</span></div></div>";
-  }
-
-  function renderWfWizStep1() {
-    document.getElementById("wfWizBody").innerHTML =
-      '<p class="wf-wiz-section-title">How do you want to create this workflow?</p>' +
-      '<div class="wf-methods" id="wfMethods">' +
-      wfWizMethodCardHtml("record", "Record in your browser", "Recommended", "Attach to a real, visible browser window and click through the journey once. Nothing leaves your machine until you save.") +
-      wfWizMethodCardHtml("upload", "Upload an existing recording", "", "Already have a workflow.json from a previous session or a teammate? Import it directly.") +
-      wfWizMethodCardHtml("manual", "Start a manual draft", "", "Create a workflow with just an entry URL — add the real steps later by re-recording over it.") +
-      "</div>";
-    document.getElementById("wfMethods").addEventListener("click", function (e) {
-      var card = e.target.closest(".wf-mcard");
-      if (!card) return;
-      wfWiz.method = card.dataset.method;
-      document.querySelectorAll("#wfMethods .wf-mcard").forEach(function (c) { c.classList.toggle("on", c === card); });
-    });
-  }
-
-  function renderWfWizStep2() {
+  // Single-screen creation form -- name + application + account +
+  // upload, all at once, per explicit direction: recording already
+  // happened offline (tools/record_workflow.py); this modal's only job
+  // is to collect the details and take the resulting file.
+  function renderWfWiz() {
     var targets = state.wfTargets || [];
-    var isUpload = wfWiz.method === "upload";
-    var body = document.getElementById("wfWizBody");
-    body.innerHTML =
-      '<p class="wf-wiz-section-title">Workflow details</p>' +
-      '<div class="wf-field-group"><label>Workflow name</label><input type="text" id="wfWizName" placeholder="e.g. test_login" value="' + escapeHtml(wfWiz.name) + '" /></div>' +
+    document.getElementById("wfWizBody").innerHTML =
+      '<div class="wf-field-group"><label>Workflow name</label><input type="text" class="wf-input" id="wfWizName" placeholder="e.g. test_login" value="' + escapeHtml(wfWiz.name) + '" /></div>' +
       '<div class="wf-field-group wf-wiz-fgrid">' +
       '<div><label>Application</label><select class="wf-role-select" id="wfWizApp"><option value="">Not sure yet</option>' + targets.map(function (t) { return '<option value="' + escapeHtml(t.id) + '"' + (t.id === wfWiz.targetId ? " selected" : "") + ">" + escapeHtml(t.name) + "</option>"; }).join("") + "</select></div>" +
       "<div><label>Attach to account</label><select class=\"wf-role-select\" id=\"wfWizRole\"><option value=\"\">Pick an application first</option></select></div>" +
       "</div>" +
-      (isUpload
-        ? '<div class="wf-field-group"><div class="wf-drop" id="wfWizDrop"><b>Drop workflow.json here</b><span>or <span class="mini-link" id="wfWizBrowse" style="color:var(--accent-text); cursor:pointer; font-weight:600;">browse files</span></span></div><input type="file" id="wfWizFileInput" accept="application/json,.json" hidden /><div id="wfWizUploadResult"></div></div>'
-        : '<div class="wf-field-group"><label>Entry URL</label><input type="text" id="wfWizUrl" placeholder="https://app.example/login" value="' + escapeHtml(wfWiz.url) + '" /><p id="wfWizUrlHint" style="font-size:11px; color:var(--text-faint); margin-top:6px;" hidden>Auto-filled from the application you picked — edit it if the workflow starts somewhere else.</p></div>' +
-          (wfWiz.method === "record" ? '<div class="wf-field-group"><label class="check" style="display:flex; align-items:center; gap:9px; font-size:12.5px; color:var(--text); cursor:pointer;"><input type="checkbox" id="wfWizValidate" style="width:15px; height:15px;" ' + (wfWiz.validate ? "checked" : "") + " /><span>Run validation immediately after creating</span></label></div>" : ""));
+      '<div class="wf-field-group"><label>Upload workflow.json</label><div class="wf-drop" id="wfWizDrop"><span class="wf-drop-icon">⇪</span><b>Drop workflow.json here</b><span>or <span class="mini-link" id="wfWizBrowse">browse files</span></span></div><input type="file" id="wfWizFileInput" accept="application/json,.json" hidden /><div id="wfWizUploadResult"></div></div>' +
+      '<div class="wf-field-group"><label class="check wf-check-row"><input type="checkbox" id="wfWizValidate" ' + (wfWiz.validate ? "checked" : "") + " /><span>Run validation immediately after creating</span></label></div>";
 
     var appSel = document.getElementById("wfWizApp");
     var roleSel = document.getElementById("wfWizRole");
-    var urlField = document.getElementById("wfWizUrl");
-    // Tracks whether the operator has typed their own URL -- once they
-    // have, switching Application again must NOT silently overwrite
-    // what they typed. Before that, though, it should keep following
-    // the application picker (confirmed live: only auto-filling once,
-    // when the field was still empty, meant picking a DIFFERENT
-    // application afterward left the previous one's URL behind --
-    // looking like the auto-fill "didn't work").
-    var urlManuallyEdited = !isUpload && wfWiz.url && wfWiz.targetId && wfWiz.url !== ((targets.find(function (t) { return t.id === wfWiz.targetId; }) || {}).login_url || (targets.find(function (t) { return t.id === wfWiz.targetId; }) || {}).base_url);
-    if (urlField) {
-      urlField.addEventListener("input", function () { urlManuallyEdited = true; document.getElementById("wfWizUrlHint").hidden = true; });
-    }
     function refreshRoleOptions() {
       roleSel.innerHTML = appSel.value ? wfRecordRoleOptionsHtml(appSel.value) : '<option value="">Pick an application first</option>';
       if (wfWiz.role) roleSel.value = wfWiz.role;
     }
-    appSel.addEventListener("change", function () {
-      var app = targets.find(function (t) { return t.id === appSel.value; });
-      if (app && urlField && !urlManuallyEdited) {
-        urlField.value = app.login_url || app.base_url || "";
-        document.getElementById("wfWizUrlHint").hidden = false;
-      }
-      refreshRoleOptions();
-    });
+    appSel.addEventListener("change", refreshRoleOptions);
     refreshRoleOptions();
 
-    if (isUpload) {
-      var drop = document.getElementById("wfWizDrop");
-      var fileInput = document.getElementById("wfWizFileInput");
-      function showStagedFile(file) {
-        wfWiz.uploadedFile = file;
-        document.getElementById("wfWizUploadResult").innerHTML = '<div class="wf-upload-ok">✓ ' + escapeHtml(file.name) + " staged — continue to review</div>";
-        if (!document.getElementById("wfWizName").value.trim()) document.getElementById("wfWizName").value = file.name.replace(/\.json$/i, "");
-      }
-      drop.addEventListener("click", function () { fileInput.click(); });
-      document.getElementById("wfWizBrowse").addEventListener("click", function (e) { e.stopPropagation(); fileInput.click(); });
-      fileInput.addEventListener("change", function () { if (fileInput.files[0]) showStagedFile(fileInput.files[0]); });
-      ["dragover", "dragenter"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("drag"); }); });
-      drop.addEventListener("dragleave", function () { drop.classList.remove("drag"); });
-      drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("drag"); if (e.dataTransfer.files[0]) showStagedFile(e.dataTransfer.files[0]); });
-      if (wfWiz.uploadedFile) showStagedFile(wfWiz.uploadedFile);
+    var drop = document.getElementById("wfWizDrop");
+    var fileInput = document.getElementById("wfWizFileInput");
+    function showStagedFile(file) {
+      wfWiz.uploadedFile = file;
+      document.getElementById("wfWizUploadResult").innerHTML = '<div class="wf-upload-ok">✓ ' + escapeHtml(file.name) + " staged</div>";
+      if (!document.getElementById("wfWizName").value.trim()) document.getElementById("wfWizName").value = file.name.replace(/\.json$/i, "");
     }
-  }
-
-  function renderWfWizStep3() {
-    var targets = state.wfTargets || [];
-    var appName = (targets.find(function (t) { return t.id === wfWiz.targetId; }) || {}).name;
-    var methodLabel = { record: "Record in your browser", upload: "Upload an existing recording", manual: "Start a manual draft" }[wfWiz.method];
-    document.getElementById("wfWizBody").innerHTML =
-      '<p style="font-size:13px; font-weight:700; margin-bottom:12px;">Review</p>' +
-      '<div class="wf-review-list">' +
-      "<div><dt>Method</dt><dd>" + escapeHtml(methodLabel) + "</dd></div>" +
-      "<div><dt>Name</dt><dd class=\"mono\">" + escapeHtml(wfWiz.name) + "</dd></div>" +
-      "<div><dt>Application</dt><dd>" + (appName ? escapeHtml(appName) : "Not sure yet") + "</dd></div>" +
-      "<div><dt>Account</dt><dd>" + (wfWiz.role ? escapeHtml(wfWiz.role) : "Not attached yet") + "</dd></div>" +
-      (wfWiz.method === "upload"
-        ? "<div><dt>File</dt><dd class=\"mono\" style=\"font-size:11.5px;\">" + escapeHtml(wfWiz.uploadedFile ? wfWiz.uploadedFile.name : "—") + "</dd></div>"
-        : "<div><dt>Entry URL</dt><dd class=\"mono\" style=\"font-size:11.5px;\">" + escapeHtml(wfWiz.url || "—") + "</dd></div>") +
-      (wfWiz.method === "record" ? "<div><dt>Validate on create</dt><dd>" + (wfWiz.validate ? "Yes" : "No") + "</dd></div>" : "") +
-      "</div>";
-  }
-
-  function renderWfWiz() {
-    renderWfWizSteps();
-    if (wfWiz.step === 1) renderWfWizStep1();
-    else if (wfWiz.step === 2) renderWfWizStep2();
-    else renderWfWizStep3();
-    document.getElementById("wfWizBack").style.visibility = wfWiz.step === 1 ? "hidden" : "visible";
-    document.getElementById("wfWizNext").textContent = wfWiz.step === 3 ? "Create workflow" : "Continue";
+    drop.addEventListener("click", function () { fileInput.click(); });
+    document.getElementById("wfWizBrowse").addEventListener("click", function (e) { e.stopPropagation(); fileInput.click(); });
+    fileInput.addEventListener("change", function () { if (fileInput.files[0]) showStagedFile(fileInput.files[0]); });
+    ["dragover", "dragenter"].forEach(function (ev) { drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add("drag"); }); });
+    drop.addEventListener("dragleave", function () { drop.classList.remove("drag"); });
+    drop.addEventListener("drop", function (e) { e.preventDefault(); drop.classList.remove("drag"); if (e.dataTransfer.files[0]) showStagedFile(e.dataTransfer.files[0]); });
+    if (wfWiz.uploadedFile) showStagedFile(wfWiz.uploadedFile);
   }
 
   document.getElementById("newWorkflowBtn").addEventListener("click", function () {
@@ -8486,35 +8416,18 @@ async function loadHealth() {
   });
   document.getElementById("wfWizCancel").addEventListener("click", function () { wfNewBackdrop.classList.remove("open"); });
   wfNewBackdrop.addEventListener("click", function (e) { if (e.target === wfNewBackdrop) wfNewBackdrop.classList.remove("open"); });
-  document.getElementById("wfWizBack").addEventListener("click", function () {
-    if (wfWiz.step === 1) return;
-    wfWizStashStep2();
-    wfWiz.step--;
-    renderWfWiz();
-  });
 
-  function wfWizStashStep2() {
-    if (wfWiz.step !== 2) return;
+  function wfWizStash() {
     wfWiz.name = (document.getElementById("wfWizName").value || "").trim();
     wfWiz.targetId = document.getElementById("wfWizApp").value;
     wfWiz.role = document.getElementById("wfWizRole").value;
-    if (wfWiz.method !== "upload") {
-      wfWiz.url = (document.getElementById("wfWizUrl").value || "").trim();
-      if (wfWiz.method === "record") wfWiz.validate = document.getElementById("wfWizValidate").checked;
-    }
+    wfWiz.validate = document.getElementById("wfWizValidate").checked;
   }
 
   document.getElementById("wfWizNext").addEventListener("click", async function () {
-    if (wfWiz.step === 1) { wfWiz.step = 2; renderWfWiz(); return; }
-    if (wfWiz.step === 2) {
-      wfWizStashStep2();
-      if (!wfWiz.name) { toast("Give the workflow a name", true); return; }
-      if (wfWiz.method === "upload" && !wfWiz.uploadedFile) { toast("Drop or browse for a workflow.json file", true); return; }
-      if (wfWiz.method !== "upload" && !wfWiz.url) { toast("Give it an entry URL", true); return; }
-      wfWiz.step = 3;
-      renderWfWiz();
-      return;
-    }
+    wfWizStash();
+    if (!wfWiz.name) { toast("Give the workflow a name", true); return; }
+    if (!wfWiz.uploadedFile) { toast("Drop or browse for a workflow.json file", true); return; }
     await wfWizCreate();
   });
 
@@ -8522,42 +8435,26 @@ async function loadHealth() {
     var btn = document.getElementById("wfWizNext");
     btn.disabled = true;
     try {
-      if (wfWiz.method === "record") {
-        wfNewBackdrop.classList.remove("open");
-        wfRecordBackdrop.classList.add("open");
-        wfRecordRenderIdle();
-      } else if (wfWiz.method === "upload") {
-        var form = new FormData();
-        form.append("file", wfWiz.uploadedFile, wfWiz.name + ".json");
-        var uploadResult = await api("/api/workflows/upload", { method: "POST", headers: {}, body: form });
-        if (wfWiz.targetId && wfWiz.role) {
-          try { await attachWorkflowToRole(wfWiz.targetId, wfWiz.role, uploadResult.workflow_id); } catch (attachErr) { toast("Uploaded, but could not attach it: " + attachErr.message, true); }
-        }
-        toast('"' + wfWiz.name + '" uploaded (' + uploadResult.action_count + " action(s))");
-        wfNewBackdrop.classList.remove("open");
-        loadWorkflows();
-      } else {
-        // Manual draft -- a workflow whose only action is navigating to
-        // the entry URL, built client-side and imported through the
-        // SAME real `/api/workflows/upload` endpoint the Upload method
-        // uses, not a separate ad-hoc creation route.
-        var draftDoc = {
-          workflow_id: "wf-" + Date.now().toString(16),
-          target_url: wfWiz.url,
-          recorded_at: new Date().toISOString(),
-          actions: [{ type: "navigate", url: wfWiz.url }],
-        };
-        var blob = new Blob([JSON.stringify(draftDoc, null, 2)], { type: "application/json" });
-        var draftForm = new FormData();
-        draftForm.append("file", blob, wfWiz.name + ".json");
-        var draftResult = await api("/api/workflows/upload", { method: "POST", headers: {}, body: draftForm });
-        if (wfWiz.targetId && wfWiz.role) {
-          try { await attachWorkflowToRole(wfWiz.targetId, wfWiz.role, draftResult.workflow_id); } catch (attachErr) { toast("Draft created, but could not attach it: " + attachErr.message, true); }
-        }
-        toast('"' + wfWiz.name + '" created as a draft — add real steps by re-recording over it');
-        wfNewBackdrop.classList.remove("open");
-        loadWorkflows();
+      var form = new FormData();
+      form.append("file", wfWiz.uploadedFile, wfWiz.name + ".json");
+      var uploadResult = await api("/api/workflows/upload", { method: "POST", headers: {}, body: form });
+      if (wfWiz.targetId && wfWiz.role) {
+        try { await attachWorkflowToRole(wfWiz.targetId, wfWiz.role, uploadResult.workflow_id); } catch (attachErr) { toast("Uploaded, but could not attach it: " + attachErr.message, true); }
       }
+      var validateNote = "";
+      if (wfWiz.validate && wfWiz.targetId && wfWiz.role) {
+        try {
+          await api("/api/workflows/" + uploadResult.workflow_id + "/validate", {
+            method: "POST", body: JSON.stringify({ target_id: wfWiz.targetId, role: wfWiz.role }),
+          });
+          validateNote = " — validating now";
+        } catch (validateErr) {
+          toast("Could not start validation: " + validateErr.message, true);
+        }
+      }
+      toast('"' + wfWiz.name + '" uploaded (' + uploadResult.action_count + " action(s))" + validateNote);
+      wfNewBackdrop.classList.remove("open");
+      loadWorkflows();
     } catch (err) {
       toast("Could not create the workflow: " + err.message, true);
     } finally {
