@@ -59,7 +59,7 @@
       "scan_intensity": "standard",
       "allow_state_changing_probes": true,
       "created_at": "2026-09-08T06:59:50.974145+00:00",
-      "updated_at": "2026-09-11T16:38:29.352318+00:00",
+      "updated_at": "2026-09-17T06:34:24.709836+00:00",
       "roles": [
         {
           "id": "admin-01",
@@ -77,7 +77,7 @@
           "auth_type": "recorded_workflow",
           "password_set": true,
           "totp_secret_set": false,
-          "login_workflow_id": "wf-20260722-b8d4d7"
+          "login_workflow_id": "wf-20260917-38498c"
         }
       ]
     },
@@ -138,5 +138,5 @@
       ]
     }
   ],
-  "active_target_id": "test-kapturekm-com"
+  "active_target_id": "demo-testfire-net"
 }

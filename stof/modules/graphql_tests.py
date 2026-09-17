@@ -20,6 +20,7 @@ expected and harmless in non-production, so this is reported as
 """
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -27,7 +28,7 @@ from typing import TYPE_CHECKING
 from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
-from .base import VulnModule
+from .base import VulnModule, first_not_none
 from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
@@ -136,10 +137,13 @@ class GraphQLTestsModule(VulnModule):
 
         sensitive_fields = [f for f in query_fields if any(h in f.lower() for h in ("user", "admin", "account", "order", "payment", "role"))]
         probe_fields = sensitive_fields or query_fields[:5]
-        for field_name in probe_fields:
-            finding = await self._check_field_level_bypass_candidate(low_context, vuln_type, evidence, endpoint, field_name)
-            if finding is not None:
-                return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(
+            self._check_field_level_bypass_candidate(low_context, vuln_type, evidence, endpoint, field_name)
+            for field_name in probe_fields
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
         return self._result(tid, technique, vuln_type, PASS, f"{len(probe_fields)} query field(s) probed, none returned data to the low-privileged role", role=self.config.low_priv_role, endpoint=endpoint)
 
     async def _check_field_level_bypass_candidate(self, low_context, vuln_type: str, evidence, endpoint, field_name: str) -> Finding | None:
@@ -340,11 +344,21 @@ class GraphQLTestsModule(VulnModule):
 
         sensitive_fields = [f for f in query_fields if any(h in f.lower() for h in ("user", "admin", "account", "order", "payment", "role"))]
         probe_fields = sensitive_fields or query_fields[:5]
-        for field_name in probe_fields:
+
+        async def _check_field(field_name: str) -> "Finding | None":
+            """One field's own sub-field sweep -- kept sequential
+            internally (early-exit-on-first-match) while different
+            fields run concurrently below."""
             for sub_field in self._NESTED_SUBFIELD_HINTS:
                 finding = await self._check_nested_relationship_bypass_candidate(low_context, vuln_type, evidence, endpoint, field_name, sub_field)
                 if finding is not None:
-                    return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+                    return finding
+            return None
+
+        findings = await asyncio.gather(*(_check_field(f) for f in probe_fields))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(probe_fields)} query field(s) probed via one level of nested relationship traversal "

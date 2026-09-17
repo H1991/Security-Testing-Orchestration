@@ -86,6 +86,13 @@ class CleanupRegistry:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        # WAL + NORMAL sync -- same reasoning as the other data/stof.db
+        # stores (findings, sessions, orchestrator checkpoints, endpoint
+        # store): readers no longer block behind a writer on this
+        # shared file, and each commit skips the extra fsync default
+        # mode pays.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _init_db(self) -> None:

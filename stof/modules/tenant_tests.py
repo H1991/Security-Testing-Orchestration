@@ -31,6 +31,8 @@ path is introduced.
 """
 from __future__ import annotations
 
+import asyncio
+
 from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
@@ -68,10 +70,10 @@ class TenantTechniquesMixin:
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
-        results: list[TestCaseResult] = []
-        for endpoint, param in candidates + write_candidates:
-            results.append(await self._check_tenant_scope_candidate(context, session, evidence, endpoint, param))
-        return results
+        return list(await asyncio.gather(*(
+            self._check_tenant_scope_candidate(context, session, evidence, endpoint, param)
+            for endpoint, param in candidates + write_candidates
+        )))
 
     async def _check_tenant_scope_candidate(self, context, session, evidence, endpoint, param: str) -> TestCaseResult:
         """Per-endpoint probe-and-check body of
@@ -137,19 +139,26 @@ class TenantTechniquesMixin:
         guard `_probe_candidates` applies for the GET case above."""
         import json as json_module
 
-        responses: dict[str, str] = {}
-        statuses: dict[str, int] = {}
         method_fn = _method_request_fn(context, endpoint.method.upper())
-        for candidate in self.config.candidate_ids:
+
+        async def _probe_one(candidate: str) -> tuple[str, int | None, str | None]:
             payload = {param: candidate}
             try:
                 resp = await method_fn(endpoint.url, data=json_module.dumps(payload), headers={"Content-Type": "application/json"}, max_redirects=0)
                 body = await resp.text()
             except Exception as exc:
                 _log.warning(f"tenant-scope POST probe failed for {endpoint.url}: {exc}")
+                return candidate, None, None
+            return candidate, resp.status, body
+
+        probed = await asyncio.gather(*(_probe_one(cid) for cid in self.config.candidate_ids))
+        responses: dict[str, str] = {}
+        statuses: dict[str, int] = {}
+        for candidate, status, body in probed:
+            if status is None:
                 continue
-            statuses[candidate] = resp.status
-            if resp.status == 200 and len(body) >= self.config.min_content_length:
+            statuses[candidate] = status
+            if status == 200 and len(body) >= self.config.min_content_length:
                 responses[candidate] = body
         control_fp = await _control_fingerprint_body_field(method_fn, endpoint.url, param, self.config.min_content_length)
         return _exclude_control_fingerprint(responses, control_fp), statuses

@@ -127,6 +127,11 @@ async def execute_action(page: "Page", action: dict[str, Any]) -> None:
         await page.goto(action["url"])
     elif action_type == "fill":
         await page.fill(action["selector"], action.get("value", ""))
+    elif action_type == "select":
+        # A recorded <select> dropdown -- distinct from "fill" because
+        # Playwright's fill() only ever targets a text-enterable
+        # INPUT/TEXTAREA and hangs until timeout on anything else.
+        await page.select_option(action["selector"], value=action.get("value", ""))
     elif action_type == "click":
         await page.click(action["selector"])
     elif action_type == "wait_for":

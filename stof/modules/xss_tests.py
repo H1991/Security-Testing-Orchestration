@@ -108,7 +108,7 @@ from ._injection_shared import (
     injectable_endpoints,
     send_probe,
 )
-from .base import VulnModule
+from .base import VulnModule, first_not_none
 from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
@@ -448,62 +448,83 @@ class XssTestsModule(VulnModule):
 
         payload = self._payload_for(technique_id)
         bounded = candidates[: self.config.max_probe_targets]
-        for endpoint, param, location in bounded:
-            params = build_params(endpoint, param, payload)
-            probe = await send_probe(context, endpoint, params, location)
-            if probe is None:
-                continue
-            status, body, _elapsed, _headers = probe
-            if not reflects_unencoded(body, payload):
-                continue
-
-            confidence = "likely"
-            execution_note = (
-                "This is a response-inspection signal only: the payload was never rendered in a "
-                f"real browser to confirm actual script execution, {side_effect_note}."
+        findings = await asyncio.gather(*(
+            self._check_reflection_candidate(
+                endpoint, param, location, context, payload, technique_id, context_label,
+                vuln_type, severity, cvss_score, side_effect_note, confirm_execution, evidence,
             )
-            if confirm_execution and location == "query" and endpoint.method.upper() == "GET":
-                dialog_message = await self._confirm_reflection_execution(context, endpoint, params)
-                if dialog_message is not None and self._marker in dialog_message:
-                    confidence = "confirmed"
-                    execution_note = (
-                        f"Navigating a real browser to the same URL triggered a real confirm() "
-                        f"dialog whose message ({dialog_message!r}) contains this run's own unique "
-                        "marker -- genuine, confirmed in-browser script execution, not just an "
-                        "unencoded-reflection signal. The dialog was auto-dismissed immediately and "
-                        "had no other effect."
-                    )
-            description = (
-                f"Injecting a uniquely-tagged marker payload into parameter '{param}' ({location}) "
-                f"on {endpoint.method} {endpoint.url} reflected byte-for-byte unencoded in the "
-                f"response (HTTP {status}), in a position consistent with {context_label} -- the "
-                f"application did not HTML-encode this input before reflecting it. {execution_note}"
-            )
-            finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity=severity, cvss_score=cvss_score,
-                endpoint=endpoint, user_role=self.config.low_priv_role,
-                request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
-                response_raw=body[:300],
-                description=description,
-                recommendation="HTML-encode all untrusted output at the point it's rendered (context-aware encoding for HTML body, attribute, and script/event-handler positions); do not rely on input validation alone.",
-                # See `confirm_execution`'s docstring above: "confirmed"
-                # only when the chained real-browser dialog check
-                # actually fired, "likely" (the previous, always-true
-                # default) otherwise -- a real bug found via code audit
-                # (same class as idor_tests.py's own confidence bug): the
-                # prose already said unconfirmed, but the structured
-                # field defaulted to "confirmed" anyway, so the report's
-                # "Needs Manual Confirmation" badge never fired for
-                # exactly the reflected-XSS findings that most need it.
-                confidence=confidence,
-            )
-            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"xss-{technique_id}-{param}") if evidence else []
-            return self._result(technique_id, technique_name, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, vuln_type=vuln_type)
+            for endpoint, param, location in bounded
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(technique_id, technique_name, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding, vuln_type=vuln_type)
         return self._result(
             technique_id, technique_name, PASS,
             f"{len(bounded)} parameter(s) probed with a {context_label} marker payload, no unencoded reflection observed",
             role=self.config.low_priv_role,
         )
+
+    async def _check_reflection_candidate(
+        self, endpoint: "Endpoint", param: str, location: str, context, payload: str, technique_id: str,
+        context_label: str, vuln_type: str, severity: str, cvss_score: float, side_effect_note: str,
+        confirm_execution: bool, evidence: "EvidenceCollector | None",
+    ) -> "Finding | None":
+        """One (endpoint, param, location)'s own probe-and-check body --
+        split out of `_technique_reflection`'s loop so different
+        candidates can run concurrently. `_confirm_reflection_execution`
+        opens its own fresh `page` per call (closed in its own
+        `finally`), so concurrent candidates never share or contend
+        over one page/dialog handler."""
+        params = build_params(endpoint, param, payload)
+        probe = await send_probe(context, endpoint, params, location)
+        if probe is None:
+            return None
+        status, body, _elapsed, _headers = probe
+        if not reflects_unencoded(body, payload):
+            return None
+
+        confidence = "likely"
+        execution_note = (
+            "This is a response-inspection signal only: the payload was never rendered in a "
+            f"real browser to confirm actual script execution, {side_effect_note}."
+        )
+        if confirm_execution and location == "query" and endpoint.method.upper() == "GET":
+            dialog_message = await self._confirm_reflection_execution(context, endpoint, params)
+            if dialog_message is not None and self._marker in dialog_message:
+                confidence = "confirmed"
+                execution_note = (
+                    f"Navigating a real browser to the same URL triggered a real confirm() "
+                    f"dialog whose message ({dialog_message!r}) contains this run's own unique "
+                    "marker -- genuine, confirmed in-browser script execution, not just an "
+                    "unencoded-reflection signal. The dialog was auto-dismissed immediately and "
+                    "had no other effect."
+                )
+        description = (
+            f"Injecting a uniquely-tagged marker payload into parameter '{param}' ({location}) "
+            f"on {endpoint.method} {endpoint.url} reflected byte-for-byte unencoded in the "
+            f"response (HTTP {status}), in a position consistent with {context_label} -- the "
+            f"application did not HTML-encode this input before reflecting it. {execution_note}"
+        )
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity=severity, cvss_score=cvss_score,
+            endpoint=endpoint, user_role=self.config.low_priv_role,
+            request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
+            response_raw=body[:300],
+            description=description,
+            recommendation="HTML-encode all untrusted output at the point it's rendered (context-aware encoding for HTML body, attribute, and script/event-handler positions); do not rely on input validation alone.",
+            # See `confirm_execution`'s docstring above: "confirmed"
+            # only when the chained real-browser dialog check
+            # actually fired, "likely" (the previous, always-true
+            # default) otherwise -- a real bug found via code audit
+            # (same class as idor_tests.py's own confidence bug): the
+            # prose already said unconfirmed, but the structured
+            # field defaulted to "confirmed" anyway, so the report's
+            # "Needs Manual Confirmation" badge never fired for
+            # exactly the reflected-XSS findings that most need it.
+            confidence=confidence,
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"xss-{technique_id}-{param}") if evidence else []
+        return finding
 
     async def _technique_stored_xss(
         self,

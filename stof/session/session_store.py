@@ -49,6 +49,15 @@ class SessionStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        # WAL: readers no longer block behind a writer (or vice versa)
+        # on this same file -- relevant here since concurrent scans
+        # against different targets legitimately hit this store at the
+        # same time (see this module's own docstring). NORMAL sync is
+        # WAL's documented safe pairing (still durable against an app
+        # crash, just skips the extra fsync every default-mode commit
+        # pays) -- both are cheap, idempotent per-connection PRAGMAs.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _init_db(self) -> None:

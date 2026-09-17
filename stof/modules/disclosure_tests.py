@@ -35,6 +35,7 @@ already wrote during a normal authenticated navigation -- no
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from dataclasses import dataclass
@@ -46,7 +47,7 @@ from stof.crawler.endpoint_store import Endpoint
 from stof.findings.models import Finding
 
 from ._injection_shared import build_params, send_probe
-from .base import VulnModule
+from .base import VulnModule, first_not_none
 from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
@@ -419,10 +420,10 @@ class DisclosureTestsModule(VulnModule):
             _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
         except KeyError as exc:
             return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
-        for endpoint in candidates:
-            finding = await self._check_pii_in_api_response(context, vuln_type, evidence, endpoint)
-            if finding is not None:
-                return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(self._check_pii_in_api_response(context, vuln_type, evidence, endpoint) for endpoint in candidates))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(tid, technique, vuln_type, PASS, f"no PII patterns matched across {len(candidates)} scanned API response(s)")
 
     async def _check_pii_in_api_response(self, context, vuln_type: str, evidence, endpoint) -> Finding | None:
@@ -463,10 +464,10 @@ class DisclosureTestsModule(VulnModule):
             _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
         except KeyError as exc:
             return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
-        for endpoint in candidates:
-            finding = await self._check_pii_in_error_response(context, vuln_type, evidence, endpoint)
-            if finding is not None:
-                return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(self._check_pii_in_error_response(context, vuln_type, evidence, endpoint) for endpoint in candidates))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(tid, technique, vuln_type, PASS, f"{len(candidates)} endpoint(s) probed with a malformed parameter; no PII found in any error response")
 
     async def _check_pii_in_error_response(self, context, vuln_type: str, evidence, endpoint) -> Finding | None:
@@ -553,14 +554,16 @@ class DisclosureTestsModule(VulnModule):
 
         checked = 0
         if origin is not None:
-            for path in _BACKUP_CANDIDATE_PATHS:
-                checked += 1
-                finding = await self._check_backup_path(context, vuln_type, evidence, origin + path)
-                if finding is not None:
-                    return self._result(tid, technique, vuln_type, FAIL, finding.description, finding=finding)
-        for asset in js_assets:
-            checked += 1
-            finding = await self._check_js_source_map(context, vuln_type, evidence, asset)
+            checked += len(_BACKUP_CANDIDATE_PATHS)
+            backup_findings = await asyncio.gather(*(
+                self._check_backup_path(context, vuln_type, evidence, origin + path) for path in _BACKUP_CANDIDATE_PATHS
+            ))
+            finding = first_not_none(backup_findings)
+            if finding is not None:
+                return self._result(tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+        checked += len(js_assets)
+        map_findings = await asyncio.gather(*(self._check_js_source_map(context, vuln_type, evidence, asset) for asset in js_assets))
+        for asset, finding in zip(js_assets, map_findings, strict=True):
             if finding is not None:
                 return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=asset, finding=finding)
         return self._result(tid, technique, vuln_type, PASS, f"no source map / VCS / backup file found across {checked} candidate path(s) checked")
@@ -629,10 +632,10 @@ class DisclosureTestsModule(VulnModule):
             _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
         except KeyError as exc:
             return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
-        for endpoint in candidates:
-            finding = await self._check_pii_in_html_source(context, vuln_type, evidence, endpoint)
-            if finding is not None:
-                return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(self._check_pii_in_html_source(context, vuln_type, evidence, endpoint) for endpoint in candidates))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(tid, technique, vuln_type, PASS, f"no PII/secrets found hidden in HTML comments or inline scripts across {len(candidates)} scanned page(s)")
 
     async def _check_pii_in_html_source(self, context, vuln_type: str, evidence, endpoint) -> Finding | None:
@@ -781,41 +784,55 @@ class DisclosureTestsModule(VulnModule):
         except KeyError as exc:
             return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
 
-        for endpoint, param, location in candidates:
-            baseline = await send_probe(context, endpoint, build_params(endpoint, param, "stof-baseline-value"), location)
-            if baseline is None:
-                continue
-            baseline_hit = _PASSWD_FINGERPRINT_RE.search(baseline[1]) is not None
-
-            for payload in _PATH_TRAVERSAL_PAYLOADS:
-                probe = await send_probe(context, endpoint, build_params(endpoint, param, payload), location)
-                if probe is None:
-                    continue
-                status, body, _elapsed, _headers = probe
-                if status >= 400:
-                    continue
-                if _PASSWD_FINGERPRINT_RE.search(body) and not baseline_hit:
-                    finding = Finding(
-                        module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
-                        endpoint=endpoint, user_role=self.config.high_priv_role,
-                        request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
-                        response_raw=f"HTTP {status}\n" + _PASSWD_FINGERPRINT_RE.search(body).group(0),
-                        description=(
-                            f"'{endpoint.url}' parameter '{param}' ({location}) accepted a directory-traversal "
-                            f"payload ({payload!r}) and returned the contents of /etc/passwd (fingerprint "
-                            "'root:x:0:0:' present), while an identically-shaped baseline request for the same "
-                            "parameter did not. The server reads a file directly from a path built with "
-                            "unsanitized user input."
-                        ),
-                        recommendation="Never build a filesystem path from user input directly; resolve the requested name against an explicit allowlist of permitted files, or map it through an internal id -> filename lookup that never touches the input string.",
-                    )
-                    finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"path-traversal-{param}") if evidence else []
-                    return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
-
+        findings = await asyncio.gather(*(
+            self._check_path_traversal_candidate(context, vuln_type, evidence, endpoint, param, location)
+            for endpoint, param, location in candidates
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(candidates)} file/path-shaped parameter(s) probed with {len(_PATH_TRAVERSAL_PAYLOADS)} traversal payload(s) each, no /etc/passwd fingerprint observed",
         )
+
+    async def _check_path_traversal_candidate(
+        self, context, vuln_type: str, evidence, endpoint, param: str, location: str,
+    ) -> Finding | None:
+        """One (endpoint, param, location)'s own baseline + payload
+        sweep -- split out of `_technique_path_traversal`'s loop so
+        different candidates can run concurrently. Payloads within one
+        candidate stay sequential with early-exit-on-first-match."""
+        baseline = await send_probe(context, endpoint, build_params(endpoint, param, "stof-baseline-value"), location)
+        if baseline is None:
+            return None
+        baseline_hit = _PASSWD_FINGERPRINT_RE.search(baseline[1]) is not None
+
+        for payload in _PATH_TRAVERSAL_PAYLOADS:
+            probe = await send_probe(context, endpoint, build_params(endpoint, param, payload), location)
+            if probe is None:
+                continue
+            status, body, _elapsed, _headers = probe
+            if status >= 400:
+                continue
+            if _PASSWD_FINGERPRINT_RE.search(body) and not baseline_hit:
+                finding = Finding(
+                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
+                    endpoint=endpoint, user_role=self.config.high_priv_role,
+                    request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
+                    response_raw=f"HTTP {status}\n" + _PASSWD_FINGERPRINT_RE.search(body).group(0),
+                    description=(
+                        f"'{endpoint.url}' parameter '{param}' ({location}) accepted a directory-traversal "
+                        f"payload ({payload!r}) and returned the contents of /etc/passwd (fingerprint "
+                        "'root:x:0:0:' present), while an identically-shaped baseline request for the same "
+                        "parameter did not. The server reads a file directly from a path built with "
+                        "unsanitized user input."
+                    ),
+                    recommendation="Never build a filesystem path from user input directly; resolve the requested name against an explicit allowlist of permitted files, or map it through an internal id -> filename lookup that never touches the input string.",
+                )
+                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"path-traversal-{param}") if evidence else []
+                return finding
+        return None
 
     # -- TC-105.9: excessive data exposure via sensitive field NAMES --------
     # Distinct from TC-105.1's value-pattern PII matching: this flags a
@@ -841,31 +858,39 @@ class DisclosureTestsModule(VulnModule):
         except KeyError as exc:
             return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
 
-        for endpoint in candidates:
-            probe = await self._probe_get(context, endpoint.url)
-            if probe is None:
-                continue
-            status, body = probe
-            if status != 200:
-                continue
-            hits = _sensitive_field_names(body)
-            if not hits:
-                continue
-            finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.9,
-                endpoint=endpoint, user_role=self.config.high_priv_role,
-                request_raw=f"GET {endpoint.url}",
-                response_raw=f"HTTP {status}, sensitive field name(s) present in JSON: {', '.join(sorted(hits))}",
-                description=(
-                    f"'{endpoint.url}' returns JSON containing internal/sensitive-shaped field name(s) "
-                    f"({', '.join(sorted(hits))}) -- consistent with the API serializing an internal model "
-                    "directly rather than an explicit, minimized response shape."
-                ),
-                recommendation="Define an explicit response DTO/serializer per endpoint that only includes fields the client actually needs; never serialize an ORM/internal model directly.",
-            )
-            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"excessive-exposure-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
-            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(self._check_excessive_data_exposure_candidate(context, vuln_type, evidence, endpoint) for endpoint in candidates))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(tid, technique, vuln_type, PASS, f"no sensitive-shaped field name found across {len(candidates)} scanned API response(s)")
+
+    async def _check_excessive_data_exposure_candidate(self, context, vuln_type: str, evidence, endpoint) -> Finding | None:
+        """Per-endpoint probe-and-check body of
+        `_technique_excessive_data_exposure`'s loop, extracted so
+        different endpoints can run concurrently."""
+        probe = await self._probe_get(context, endpoint.url)
+        if probe is None:
+            return None
+        status, body = probe
+        if status != 200:
+            return None
+        hits = _sensitive_field_names(body)
+        if not hits:
+            return None
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.9,
+            endpoint=endpoint, user_role=self.config.high_priv_role,
+            request_raw=f"GET {endpoint.url}",
+            response_raw=f"HTTP {status}, sensitive field name(s) present in JSON: {', '.join(sorted(hits))}",
+            description=(
+                f"'{endpoint.url}' returns JSON containing internal/sensitive-shaped field name(s) "
+                f"({', '.join(sorted(hits))}) -- consistent with the API serializing an internal model "
+                "directly rather than an explicit, minimized response shape."
+            ),
+            recommendation="Define an explicit response DTO/serializer per endpoint that only includes fields the client actually needs; never serialize an ORM/internal model directly.",
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"excessive-exposure-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
+        return finding
 
     # -- TC-105.10: robots.txt / sitemap.xml hidden-path disclosure --------
     # Both files are meant to be public by design, so their mere presence
@@ -928,32 +953,39 @@ class DisclosureTestsModule(VulnModule):
         except KeyError as exc:
             return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
 
-        checked = 0
-        for directory_url in candidate_dirs[: self.config.max_endpoints_scanned]:
-            checked += 1
-            probe = await self._probe_get(context, directory_url)
-            if probe is None:
-                continue
-            status, body = probe
-            if status != 200 or not _looks_like_directory_listing(body):
-                continue
-            file_names = _listing_file_names(body, directory_url)
-            finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
-                endpoint=Endpoint(url=directory_url, method="GET", endpoint_type="page"), user_role=self.config.high_priv_role,
-                request_raw=f"GET {directory_url}",
-                response_raw=f"HTTP {status}, {len(file_names)} file(s) listed: {', '.join(file_names[:10])}",
-                description=(
-                    f"'{directory_url}' returns a directory listing exposing {len(file_names)} "
-                    f"file(s) ({', '.join(file_names[:10])}{'...' if len(file_names) > 10 else ''}) -- "
-                    "an attacker gets the exact filenames of everything served from this directory for "
-                    "free, without guessing or brute-forcing, including files nothing on the site links to."
-                ),
-                recommendation="Disable directory-listing/autoindexing on the webserver (or the static-file middleware serving this path) so only explicitly-linked files are reachable.",
-            )
-            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="directory-listing") if evidence else []
+        bounded_dirs = candidate_dirs[: self.config.max_endpoints_scanned]
+        findings = await asyncio.gather(*(self._check_directory_listing_candidate(context, vuln_type, evidence, url) for url in bounded_dirs))
+        finding = first_not_none(findings)
+        if finding is not None:
             return self._result(tid, technique, vuln_type, FAIL, finding.description, finding=finding)
-        return self._result(tid, technique, vuln_type, PASS, f"no directory listing observed across {checked} candidate director(y/ies) checked")
+        return self._result(tid, technique, vuln_type, PASS, f"no directory listing observed across {len(bounded_dirs)} candidate director(y/ies) checked")
+
+    async def _check_directory_listing_candidate(self, context, vuln_type: str, evidence, directory_url: str) -> Finding | None:
+        """Per-directory probe-and-check body of
+        `_technique_directory_listing`'s loop, extracted so different
+        directories can run concurrently."""
+        probe = await self._probe_get(context, directory_url)
+        if probe is None:
+            return None
+        status, body = probe
+        if status != 200 or not _looks_like_directory_listing(body):
+            return None
+        file_names = _listing_file_names(body, directory_url)
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
+            endpoint=Endpoint(url=directory_url, method="GET", endpoint_type="page"), user_role=self.config.high_priv_role,
+            request_raw=f"GET {directory_url}",
+            response_raw=f"HTTP {status}, {len(file_names)} file(s) listed: {', '.join(file_names[:10])}",
+            description=(
+                f"'{directory_url}' returns a directory listing exposing {len(file_names)} "
+                f"file(s) ({', '.join(file_names[:10])}{'...' if len(file_names) > 10 else ''}) -- "
+                "an attacker gets the exact filenames of everything served from this directory for "
+                "free, without guessing or brute-forcing, including files nothing on the site links to."
+            ),
+            recommendation="Disable directory-listing/autoindexing on the webserver (or the static-file middleware serving this path) so only explicitly-linked files are reachable.",
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="directory-listing") if evidence else []
+        return finding
 
     async def _technique_null_byte_extension_bypass(self, endpoints, session_manager, session_pool, evidence) -> TestCaseResult:
         tid, technique = "TC-105.12", "Blocked file accessible via null-byte extension-filter bypass (CWE-626)"
@@ -968,41 +1000,52 @@ class DisclosureTestsModule(VulnModule):
         except KeyError as exc:
             return self._result(tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
 
-        checked = 0
-        for endpoint in candidates:
-            baseline = await self._probe_get(context, endpoint.url)
-            if baseline is None:
-                continue
-            baseline_status, baseline_body = baseline
-            if baseline_status not in (401, 403):
-                continue
-            checked += 1
-            for suffix in _NULL_BYTE_BYPASS_SUFFIXES:
-                bypass_probe = await self._probe_get(context, endpoint.url + suffix)
-                if bypass_probe is None:
-                    continue
-                bypass_status, bypass_body = bypass_probe
-                if not _looks_like_a_real_bypass(baseline_body, bypass_status, bypass_body):
-                    continue
-                finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
-                    endpoint=endpoint, user_role=self.config.high_priv_role,
-                    request_raw=f"GET {endpoint.url} -> HTTP {baseline_status}\nGET {endpoint.url}{suffix} -> HTTP {bypass_status}",
-                    response_raw=bypass_body[:500],
-                    description=(
-                        f"'{endpoint.url}' is blocked (HTTP {baseline_status}), but appending {suffix!r} "
-                        f"(a URL-encoded null byte followed by an allowed extension) returns a different, "
-                        f"non-empty HTTP {bypass_status} response -- the extension filter is bypassed via "
-                        "the classic poison-null-byte trick (CWE-626), exposing whatever content the "
-                        "filter was meant to block."
-                    ),
-                    recommendation="Reject request paths containing a literal or encoded null byte outright, and don't rely on filename-extension checks alone to gate access to sensitive files.",
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="null-byte-bypass") if evidence else []
-                return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        results = await asyncio.gather(*(self._check_null_byte_bypass_candidate(context, vuln_type, evidence, endpoint) for endpoint in candidates))
+        checked = sum(1 for was_blocked, _finding in results if was_blocked)
+        finding = first_not_none(f for _was_blocked, f in results)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         if checked == 0:
             return self._result(tid, technique, vuln_type, SKIPPED, "no discovered endpoint returned 401/403 to probe a bypass against")
         return self._result(tid, technique, vuln_type, PASS, f"{checked} blocked endpoint(s) checked, no null-byte extension bypass succeeded")
+
+    async def _check_null_byte_bypass_candidate(self, context, vuln_type: str, evidence, endpoint) -> tuple[bool, Finding | None]:
+        """One endpoint's own baseline + suffix sweep -- split out of
+        `_technique_null_byte_extension_bypass`'s loop so different
+        endpoints can run concurrently. Returns `(was_blocked_at_
+        baseline, finding_or_None)` -- the caller needs the first value
+        to keep reporting how many blocked endpoints were actually
+        checked, not just how many candidates existed."""
+        baseline = await self._probe_get(context, endpoint.url)
+        if baseline is None:
+            return False, None
+        baseline_status, baseline_body = baseline
+        if baseline_status not in (401, 403):
+            return False, None
+        for suffix in _NULL_BYTE_BYPASS_SUFFIXES:
+            bypass_probe = await self._probe_get(context, endpoint.url + suffix)
+            if bypass_probe is None:
+                continue
+            bypass_status, bypass_body = bypass_probe
+            if not _looks_like_a_real_bypass(baseline_body, bypass_status, bypass_body):
+                continue
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
+                endpoint=endpoint, user_role=self.config.high_priv_role,
+                request_raw=f"GET {endpoint.url} -> HTTP {baseline_status}\nGET {endpoint.url}{suffix} -> HTTP {bypass_status}",
+                response_raw=bypass_body[:500],
+                description=(
+                    f"'{endpoint.url}' is blocked (HTTP {baseline_status}), but appending {suffix!r} "
+                    f"(a URL-encoded null byte followed by an allowed extension) returns a different, "
+                    f"non-empty HTTP {bypass_status} response -- the extension filter is bypassed via "
+                    "the classic poison-null-byte trick (CWE-626), exposing whatever content the "
+                    "filter was meant to block."
+                ),
+                recommendation="Reject request paths containing a literal or encoded null byte outright, and don't rely on filename-extension checks alone to gate access to sensitive files.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="null-byte-bypass") if evidence else []
+            return True, finding
+        return True, None
 
     async def run_techniques(
         self,

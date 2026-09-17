@@ -11,6 +11,7 @@ TC-056.2 (body field) is a write-verb success/failure check
 """
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 
 from stof.authorization.decision import AuthorizationDecision, classify_response
@@ -69,51 +70,58 @@ class RoleTechniquesMixin:
 
         session, context = await self._authenticated_context(session_manager, session_pool, self.low_priv_role, target_url)
 
-        findings: list[Finding] = []
-        for endpoint, param in role_endpoints:
-            result = await self._first_role_tamper_escalation(
-                context, endpoint, lambda v, e=endpoint, p=param: (_set_query_param(e.url, p, v), None))
-            if result is None:
-                continue
-            elevated_value, tampered_url, tampered_status, tampered_body, baseline_status, baseline_body = result
-            finding = Finding(
-                module_id=self.module_id,
-                vuln_type="Role Manipulation via Parameter Tampering",
-                severity="High",
-                cvss_score=8.8,
-                endpoint=endpoint,
-                user_role=self.low_priv_role,
-                request_raw=f"GET {tampered_url}",
-                response_raw=(
-                    f"HTTP {tampered_status}, {len(tampered_body)} bytes "
-                    f"(baseline HTTP {baseline_status}, {len(baseline_body)} bytes)"
-                ),
-                description=(
-                    f"Endpoint '{endpoint.url}' accepts a client-controlled parameter "
-                    f"'{param}'; setting it to '{elevated_value}' from a low-privileged "
-                    f"session produced a different, successful response than the "
-                    f"unmodified baseline request. This suggests role/permission state "
-                    f"may be trusted from client input rather than derived server-side."
-                ),
-                recommendation=(
-                    "Never trust a role/permission value supplied by the client. Derive "
-                    "the acting user's role/permissions exclusively from server-side "
-                    "session state, and re-validate authorization on every request "
-                    "regardless of any client-supplied role parameter."
-                ),
-                # The description above says "suggests" / "may be
-                # trusted" -- single-session parameter tampering alone,
-                # no cross-identity confirmation that a genuinely
-                # different low-priv identity is actually elevated (the
-                # same "never report off single-session enumeration
-                # alone" principle idor_tests.py's own cross-session
-                # confirmation was built for).
-                confidence="likely",
-            )
-            finding.evidence_refs = await self._capture_evidence(
-                evidence, context, session, tampered_url, label=f"role-tamper-{param}-{elevated_value}", finding=finding)
-            findings.append(finding)
-        return findings
+        checked = await asyncio.gather(*(
+            self._check_role_param_tamper_candidate(context, session, evidence, endpoint, param)
+            for endpoint, param in role_endpoints
+        ))
+        return [finding for finding in checked if finding is not None]
+
+    async def _check_role_param_tamper_candidate(self, context, session, evidence, endpoint, param: str) -> "Finding | None":
+        """Per-(endpoint, param) probe-and-check body of
+        `_test_role_parameter_tampering`'s loop, extracted so different
+        candidates can run concurrently."""
+        result = await self._first_role_tamper_escalation(
+            context, endpoint, lambda v, e=endpoint, p=param: (_set_query_param(e.url, p, v), None))
+        if result is None:
+            return None
+        elevated_value, tampered_url, tampered_status, tampered_body, baseline_status, baseline_body = result
+        finding = Finding(
+            module_id=self.module_id,
+            vuln_type="Role Manipulation via Parameter Tampering",
+            severity="High",
+            cvss_score=8.8,
+            endpoint=endpoint,
+            user_role=self.low_priv_role,
+            request_raw=f"GET {tampered_url}",
+            response_raw=(
+                f"HTTP {tampered_status}, {len(tampered_body)} bytes "
+                f"(baseline HTTP {baseline_status}, {len(baseline_body)} bytes)"
+            ),
+            description=(
+                f"Endpoint '{endpoint.url}' accepts a client-controlled parameter "
+                f"'{param}'; setting it to '{elevated_value}' from a low-privileged "
+                f"session produced a different, successful response than the "
+                f"unmodified baseline request. This suggests role/permission state "
+                f"may be trusted from client input rather than derived server-side."
+            ),
+            recommendation=(
+                "Never trust a role/permission value supplied by the client. Derive "
+                "the acting user's role/permissions exclusively from server-side "
+                "session state, and re-validate authorization on every request "
+                "regardless of any client-supplied role parameter."
+            ),
+            # The description above says "suggests" / "may be
+            # trusted" -- single-session parameter tampering alone,
+            # no cross-identity confirmation that a genuinely
+            # different low-priv identity is actually elevated (the
+            # same "never report off single-session enumeration
+            # alone" principle idor_tests.py's own cross-session
+            # confirmation was built for).
+            confidence="likely",
+        )
+        finding.evidence_refs = await self._capture_evidence(
+            evidence, context, session, tampered_url, label=f"role-tamper-{param}-{elevated_value}", finding=finding)
+        return finding
 
     async def _technique_role_body_field(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
         test_id, tid, technique = "TC-056", "TC-056.2", "Tamper role field in the request body"
@@ -131,9 +139,12 @@ class RoleTechniquesMixin:
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
+        checked = await asyncio.gather(*(
+            self._check_role_body_field_candidate(context, vuln_type, evidence, endpoint, param)
+            for endpoint, param in role_body_endpoints
+        ))
         results: list[TestCaseResult] = []
-        for endpoint, param in role_body_endpoints:
-            finding = await self._check_role_body_field_candidate(context, vuln_type, evidence, endpoint, param)
+        for (endpoint, param), finding in zip(role_body_endpoints, checked, strict=True):
             if finding is not None:
                 results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding))
             else:
@@ -204,8 +215,8 @@ class RoleTechniquesMixin:
         except KeyError as exc:
             return [self._result(test_id, test_technique_id, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
-        for endpoint in endpoints_to_probe:
-            finding = await self._probe_role_header_tamper(context, endpoint, via, vuln_type)
+        findings = await asyncio.gather(*(self._probe_role_header_tamper(context, endpoint, via, vuln_type) for endpoint in endpoints_to_probe))
+        for endpoint, finding in zip(endpoints_to_probe, findings, strict=True):
             if finding is None:
                 continue
             finding.evidence_refs = await self._capture_evidence(evidence, context, session, endpoint.url, label=f"role-{via}-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)

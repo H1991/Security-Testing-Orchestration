@@ -1,12 +1,11 @@
 {
   "target": {
-    "base_url": "https://test.kapturekm.com/kauthor/login",
-    "login_url": "https://test.kapturekm.com/kauthor/login",
+    "base_url": "http://demo.testfire.net",
+    "login_url": "http://demo.testfire.net/login.jsp",
     "requires_assisted_login": false,
     "crawler_exclude_patterns": [
-      "content=inside_",
-      "survey_questions",
-      "privacypolicy"
+      "feedback.jsp",
+      "disclaimer.htm"
     ]
   },
   "browser": {

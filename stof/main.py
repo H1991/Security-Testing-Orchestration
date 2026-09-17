@@ -37,7 +37,7 @@ import click
 from playwright.async_api import Error as PlaywrightError
 from playwright.async_api import async_playwright
 
-from stof.auth import AssistedLoginProvider, FormLoginProvider, JWTAuthProvider, WorkflowLoginProvider
+from stof.auth import AssistedLoginProvider, AuthFailedError, FormLoginProvider, JWTAuthProvider, WorkflowLoginProvider
 from stof.bench import score_false_positives, score_recall
 from stof.cleanup import registry as cleanup_registry
 from stof.config import ConfigError, load_config, load_dotenv, load_users
@@ -692,6 +692,33 @@ def _module_hit_dead_driver(results: list) -> bool:
     return any(r.status == ERROR and _looks_like_driver_dead(r.detail) for r in results)
 
 
+def _unwrap_transient_playwright_error(exc: Exception) -> PlaywrightError | None:
+    """`WorkflowLoginProvider._replay_login_actions` (and other auth
+    providers) catch the real `PlaywrightError` a flaky navigation
+    raises and re-raise it wrapped as `AuthFailedError` (`raise ... from
+    exc`) so a genuine login failure reads as an auth problem, not a
+    browser one. That's the right shape for a REAL bad-credential
+    failure, but it also hides the exact transient-network signal
+    `_with_retry` exists to catch -- confirmed live: a workflow-login
+    role hit the same `net::ERR_NETWORK_CHANGED` `_with_retry`'s own
+    docstring already documents, but because `_authenticated_context`
+    wasn't wrapped in `_with_retry` at all, the scan/crawl just died
+    instead of retrying. Walks the `__cause__` chain looking for the
+    underlying `PlaywrightError` so a wrapped transient error retries
+    the same as an unwrapped one, while a genuine bad-credential
+    `AuthFailedError` (no `PlaywrightError` anywhere in its cause chain)
+    still fails immediately instead of burning retries on a result that
+    will never change."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, PlaywrightError):
+            return current
+        seen.add(id(current))
+        current = current.__cause__
+    return None
+
+
 async def _with_retry(coro_fn, attempts: int = 3):
     """This sandbox's connection to demo.testfire.net has repeatedly
     shown transient `net::ERR_NETWORK_CHANGED` failures during page
@@ -709,6 +736,15 @@ async def _with_retry(coro_fn, attempts: int = 3):
         except PlaywrightError as exc:
             last_exc = exc
             click.echo(f"[STOF]  transient network error on attempt {attempt}/{attempts}: {exc}. Retrying...")
+            await asyncio.sleep(2)
+        except AuthFailedError as exc:
+            transient = _unwrap_transient_playwright_error(exc)
+            if transient is None:
+                raise
+            last_exc = exc
+            click.echo(
+                f"[STOF]  transient network error during auth on attempt {attempt}/{attempts}: {transient}. Retrying..."
+            )
             await asyncio.sleep(2)
     raise last_exc
 
@@ -1029,7 +1065,9 @@ async def _replay_workflows(workflow_ids: list[str], users_by_role: dict, users_
 
     for workflow_id in workflow_ids:
         try:
-            session = await _authenticated_session(session_manager, session_pool, replay_role, "")
+            session = await _with_retry(
+                lambda: _authenticated_session(session_manager, session_pool, replay_role, "")
+            )
             result = await runner.run_workflow(workflow_id, session)
         except Exception as exc:
             console.info(f"'{workflow_id}' (as role '{replay_role}'): could not replay -- {exc}")
@@ -1076,7 +1114,9 @@ async def _crawl_all_roles(
     is isolated from that function's already-substantial setup code."""
     endpoints: list = []
     for crawl_role in crawl_roles:
-        context = await _authenticated_context(session_manager, session_pool, crawl_role, target_url)
+        context = await _with_retry(
+            lambda crawl_role=crawl_role: _authenticated_context(session_manager, session_pool, crawl_role, target_url)
+        )
         role_endpoints = await _with_retry(
             lambda context=context: run_crawler(target_url, context, crawler_config)
         )
@@ -1175,6 +1215,7 @@ async def _run_crawl(
                 await anon_context.close()
         finally:
             await session_pool.shutdown()
+            await traffic_guard.aclose()
 
     write_endpoints(endpoints, path=output_path)
     forms = sum(1 for e in endpoints if e.endpoint_type == "form")
@@ -1366,7 +1407,9 @@ async def _run_test(
                 else:
                     console.info("Running reconnaissance (tech stack, headers, exposed paths, secrets, parameters)...")
                     try:
-                        recon_context = await _authenticated_context(session_manager, session_pool, recon_role, config.target.base_url)
+                        recon_context = await _with_retry(
+                            lambda: _authenticated_context(session_manager, session_pool, recon_role, config.target.base_url)
+                        )
                         recon_report = await _with_retry(
                             lambda: run_recon(endpoint_list, recon_context, config.target.base_url)
                         )
@@ -1564,6 +1607,7 @@ async def _run_test(
                     console.info(f"Walkthrough report built for {len(walkthroughs)} finding(s) ({error_count} with a build error)")
             finally:
                 await session_pool.shutdown()
+                await traffic_guard.aclose()
 
         duration = round(time.monotonic() - started_at, 1)
         # Same "scan-id-stamped is durable, flat path is a convenience

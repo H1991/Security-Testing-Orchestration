@@ -22,6 +22,8 @@ module identity.
 """
 from __future__ import annotations
 
+import asyncio
+
 from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
@@ -145,27 +147,34 @@ class IdReferenceTechniquesMixin:
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
-        results: list[TestCaseResult] = []
-        for endpoint, idxs in candidates:
-            outer_index = idxs[0]  # vary the outermost id, keep the inner (last) one fixed
-            url_for = lambda cid, e=endpoint, i=outer_index: _set_path_segment(e.url, i, cid)
-            observed = _observed_path_segment_value(endpoint.url, outer_index)
-            endpoint_candidates = _endpoint_candidate_ids(observed, self.config.candidate_ids)
-            responses, statuses, _control_fp = await self._probe_candidates(context, endpoint_candidates, url_for)
-            distinct = {_content_fingerprint(b) for b in responses.values()}
-            if len(responses) >= 2 and len(distinct) >= 2:
-                finding = self._object_ref_finding(
-                    endpoint, self.high_priv_role, "outer path segment", url_for, statuses, responses, vuln_type, 8.1,
-                    description=(
-                        f"'{endpoint.url}' has a nested object reference (2+ id-shaped path segments); varying the outer "
-                        f"segment across {list(responses.keys())[:3]} while keeping the inner one fixed still returned "
-                        f"{len(responses)} distinct objects, for role '{self.high_priv_role}'."
-                    ),
-                    recommendation="Verify ownership of the OUTER object in a nested resource path too, not only the innermost one.",
-                )
-                sample_id = next(iter(responses.keys()))
-                finding.evidence_refs = await self._capture_evidence(evidence, context, session, url_for(sample_id), label=f"idor-nested-{sample_id}", finding=finding)
-                results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.high_priv_role, endpoint=endpoint, finding=finding))
-            else:
-                results.append(self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': varying the outer path segment returned no distinct objects", role=self.high_priv_role, endpoint=endpoint))
-        return results
+        return list(await asyncio.gather(*(
+            self._check_nested_object_reference_candidate(context, session, evidence, endpoint, idxs, test_id, tid, technique, vuln_type)
+            for endpoint, idxs in candidates
+        )))
+
+    async def _check_nested_object_reference_candidate(
+        self, context, session, evidence, endpoint, idxs, test_id: str, tid: str, technique: str, vuln_type: str,
+    ) -> TestCaseResult:
+        """Per-endpoint probe-and-check body of
+        `_technique_nested_object_reference`'s loop, extracted so
+        different endpoints can run concurrently."""
+        outer_index = idxs[0]  # vary the outermost id, keep the inner (last) one fixed
+        url_for = lambda cid, e=endpoint, i=outer_index: _set_path_segment(e.url, i, cid)
+        observed = _observed_path_segment_value(endpoint.url, outer_index)
+        endpoint_candidates = _endpoint_candidate_ids(observed, self.config.candidate_ids)
+        responses, statuses, _control_fp = await self._probe_candidates(context, endpoint_candidates, url_for)
+        distinct = {_content_fingerprint(b) for b in responses.values()}
+        if len(responses) >= 2 and len(distinct) >= 2:
+            finding = self._object_ref_finding(
+                endpoint, self.high_priv_role, "outer path segment", url_for, statuses, responses, vuln_type, 8.1,
+                description=(
+                    f"'{endpoint.url}' has a nested object reference (2+ id-shaped path segments); varying the outer "
+                    f"segment across {list(responses.keys())[:3]} while keeping the inner one fixed still returned "
+                    f"{len(responses)} distinct objects, for role '{self.high_priv_role}'."
+                ),
+                recommendation="Verify ownership of the OUTER object in a nested resource path too, not only the innermost one.",
+            )
+            sample_id = next(iter(responses.keys()))
+            finding.evidence_refs = await self._capture_evidence(evidence, context, session, url_for(sample_id), label=f"idor-nested-{sample_id}", finding=finding)
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.high_priv_role, endpoint=endpoint, finding=finding)
+        return self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': varying the outer path segment returned no distinct objects", role=self.high_priv_role, endpoint=endpoint)

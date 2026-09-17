@@ -22,6 +22,18 @@ _log = get_logger("recorder.event_handler")
 
 _BINDING_NAME = "__stofRecordEvent"
 
+# Internal browser pages a fresh (or mid-navigation) tab can sit on that
+# were never a real step the tester took -- a brand-new tab starts on
+# "chrome://new-tab-page/", not "about:blank", so excluding only
+# "about:blank" let that internal URL slip through as a spurious first
+# `navigate` action. Replaying it later fails outright: browsers refuse
+# a `Page.goto()` to their own internal chrome:// pages under automation.
+_INTERNAL_URL_PREFIXES = ("chrome://", "chrome-error://", "chrome-extension://", "devtools://", "edge://", "about:")
+
+
+def _is_recordable_url(url: str) -> bool:
+    return bool(url) and not url.startswith(_INTERNAL_URL_PREFIXES)
+
 _CAPTURE_SCRIPT = f"""
 (() => {{
   function stofCssSelector(el) {{
@@ -56,8 +68,11 @@ _CAPTURE_SCRIPT = f"""
     if (!el || !('value' in el)) return;
     const tag = el.tagName;
     if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return;
+    // A <select> needs Playwright's `select_option()`, not `fill()` --
+    // `fill()` only ever works on a text-enterable INPUT/TEXTAREA and
+    // hangs until its own timeout on anything else.
     window.{_BINDING_NAME}({{
-      type: 'fill',
+      type: tag === 'SELECT' ? 'select' : 'fill',
       selector: stofCssSelector(el),
       value: el.value,
       field_type: el.type || '',
@@ -84,7 +99,7 @@ class EventHandler:
         page.on("framenavigated", self._on_navigated)
         page.on("request", self._on_request)
 
-        if page.url and page.url != "about:blank":
+        if _is_recordable_url(page.url):
             self._record_navigate(page.url)
 
         _log.info(f"attached to page, initial url={page.url!r}")
@@ -102,10 +117,10 @@ class EventHandler:
         event_type = event.get("type")
         if event_type == "click":
             self.actions.append({"type": "click", "selector": event["selector"]})
-        elif event_type == "fill":
+        elif event_type in ("fill", "select"):
             self.actions.append(
                 {
-                    "type": "fill",
+                    "type": event_type,
                     "selector": event["selector"],
                     "value": event.get("value", ""),
                     "field_type": event.get("field_type", ""),
@@ -123,7 +138,7 @@ class EventHandler:
     # -- internal ----------------------------------------------------------
 
     def _record_navigate(self, url: str) -> None:
-        if not url or url == "about:blank":
+        if not _is_recordable_url(url):
             return
         if self.actions and self.actions[-1] == {"type": "navigate", "url": url}:
             return

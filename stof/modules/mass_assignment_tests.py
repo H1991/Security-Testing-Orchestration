@@ -15,6 +15,7 @@ endpoint reachable"; these two techniques already know it's reachable
 """
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 
 from stof.core.logger import get_logger
@@ -27,6 +28,7 @@ from ._idor_shared import (
     _method_request_fn,
     _object_ref_endpoints,
 )
+from .base import first_not_none
 from .results import FAIL, PASS, SKIPPED, TestCaseResult
 
 _log = get_logger("modules.mass_assignment_tests")
@@ -46,10 +48,10 @@ class MassAssignmentTechniquesMixin:
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
-        results: list[TestCaseResult] = []
-        for endpoint, param in candidates:
-            results.append(await self._check_body_field_idor_candidate(context, test_id, tid, technique, vuln_type, evidence, endpoint, param))
-        return results
+        return list(await asyncio.gather(*(
+            self._check_body_field_idor_candidate(context, test_id, tid, technique, vuln_type, evidence, endpoint, param)
+            for endpoint, param in candidates
+        )))
 
     async def _check_body_field_idor_candidate(self, context, test_id: str, tid: str, technique: str, vuln_type: str, evidence, endpoint, param: str) -> TestCaseResult:
         """Per-endpoint probe-and-check body of
@@ -106,10 +108,10 @@ class MassAssignmentTechniquesMixin:
         except KeyError as exc:
             return self._result("TC-052", tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")
 
-        for endpoint in self_endpoints:
-            finding = await self._probe_mass_assignment_candidate(context, evidence, endpoint)
-            if finding is not None:
-                return self._result("TC-052", tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+        findings = await asyncio.gather(*(self._probe_mass_assignment_candidate(context, evidence, endpoint) for endpoint in self_endpoints))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result("TC-052", tid, technique, vuln_type, FAIL, finding.description, finding=finding)
         return self._result("TC-052", tid, technique, vuln_type, PASS, f"{len(self_endpoints)} self-profile endpoint(s) probed with an injected 'role'/'isAdmin' field; none took effect")
 
     async def _probe_mass_assignment_candidate(self, context, evidence, endpoint) -> Finding | None:

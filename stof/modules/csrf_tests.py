@@ -61,6 +61,7 @@ was actually created or altered, per this project's own convention.
 """
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 import re
 from dataclasses import dataclass
@@ -641,38 +642,55 @@ class CsrfTestsModule(VulnModule):
         victim_skip_reason = self._victim_role_usable()
         session_cookies = await self._session_cookies_for_samesite(context, session_pool, candidates[0].url)
 
+        per_endpoint = await asyncio.gather(*(
+            self._check_csrf_endpoint(context, session_manager, session_pool, endpoint, victim_skip_reason, session_cookies, evidence)
+            for endpoint in candidates
+        ))
         results: list[TestCaseResult] = []
-        for endpoint in candidates:
-            result1 = self._check_missing_token_field(endpoint)
-            results.append(result1)
-            try:
-                result2, result3 = await self._probe_endpoint_write_techniques(context, endpoint, evidence)
-                results.append(result2)
-                results.append(result3)
-            except Exception as exc:
-                _log.warning(f"CSRF probe failed for '{endpoint.url}': {exc}")
-                _, technique2, vuln_type2 = _TECHNIQUES[1]
-                _, technique3, vuln_type3 = _TECHNIQUES[2]
-                result3 = self._result("TC-130.3", technique3, vuln_type3, "ERROR", str(exc), endpoint=endpoint)
-                results.append(self._result("TC-130.2", technique2, vuln_type2, "ERROR", str(exc), endpoint=endpoint))
-                results.append(result3)
-
-            tid4, technique4, vuln_type4 = _TECHNIQUES[3]
-            if victim_skip_reason:
-                results.append(self._result(tid4, technique4, vuln_type4, SKIPPED, victim_skip_reason, endpoint=endpoint))
-            else:
-                try:
-                    token_field = find_csrf_token_field(endpoint)
-                    results.append(await self._check_token_not_bound_to_session(
-                        context, session_manager, session_pool, endpoint, token_field, evidence
-                    ))
-                except Exception as exc:
-                    _log.warning(f"CSRF cross-session probe failed for '{endpoint.url}': {exc}")
-                    results.append(self._result(tid4, technique4, vuln_type4, "ERROR", str(exc), endpoint=endpoint))
-
-            results.append(self._check_samesite_csrf_relevance(endpoint, session_cookies, result1, result3))
+        for endpoint_results in per_endpoint:
+            results.extend(endpoint_results)
 
         results.extend(await self._run_content_type_switch_checks(context, json_candidates, evidence))
+        return results
+
+    async def _check_csrf_endpoint(
+        self, context, session_manager, session_pool, endpoint, victim_skip_reason, session_cookies, evidence,
+    ) -> list[TestCaseResult]:
+        """One endpoint's own full CSRF check sequence (missing-token
+        field, write-technique probes, cross-session token check,
+        SameSite relevance) -- split out of the caller's loop so
+        different endpoints (different forms, different resources) can
+        run concurrently. The steps WITHIN one endpoint stay in their
+        original order/sequence, unchanged."""
+        results: list[TestCaseResult] = []
+        result1 = self._check_missing_token_field(endpoint)
+        results.append(result1)
+        try:
+            result2, result3 = await self._probe_endpoint_write_techniques(context, endpoint, evidence)
+            results.append(result2)
+            results.append(result3)
+        except Exception as exc:
+            _log.warning(f"CSRF probe failed for '{endpoint.url}': {exc}")
+            _, technique2, vuln_type2 = _TECHNIQUES[1]
+            _, technique3, vuln_type3 = _TECHNIQUES[2]
+            result3 = self._result("TC-130.3", technique3, vuln_type3, "ERROR", str(exc), endpoint=endpoint)
+            results.append(self._result("TC-130.2", technique2, vuln_type2, "ERROR", str(exc), endpoint=endpoint))
+            results.append(result3)
+
+        tid4, technique4, vuln_type4 = _TECHNIQUES[3]
+        if victim_skip_reason:
+            results.append(self._result(tid4, technique4, vuln_type4, SKIPPED, victim_skip_reason, endpoint=endpoint))
+        else:
+            try:
+                token_field = find_csrf_token_field(endpoint)
+                results.append(await self._check_token_not_bound_to_session(
+                    context, session_manager, session_pool, endpoint, token_field, evidence
+                ))
+            except Exception as exc:
+                _log.warning(f"CSRF cross-session probe failed for '{endpoint.url}': {exc}")
+                results.append(self._result(tid4, technique4, vuln_type4, "ERROR", str(exc), endpoint=endpoint))
+
+        results.append(self._check_samesite_csrf_relevance(endpoint, session_cookies, result1, result3))
         return results
 
     async def _run_content_type_switch_checks(self, context, json_candidates: list[Endpoint], evidence) -> list[TestCaseResult]:
@@ -683,11 +701,11 @@ class CsrfTestsModule(VulnModule):
         if not json_candidates:
             return [self._result(tid6, technique6, vuln_type6, SKIPPED,
                                   "no discovered JSON-body-shaped API endpoint to test (endpoint_type=='api' with a crawler-observed JSON body field)")]
-        results: list[TestCaseResult] = []
-        for json_endpoint in json_candidates:
+        async def _check_one(json_endpoint) -> TestCaseResult:
             try:
-                results.append(await self._check_content_type_switch(context, json_endpoint, evidence))
+                return await self._check_content_type_switch(context, json_endpoint, evidence)
             except Exception as exc:
                 _log.warning(f"CSRF content-type-switch probe failed for '{json_endpoint.url}': {exc}")
-                results.append(self._result(tid6, technique6, vuln_type6, "ERROR", str(exc), endpoint=json_endpoint))
-        return results
+                return self._result(tid6, technique6, vuln_type6, "ERROR", str(exc), endpoint=json_endpoint)
+
+        return list(await asyncio.gather(*(_check_one(e) for e in json_candidates)))

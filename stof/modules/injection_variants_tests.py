@@ -110,6 +110,7 @@ baseline has none), never a bare non-4xx status.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 from dataclasses import dataclass
@@ -130,7 +131,7 @@ from ._injection_shared import (
     response_similarity,
     send_probe,
 )
-from .base import _PASSWORD_FIELD_HINTS, _USERNAME_FIELD_HINTS, VulnModule, find_login_endpoint
+from .base import _PASSWORD_FIELD_HINTS, _USERNAME_FIELD_HINTS, VulnModule, find_login_endpoint, first_not_none
 from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
@@ -445,54 +446,63 @@ class InjectionVariantsTestsModule(VulnModule):
         except KeyError as exc:
             return self._result(tid, technique, SKIPPED, f"role '{self.config.low_priv_role}' not configured: {exc}", vuln_type)
 
-        checked = 0
-        for endpoint in candidates:
-            target_param = endpoint.parameters[0]
-            location = endpoint.location_for(target_param)
-            value_a = placeholder_value(target_param)
-            value_b = _second_hpp_value(target_param)
-
-            baseline_a = await send_probe(context, endpoint, build_params(endpoint, target_param, value_a), location)
-            baseline_b = await send_probe(context, endpoint, build_params(endpoint, target_param, value_b), location)
-            if baseline_a is None or baseline_b is None:
-                continue
-            polluted = await _send_duplicated_param(
-                context, endpoint, build_params(endpoint, target_param, value_a), target_param, value_a, value_b, location,
-            )
-            if polluted is None:
-                continue
-            checked += 1
-
-            _status_a, body_a, *_ = baseline_a
-            _status_b, body_b, *_ = baseline_b
-            _status_p, body_p = polluted
-            reason = _hpp_pollution_signal(body_p, value_a, value_b, body_a, body_b)
-            if reason is None:
-                continue
-
-            description = (
-                f"{endpoint.method} {endpoint.url}: duplicating parameter '{target_param}' "
-                f"('{target_param}={value_a}&{target_param}={value_b}') produced a response where {reason}, "
-                "compared against separately-taken single-value baselines for each value. This is evidence of "
-                "inconsistent parameter parsing across the request-processing stack (a WAF/validation layer "
-                "reading a different occurrence than the application logic, per WSTG-INPV-04) worth manual "
-                "review -- it does not by itself prove an exploitable filter bypass or access-control gap."
-            )
-            finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=4.3,
-                endpoint=endpoint, user_role=self.config.low_priv_role,
-                request_raw=f"{endpoint.method} {endpoint.url}\n{target_param}={value_a}&{target_param}={value_b}",
-                response_raw=body_p[:300],
-                description=description,
-                recommendation="Ensure every layer in the request path (WAF, load balancer, framework, application code) parses a duplicated parameter identically -- explicitly reject requests with duplicate parameter names where the framework allows it, rather than relying on whichever layer's implicit first/last behavior happens to match.",
-                confidence="likely",  # evidence of inconsistent parsing, not by itself proof of an exploitable bypass -- see description
-            )
-            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="hpp-inconsistent-parsing") if evidence else []
-            return self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Low")
+        results = await asyncio.gather(*(self._check_hpp_candidate(context, evidence, endpoint, tid, technique, vuln_type) for endpoint in candidates))
+        checked = sum(1 for was_checked, _finding in results if was_checked)
+        finding_result = first_not_none(f for _was_checked, f in results)
+        if finding_result is not None:
+            return finding_result
 
         if checked == 0:
             return self._result(tid, technique, PASS, f"none of {len(candidates)} candidate endpoint(s) could be probed (all baseline/polluted requests failed)", vuln_type)
         return self._result(tid, technique, PASS, f"{checked} endpoint(s) checked with a duplicated parameter; every polluted response matched an expected single-value baseline", vuln_type, role=self.config.low_priv_role)
+
+    async def _check_hpp_candidate(self, context, evidence, endpoint, tid: str, technique: str, vuln_type: str) -> tuple[bool, "TestCaseResult | None"]:
+        """One endpoint's own baseline + duplicated-parameter probe --
+        split out of `_technique_http_parameter_pollution`'s loop so
+        different endpoints can run concurrently. Returns `(was_
+        checked, result_or_None)` -- the caller needs the first value
+        to keep reporting how many endpoints were actually checked."""
+        target_param = endpoint.parameters[0]
+        location = endpoint.location_for(target_param)
+        value_a = placeholder_value(target_param)
+        value_b = _second_hpp_value(target_param)
+
+        baseline_a = await send_probe(context, endpoint, build_params(endpoint, target_param, value_a), location)
+        baseline_b = await send_probe(context, endpoint, build_params(endpoint, target_param, value_b), location)
+        if baseline_a is None or baseline_b is None:
+            return False, None
+        polluted = await _send_duplicated_param(
+            context, endpoint, build_params(endpoint, target_param, value_a), target_param, value_a, value_b, location,
+        )
+        if polluted is None:
+            return False, None
+
+        _status_a, body_a, *_ = baseline_a
+        _status_b, body_b, *_ = baseline_b
+        _status_p, body_p = polluted
+        reason = _hpp_pollution_signal(body_p, value_a, value_b, body_a, body_b)
+        if reason is None:
+            return True, None
+
+        description = (
+            f"{endpoint.method} {endpoint.url}: duplicating parameter '{target_param}' "
+            f"('{target_param}={value_a}&{target_param}={value_b}') produced a response where {reason}, "
+            "compared against separately-taken single-value baselines for each value. This is evidence of "
+            "inconsistent parameter parsing across the request-processing stack (a WAF/validation layer "
+            "reading a different occurrence than the application logic, per WSTG-INPV-04) worth manual "
+            "review -- it does not by itself prove an exploitable filter bypass or access-control gap."
+        )
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=4.3,
+            endpoint=endpoint, user_role=self.config.low_priv_role,
+            request_raw=f"{endpoint.method} {endpoint.url}\n{target_param}={value_a}&{target_param}={value_b}",
+            response_raw=body_p[:300],
+            description=description,
+            recommendation="Ensure every layer in the request path (WAF, load balancer, framework, application code) parses a duplicated parameter identically -- explicitly reject requests with duplicate parameter names where the framework allows it, rather than relying on whichever layer's implicit first/last behavior happens to match.",
+            confidence="likely",  # evidence of inconsistent parsing, not by itself proof of an exploitable bypass -- see description
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="hpp-inconsistent-parsing") if evidence else []
+        return True, self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Low")
 
     async def _technique_csv_formula_injection(
         self,
@@ -664,60 +674,74 @@ class InjectionVariantsTestsModule(VulnModule):
         marker = f"stofxxe{self._marker}"
         payload = _xxe_payload(marker)
         baseline_payload = _xxe_baseline_payload(marker)
-        checked = 0
-        for endpoint in candidates:
-            baseline = await _send_raw_body(context, endpoint.url, baseline_payload, "application/xml")
-            payload_probe = await _send_raw_body(context, endpoint.url, payload, "application/xml")
-            if baseline is None or payload_probe is None:
-                continue
-            checked += 1
-            _baseline_status, baseline_body = baseline
-            payload_status, payload_body = payload_probe
-
-            if _xxe_file_read_signal(payload_body, baseline_body, marker):
-                description = (
-                    f"Re-submitting {endpoint.method} {endpoint.url} with `Content-Type: application/xml` and a "
-                    f"DOCTYPE declaring an external entity pointing at '{_XXE_TARGET_FILE}' (HTTP {payload_status}) "
-                    "returned content substituted at the entity reference that a structurally identical request "
-                    "WITHOUT the entity does not -- consistent with the XML parser resolving an external entity "
-                    "and reading local file content. Only a low-sensitivity canary file was targeted; no "
-                    "credential-shaped or otherwise sensitive file content was read or is claimed here."
-                )
-                finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.1,
-                    endpoint=endpoint, user_role=self.config.low_priv_role,
-                    request_raw=f"POST {endpoint.url}\nContent-Type: application/xml\n{payload}",
-                    response_raw=payload_body[:300],
-                    description=description,
-                    recommendation="Disable DTD processing and external entity resolution in the XML parser (e.g. `FEATURE_SECURE_PROCESSING`, disallow-doctype-decl) -- the standard, well-documented mitigation for every major XML library.",
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="xxe-file-read") if evidence else []
-                return self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Critical")
-
-            error_sig = _looks_like_xxe_error(payload_body)
-            if error_sig and not _looks_like_xxe_error(baseline_body):
-                description = (
-                    f"Re-submitting {endpoint.method} {endpoint.url} with an external-entity-declaring XML body "
-                    f"(HTTP {payload_status}) surfaced an XML/entity-processing error ('{error_sig}') that the "
-                    "identical request without the entity does not -- the parser attempted to process the "
-                    "external entity before rejecting it. Lower-confidence than a confirmed file read: this "
-                    "shows the parser is entity-processing-aware, worth manual review, not confirmed exploitable."
-                )
-                finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
-                    endpoint=endpoint, user_role=self.config.low_priv_role,
-                    request_raw=f"POST {endpoint.url}\nContent-Type: application/xml\n{payload}",
-                    response_raw=payload_body[:300],
-                    description=description,
-                    recommendation="Disable DTD processing and external entity resolution in the XML parser -- the same mitigation regardless of whether exploitation was confirmed.",
-                    confidence="likely",
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="xxe-parser-error") if evidence else []
-                return self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Medium")
+        results = await asyncio.gather(*(
+            self._check_xxe_candidate(context, evidence, endpoint, marker, payload, baseline_payload, tid, technique, vuln_type)
+            for endpoint in candidates
+        ))
+        checked = sum(1 for was_checked, _r in results if was_checked)
+        result = first_not_none(r for _was_checked, r in results)
+        if result is not None:
+            return result
 
         if checked == 0:
             return self._result(tid, technique, PASS, f"none of {len(candidates)} candidate endpoint(s) could be probed (all requests failed)", vuln_type)
         return self._result(tid, technique, PASS, f"{checked} endpoint(s) re-submitted with an XML body, no external-entity file-read or parser-error signal observed", vuln_type, role=self.config.low_priv_role)
+
+    async def _check_xxe_candidate(
+        self, context, evidence, endpoint, marker: str, payload: str, baseline_payload: str,
+        tid: str, technique: str, vuln_type: str,
+    ) -> tuple[bool, "TestCaseResult | None"]:
+        """One endpoint's own baseline + XXE-payload re-submission --
+        split out of `_technique_xxe`'s loop so different endpoints can
+        run concurrently. Returns `(was_checked, result_or_None)`."""
+        baseline = await _send_raw_body(context, endpoint.url, baseline_payload, "application/xml")
+        payload_probe = await _send_raw_body(context, endpoint.url, payload, "application/xml")
+        if baseline is None or payload_probe is None:
+            return False, None
+        _baseline_status, baseline_body = baseline
+        payload_status, payload_body = payload_probe
+
+        if _xxe_file_read_signal(payload_body, baseline_body, marker):
+            description = (
+                f"Re-submitting {endpoint.method} {endpoint.url} with `Content-Type: application/xml` and a "
+                f"DOCTYPE declaring an external entity pointing at '{_XXE_TARGET_FILE}' (HTTP {payload_status}) "
+                "returned content substituted at the entity reference that a structurally identical request "
+                "WITHOUT the entity does not -- consistent with the XML parser resolving an external entity "
+                "and reading local file content. Only a low-sensitivity canary file was targeted; no "
+                "credential-shaped or otherwise sensitive file content was read or is claimed here."
+            )
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.1,
+                endpoint=endpoint, user_role=self.config.low_priv_role,
+                request_raw=f"POST {endpoint.url}\nContent-Type: application/xml\n{payload}",
+                response_raw=payload_body[:300],
+                description=description,
+                recommendation="Disable DTD processing and external entity resolution in the XML parser (e.g. `FEATURE_SECURE_PROCESSING`, disallow-doctype-decl) -- the standard, well-documented mitigation for every major XML library.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="xxe-file-read") if evidence else []
+            return True, self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Critical")
+
+        error_sig = _looks_like_xxe_error(payload_body)
+        if error_sig and not _looks_like_xxe_error(baseline_body):
+            description = (
+                f"Re-submitting {endpoint.method} {endpoint.url} with an external-entity-declaring XML body "
+                f"(HTTP {payload_status}) surfaced an XML/entity-processing error ('{error_sig}') that the "
+                "identical request without the entity does not -- the parser attempted to process the "
+                "external entity before rejecting it. Lower-confidence than a confirmed file read: this "
+                "shows the parser is entity-processing-aware, worth manual review, not confirmed exploitable."
+            )
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
+                endpoint=endpoint, user_role=self.config.low_priv_role,
+                request_raw=f"POST {endpoint.url}\nContent-Type: application/xml\n{payload}",
+                response_raw=payload_body[:300],
+                description=description,
+                recommendation="Disable DTD processing and external entity resolution in the XML parser -- the same mitigation regardless of whether exploitation was confirmed.",
+                confidence="likely",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="xxe-parser-error") if evidence else []
+            return True, self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Medium")
+        return True, None
 
     async def _technique_ssti(
         self, endpoints: "list[Endpoint]", session_manager: "SessionManager", session_pool: "SessionPool", evidence: "EvidenceCollector | None",
@@ -734,39 +758,48 @@ class InjectionVariantsTestsModule(VulnModule):
 
         a, b = secrets.randbelow(90) + 10, secrets.randbelow(90) + 10  # two 2-digit ints -- product is 4 digits, unlikely to occur naturally
         payload = _ssti_payload(a, b)
-        checked = 0
-        for endpoint in candidates:
-            if not endpoint.parameters:
-                continue
-            param = endpoint.parameters[0]
-            location = endpoint.location_for(param)
-            probe = await send_probe(context, endpoint, build_params(endpoint, param, payload), location)
-            if probe is None:
-                continue
-            checked += 1
-            status, body, _elapsed, _headers = probe
-            if not _ssti_evaluation_signal(body, a, b, payload):
-                continue
-            description = (
-                f"Injecting a polyglot template-expression payload ('{payload}') into parameter '{param}' "
-                f"({location}) on {endpoint.method} {endpoint.url} (HTTP {status}) returned the computed product "
-                f"({a * b}) of this run's own random operands, with the raw un-evaluated payload text absent from "
-                "the response -- proof the server-side template engine evaluated the expression, not merely "
-                "reflected it. This is a candidate signal only: no arbitrary code execution was attempted."
-            )
-            finding = Finding(
-                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.4,
-                endpoint=endpoint, user_role=self.config.low_priv_role,
-                request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
-                response_raw=body[:300],
-                description=description,
-                recommendation="Never render user-supplied input through a template engine's own expression syntax. Treat template input as data, not template source -- use a logic-less/sandboxed template mode if the engine offers one, and never pass user input as a template STRING to be compiled.",
-            )
-            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssti-{param}") if evidence else []
-            return self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Critical")
+        results = await asyncio.gather(*(self._check_ssti_candidate(context, evidence, endpoint, payload, a, b, tid, technique, vuln_type) for endpoint in candidates))
+        checked = sum(1 for was_checked, _r in results if was_checked)
+        result = first_not_none(r for _was_checked, r in results)
+        if result is not None:
+            return result
         if checked == 0:
             return self._result(tid, technique, PASS, f"none of {len(candidates)} candidate endpoint(s) could be probed (all requests failed)", vuln_type)
         return self._result(tid, technique, PASS, f"{checked} parameter(s) probed with a polyglot arithmetic payload, no server-side evaluation observed", vuln_type, role=self.config.low_priv_role)
+
+    async def _check_ssti_candidate(
+        self, context, evidence, endpoint, payload: str, a: int, b: int, tid: str, technique: str, vuln_type: str,
+    ) -> tuple[bool, "TestCaseResult | None"]:
+        """One endpoint's own polyglot-payload probe -- split out of
+        `_technique_ssti`'s loop so different endpoints can run
+        concurrently. Returns `(was_checked, result_or_None)`."""
+        if not endpoint.parameters:
+            return False, None
+        param = endpoint.parameters[0]
+        location = endpoint.location_for(param)
+        probe = await send_probe(context, endpoint, build_params(endpoint, param, payload), location)
+        if probe is None:
+            return False, None
+        status, body, _elapsed, _headers = probe
+        if not _ssti_evaluation_signal(body, a, b, payload):
+            return True, None
+        description = (
+            f"Injecting a polyglot template-expression payload ('{payload}') into parameter '{param}' "
+            f"({location}) on {endpoint.method} {endpoint.url} (HTTP {status}) returned the computed product "
+            f"({a * b}) of this run's own random operands, with the raw un-evaluated payload text absent from "
+            "the response -- proof the server-side template engine evaluated the expression, not merely "
+            "reflected it. This is a candidate signal only: no arbitrary code execution was attempted."
+        )
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.4,
+            endpoint=endpoint, user_role=self.config.low_priv_role,
+            request_raw=f"{endpoint.method} {endpoint.url}\n{param}={payload!r}",
+            response_raw=body[:300],
+            description=description,
+            recommendation="Never render user-supplied input through a template engine's own expression syntax. Treat template input as data, not template source -- use a logic-less/sandboxed template mode if the engine offers one, and never pass user input as a template STRING to be compiled.",
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssti-{param}") if evidence else []
+        return True, self._result(tid, technique, FAIL, description, vuln_type, role=self.config.low_priv_role, endpoint=endpoint, finding=finding, severity="Critical")
 
     async def _technique_nosql_injection(
         self, endpoints: "list[Endpoint]", session_pool: "SessionPool", evidence: "EvidenceCollector | None",
@@ -790,16 +823,16 @@ class InjectionVariantsTestsModule(VulnModule):
                 return self._result(tid, technique, "ERROR", "baseline login probe failed (network/request error) -- could not test", vuln_type, endpoint=login_endpoint)
             _baseline_status, baseline_resp_body = baseline_probe
 
-            for operator in _NOSQL_OPERATOR_PAYLOADS:
+            async def _try_operator(operator: str) -> "TestCaseResult | None":
                 payload_body = _nosql_json_body(username_param, "admin", password_param, operator)
                 probe = await _send_raw_body(anon_context, login_endpoint.url, payload_body, "application/json")
                 if probe is None:
-                    continue
+                    return None
                 status, resp_body = probe
                 if status >= 400:
-                    continue
+                    return None
                 if not looks_json_authenticated(resp_body, baseline_resp_body):
-                    continue
+                    return None
                 description = (
                     f"Submitting {login_endpoint.method} {login_endpoint.url} with '{password_param}' set to a "
                     f"MongoDB query operator ({operator!r}) instead of a string, alongside a common username "
@@ -818,6 +851,11 @@ class InjectionVariantsTestsModule(VulnModule):
                 )
                 finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="nosql-operator-bypass") if evidence else []
                 return self._result(tid, technique, FAIL, description, vuln_type, endpoint=login_endpoint, finding=finding, severity="Critical")
+
+            attempts = await asyncio.gather(*(_try_operator(op) for op in _NOSQL_OPERATOR_PAYLOADS))
+            result = first_not_none(attempts)
+            if result is not None:
+                return result
         finally:
             await anon_context.close()
         return self._result(

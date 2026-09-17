@@ -70,6 +70,7 @@ that method from C-14 to B-10 as a side effect, not the goal.
 """
 from __future__ import annotations
 
+import asyncio
 import secrets
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -296,9 +297,9 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         the caller's signal that no second identity was available."""
         if confirm_context is None:
             return []
+        probes = await asyncio.gather(*(self._probe_get(confirm_context, url_for(cid)) for cid in candidate_ids))
         confirmed: list[str] = []
-        for cid in candidate_ids:
-            probe = await self._probe_get(confirm_context, url_for(cid))
+        for cid, probe in zip(candidate_ids, probes, strict=True):
             if probe is None:
                 continue
             status, body = probe
@@ -375,12 +376,11 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         # actual proof, not the enumeration step by itself.
         confirm_context = await self._open_confirm_context(session_manager, session_pool, target_url)
 
-        findings: list[Finding] = []
-        for endpoint, param in candidate_endpoints:
-            finding = await self._check_horizontal_idor_candidate(context, session, confirm_context, evidence, endpoint, param)
-            if finding is not None:
-                findings.append(finding)
-        return findings
+        checked = await asyncio.gather(*(
+            self._check_horizontal_idor_candidate(context, session, confirm_context, evidence, endpoint, param)
+            for endpoint, param in candidate_endpoints
+        ))
+        return [finding for finding in checked if finding is not None]
 
     async def _check_horizontal_idor_candidate(self, context, session, confirm_context, evidence, endpoint, param) -> Finding | None:
         """Per-candidate probe-and-check body of `_test_horizontal_idor`'s
@@ -507,11 +507,10 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         cannot tell apart from a real distinct object. Also returns the
         control fingerprint itself so a caller that goes on to run
         cross-session confirmation can reuse it instead of re-probing."""
+        probes = await asyncio.gather(*(self._probe_get(context, url_for(candidate)) for candidate in candidates))
         responses: dict[str, str] = {}
         statuses: dict[str, int] = {}
-        for candidate in candidates:
-            probe_url = url_for(candidate)
-            probe = await self._probe_get(context, probe_url)
+        for candidate, probe in zip(candidates, probes, strict=True):
             if probe is None:
                 continue
             status, body = probe
@@ -549,11 +548,11 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         # replays candidates through, now shared by both techniques.
         confirm_context = await self._open_confirm_context(session_manager, session_pool, target_url)
 
-        results: list[TestCaseResult] = []
-        for endpoint in candidates:
-            results.append(await self._check_path_param_idor_candidate(
-                context, session, confirm_context, evidence, endpoint, test_id, tid, technique, vuln_type))
-        return results
+        return list(await asyncio.gather(*(
+            self._check_path_param_idor_candidate(
+                context, session, confirm_context, evidence, endpoint, test_id, tid, technique, vuln_type)
+            for endpoint in candidates
+        )))
 
     async def _check_path_param_idor_candidate(
         self, context, session, confirm_context, evidence, endpoint, test_id: str, tid: str, technique: str, vuln_type: str,
@@ -616,32 +615,42 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
-        results: list[TestCaseResult] = []
-        for endpoint, param in object_ref_endpoints:
-            url_for = lambda cid, e=endpoint, p=param: _set_query_param(e.url, p, cid)
-            responses, statuses, _control_fp = await self._probe_candidates(context, leaked_ids, url_for)
-            distinct = {_content_fingerprint(b) for b in responses.values()}
-            if len(responses) >= 1 and len(distinct) >= 1:
-                finding = self._object_ref_finding(
-                    endpoint, self.high_priv_role, param, url_for, statuses, responses, vuln_type, 8.1,
-                    description=(
-                        f"Object id(s) {leaked_ids} observed elsewhere in this scan's own traffic (not "
-                        f"in the configured candidate list) were accepted by '{endpoint.url}' via "
-                        f"'{param}', returning content for role '{self.high_priv_role}' with no ownership check."
-                    ),
-                    recommendation="Enforce object-level authorization regardless of how an attacker obtained a valid-looking id.",
-                )
-                sample_id = next(iter(responses.keys()))
-                finding.evidence_refs = await self._capture_evidence(evidence, context, session, url_for(sample_id), label=f"idor-leaked-{sample_id}", finding=finding)
-                results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description,
-                                             role=self.high_priv_role, endpoint=endpoint, finding=finding))
-            else:
-                results.append(self._result(
-                    test_id, tid, technique, vuln_type, PASS,
-                    f"'{endpoint.url}': leaked id(s) {leaked_ids} were rejected or returned nothing",
-                    role=self.high_priv_role, endpoint=endpoint,
-                ))
-        return results
+        return list(await asyncio.gather(*(
+            self._check_leaked_id_candidate(
+                context, session, evidence, endpoint, param, leaked_ids, test_id, tid, technique, vuln_type)
+            for endpoint, param in object_ref_endpoints
+        )))
+
+    async def _check_leaked_id_candidate(
+        self, context, session, evidence, endpoint, param: str, leaked_ids: list[str],
+        test_id: str, tid: str, technique: str, vuln_type: str,
+    ) -> TestCaseResult:
+        """Per-endpoint probe-and-check body of
+        `_technique_idor_leaked_ids`'s loop, extracted so that method
+        drops to setup + orchestration only -- same shape as
+        `_check_path_param_idor_candidate` (TC-053.1)."""
+        url_for = lambda cid, e=endpoint, p=param: _set_query_param(e.url, p, cid)
+        responses, statuses, _control_fp = await self._probe_candidates(context, leaked_ids, url_for)
+        distinct = {_content_fingerprint(b) for b in responses.values()}
+        if len(responses) >= 1 and len(distinct) >= 1:
+            finding = self._object_ref_finding(
+                endpoint, self.high_priv_role, param, url_for, statuses, responses, vuln_type, 8.1,
+                description=(
+                    f"Object id(s) {leaked_ids} observed elsewhere in this scan's own traffic (not "
+                    f"in the configured candidate list) were accepted by '{endpoint.url}' via "
+                    f"'{param}', returning content for role '{self.high_priv_role}' with no ownership check."
+                ),
+                recommendation="Enforce object-level authorization regardless of how an attacker obtained a valid-looking id.",
+            )
+            sample_id = next(iter(responses.keys()))
+            finding.evidence_refs = await self._capture_evidence(evidence, context, session, url_for(sample_id), label=f"idor-leaked-{sample_id}", finding=finding)
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description,
+                                 role=self.high_priv_role, endpoint=endpoint, finding=finding)
+        return self._result(
+            test_id, tid, technique, vuln_type, PASS,
+            f"'{endpoint.url}': leaked id(s) {leaked_ids} were rejected or returned nothing",
+            role=self.high_priv_role, endpoint=endpoint,
+        )
 
     async def _technique_idor_method_override(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
         """TC-053.5 -- a real reviewer flagged this technique's original
@@ -670,59 +679,73 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
-        results: list[TestCaseResult] = []
         anon_context = await session_pool.new_anonymous_context()
         try:
-            for endpoint in write_endpoints:
-                probe = await self._probe_get(context, endpoint.url)
-                if probe is None:
-                    results.append(self._result(test_id, tid, technique, vuln_type, "ERROR", "GET probe failed", role=self.low_priv_role, endpoint=endpoint))
-                    continue
-                status, body = probe
-                low_decision = classify_response(status, body, min_content_length=self.config.min_content_length)
-                self.authorization_matrix.record(endpoint, self.low_priv_role, low_decision)
-                if low_decision != AuthorizationDecision.ALLOWED:
-                    results.append(self._result(test_id, tid, technique, vuln_type, PASS,
-                                                  f"'{endpoint.url}': GET returned HTTP {status} ({len(body)} bytes) -- not a bypass",
-                                                  role=self.low_priv_role, endpoint=endpoint))
-                    continue
-                anon_probe = await self._probe_get(anon_context, endpoint.url)
-                if anon_probe is None:
-                    results.append(self._result(test_id, tid, technique, vuln_type, PASS,
-                                                  f"'{endpoint.url}': GET returned HTTP {status} but the anonymous baseline probe failed -- cannot confirm an authorization boundary exists",
-                                                  role=self.low_priv_role, endpoint=endpoint))
-                    continue
-                anon_status, anon_body = anon_probe
-                anon_decision = classify_response(anon_status, anon_body, min_content_length=self.config.min_content_length)
-                self.authorization_matrix.record(endpoint, "anonymous", anon_decision)
-                if anon_decision == AuthorizationDecision.ALLOWED:
-                    results.append(self._result(test_id, tid, technique, vuln_type, PASS,
-                                                  f"'{endpoint.url}': GET is reachable anonymously too -- never protected in the first place, not a method-based bypass",
-                                                  role=self.low_priv_role, endpoint=endpoint))
-                    continue
-                finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
-                    endpoint=endpoint, user_role=self.low_priv_role,
-                    request_raw=f"GET {endpoint.url}",
-                    response_raw=f"anonymous: HTTP {anon_status}; {self.low_priv_role}: HTTP {status}, {len(body)} bytes",
-                    description=(
-                        f"'{endpoint.url}' was discovered as a {endpoint.method} endpoint. An anonymous GET "
-                        f"against the same URL was denied (HTTP {anon_status}), but an authenticated "
-                        f"'{self.low_priv_role}' GET succeeded (HTTP {status}, {len(body)} bytes) -- the URL "
-                        f"is behind some access-control boundary that responds to method rather than being "
-                        f"denied outright. This is a response-code differential, not a confirmed data/state "
-                        f"exposure: it does not prove the GET returns the same privileged content the "
-                        f"{endpoint.method} handler protects, only that a bare method switch changes the "
-                        "outcome. Manually verify what GET actually returns before treating this as more than a candidate."
-                    ),
-                    recommendation="Enforce identical authorization checks on every HTTP method a route responds to, not only the one the UI normally uses.",
-                    confidence="likely",  # a response-code differential, not a confirmed data/state exposure -- see description
-                )
-                finding.evidence_refs = await self._capture_evidence(evidence, context, session, endpoint.url, label=f"idor-method-override-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)
-                results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding))
+            results = await asyncio.gather(*(
+                self._check_method_override_candidate(
+                    context, anon_context, session, evidence, endpoint, test_id, tid, technique, vuln_type)
+                for endpoint in write_endpoints
+            ))
         finally:
             await anon_context.close()
-        return results
+        return list(results)
+
+    async def _check_method_override_candidate(
+        self, context, anon_context, session, evidence, endpoint,
+        test_id: str, tid: str, technique: str, vuln_type: str,
+    ) -> TestCaseResult:
+        """Per-endpoint probe-and-check body of
+        `_technique_idor_method_override`'s loop, extracted so that
+        method drops to setup + orchestration only -- same branches,
+        same order, just named and separated. `self.authorization_
+        matrix.record()` calls are plain in-memory dict writes with no
+        `await` inside them, so calling this concurrently across
+        endpoints (via `asyncio.gather`) is safe under asyncio's
+        single-threaded cooperative scheduling -- each call completes
+        atomically between await points, same as the sequential loop
+        this replaced."""
+        probe = await self._probe_get(context, endpoint.url)
+        if probe is None:
+            return self._result(test_id, tid, technique, vuln_type, "ERROR", "GET probe failed", role=self.low_priv_role, endpoint=endpoint)
+        status, body = probe
+        low_decision = classify_response(status, body, min_content_length=self.config.min_content_length)
+        self.authorization_matrix.record(endpoint, self.low_priv_role, low_decision)
+        if low_decision != AuthorizationDecision.ALLOWED:
+            return self._result(test_id, tid, technique, vuln_type, PASS,
+                                 f"'{endpoint.url}': GET returned HTTP {status} ({len(body)} bytes) -- not a bypass",
+                                 role=self.low_priv_role, endpoint=endpoint)
+        anon_probe = await self._probe_get(anon_context, endpoint.url)
+        if anon_probe is None:
+            return self._result(test_id, tid, technique, vuln_type, PASS,
+                                 f"'{endpoint.url}': GET returned HTTP {status} but the anonymous baseline probe failed -- cannot confirm an authorization boundary exists",
+                                 role=self.low_priv_role, endpoint=endpoint)
+        anon_status, anon_body = anon_probe
+        anon_decision = classify_response(anon_status, anon_body, min_content_length=self.config.min_content_length)
+        self.authorization_matrix.record(endpoint, "anonymous", anon_decision)
+        if anon_decision == AuthorizationDecision.ALLOWED:
+            return self._result(test_id, tid, technique, vuln_type, PASS,
+                                 f"'{endpoint.url}': GET is reachable anonymously too -- never protected in the first place, not a method-based bypass",
+                                 role=self.low_priv_role, endpoint=endpoint)
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=5.3,
+            endpoint=endpoint, user_role=self.low_priv_role,
+            request_raw=f"GET {endpoint.url}",
+            response_raw=f"anonymous: HTTP {anon_status}; {self.low_priv_role}: HTTP {status}, {len(body)} bytes",
+            description=(
+                f"'{endpoint.url}' was discovered as a {endpoint.method} endpoint. An anonymous GET "
+                f"against the same URL was denied (HTTP {anon_status}), but an authenticated "
+                f"'{self.low_priv_role}' GET succeeded (HTTP {status}, {len(body)} bytes) -- the URL "
+                f"is behind some access-control boundary that responds to method rather than being "
+                f"denied outright. This is a response-code differential, not a confirmed data/state "
+                f"exposure: it does not prove the GET returns the same privileged content the "
+                f"{endpoint.method} handler protects, only that a bare method switch changes the "
+                "outcome. Manually verify what GET actually returns before treating this as more than a candidate."
+            ),
+            recommendation="Enforce identical authorization checks on every HTTP method a route responds to, not only the one the UI normally uses.",
+            confidence="likely",  # a response-code differential, not a confirmed data/state exposure -- see description
+        )
+        finding.evidence_refs = await self._capture_evidence(evidence, context, session, endpoint.url, label=f"idor-method-override-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)
+        return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding)
 
     async def _technique_bola_write_methods(self, endpoints, session_manager, session_pool, target_url, evidence, http_method: str, test_technique_id: str) -> list[TestCaseResult]:
         test_id, technique = "TC-054", f"{http_method} object-id substitution"
@@ -738,11 +761,55 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
             return [self._result(test_id, test_technique_id, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
         method_fn = _method_request_fn(context, http_method)
-        results: list[TestCaseResult] = []
-        for endpoint, param in candidates:
-            results.append(await self._check_bola_write_candidate(
-                method_fn, http_method, test_id, test_technique_id, technique, vuln_type, evidence, endpoint, param, context))
-        return results
+        return list(await asyncio.gather(*(
+            self._check_bola_write_candidate(
+                method_fn, http_method, test_id, test_technique_id, technique, vuln_type, evidence, endpoint, param, context)
+            for endpoint, param in candidates
+        )))
+
+    async def _issue_bola_write(
+        self, method_fn, http_method: str, endpoint, param: str, candidate: str, marker: str | None,
+    ) -> tuple[str, int | None]:
+        """One candidate's own write -- split out of `_check_bola_write_
+        candidate`'s loop so the whole candidate sweep can run
+        concurrently. A failed write is caught and reported as `(cid,
+        None)` rather than propagated, matching the original loop's own
+        `except Exception: continue` (a single candidate's write
+        failing must never abort the rest of the sweep -- unlike a
+        read-only probe's transient-error convention elsewhere in this
+        file, a write failure here is just "this one didn't succeed")."""
+        probe_url = _set_query_param(endpoint.url, param, candidate)
+        kwargs: dict = {"max_redirects": 0}
+        if marker is not None:
+            kwargs["data"] = f"{param}={candidate}&stof_probe={marker}"
+            kwargs["headers"] = {"Content-Type": "application/x-www-form-urlencoded"}
+        try:
+            resp = await method_fn(probe_url, **kwargs)
+        except Exception as exc:
+            _log.warning(f"{http_method} probe failed for {probe_url}: {exc}")
+            return candidate, None
+        return candidate, resp.status
+
+    async def _run_bola_writes(self, method_fn, http_method: str, endpoint, param: str) -> tuple[dict[str, str], list[str]]:
+        """Issues every candidate's write concurrently and returns
+        `(markers, succeeded_ids)` -- split out of `_check_bola_write_
+        candidate` purely to keep that method's own branching under this
+        project's complexity ceiling; same behavior, just named."""
+        observed = _observed_query_value(endpoint.url, param)
+        candidate_ids = _endpoint_candidate_ids(observed, self.config.candidate_ids)
+        # A candidate-keyed marker per PUT/PATCH candidate, built before
+        # the writes fire so every one of them can run concurrently below
+        # (previously a plain sequential `for candidate in ...` loop --
+        # each iteration's marker only ever depended on its OWN
+        # candidate, never a prior iteration's result).
+        markers: dict[str, str] = {cid: f"stofbola{secrets.token_hex(4)}" for cid in candidate_ids} if http_method in ("PUT", "PATCH") else {}
+        write_results = await asyncio.gather(*(
+            self._issue_bola_write(method_fn, http_method, endpoint, param, cid, markers.get(cid))
+            for cid in candidate_ids
+        ))
+        outcomes: dict[str, int] = {cid: status for cid, status in write_results if status is not None}
+        succeeded = [cid for cid, status in outcomes.items() if status in (200, 201, 204)]
+        return markers, succeeded
 
     async def _check_bola_write_candidate(
         self, method_fn, http_method: str, test_id: str, test_technique_id: str, technique: str, vuln_type: str,
@@ -765,24 +832,7 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         follow-up GET must reflect it back -- proving the write
         persisted against that specific object, not just that the
         endpoint returned success."""
-        outcomes: dict[str, int] = {}
-        markers: dict[str, str] = {}
-        observed = _observed_query_value(endpoint.url, param)
-        for candidate in _endpoint_candidate_ids(observed, self.config.candidate_ids):
-            probe_url = _set_query_param(endpoint.url, param, candidate)
-            kwargs: dict = {"max_redirects": 0}
-            if http_method in ("PUT", "PATCH"):
-                marker = f"stofbola{secrets.token_hex(4)}"
-                markers[candidate] = marker
-                kwargs["data"] = f"{param}={candidate}&stof_probe={marker}"
-                kwargs["headers"] = {"Content-Type": "application/x-www-form-urlencoded"}
-            try:
-                resp = await method_fn(probe_url, **kwargs)
-            except Exception as exc:
-                _log.warning(f"{http_method} probe failed for {probe_url}: {exc}")
-                continue
-            outcomes[candidate] = resp.status
-        succeeded = [cid for cid, status in outcomes.items() if status in (200, 201, 204)]
+        markers, succeeded = await self._run_bola_writes(method_fn, http_method, endpoint, param)
         if len(succeeded) < 2:
             return self._result(test_id, test_technique_id, technique, vuln_type, PASS,
                                  f"'{endpoint.url}': {http_method} succeeded for at most one candidate id -- no cross-object access shown",
@@ -834,25 +884,43 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         states the observed before/after signal for each confirmed id,
         never a claim beyond what this read-only probe itself observed.
         """
+        checks = await asyncio.gather(*(
+            self._confirm_one_bola_write(context, http_method, endpoint, param, cid, markers.get(cid))
+            for cid in succeeded
+        ))
         confirmed: list[str] = []
         evidence_lines: list[str] = []
-        for cid in succeeded:
-            probe_url = _set_query_param(endpoint.url, param, cid)
-            probe = await self._probe_get(context, probe_url)
-            if probe is None:
-                continue
-            status, body = probe
-            if http_method == "DELETE":
-                decision = classify_response(status, body, min_content_length=self.config.min_content_length)
-                if status == 404 or decision == AuthorizationDecision.DENIED:
-                    confirmed.append(cid)
-                    evidence_lines.append(f"[{param}={cid}] DELETE returned {http_method} success; follow-up GET confirmed the object is now absent (HTTP {status}).")
-            else:  # PUT / PATCH
-                marker = markers.get(cid)
-                if marker and marker in body:
-                    confirmed.append(cid)
-                    evidence_lines.append(f"[{param}={cid}] {http_method} returned success; follow-up GET reflected the write's unique marker value, confirming the write persisted against this object.")
+        # `checks` is in the same order as `succeeded` (asyncio.gather
+        # preserves input order regardless of completion order), so this
+        # still builds the two parallel lists in the original,
+        # deterministic order the `[:3]` slices downstream rely on.
+        for cid, evidence_line in checks:
+            if evidence_line is not None:
+                confirmed.append(cid)
+                evidence_lines.append(evidence_line)
         return confirmed, evidence_lines
+
+    async def _confirm_one_bola_write(
+        self, context, http_method: str, endpoint, param: str, cid: str, marker: str | None,
+    ) -> tuple[str, str | None]:
+        """One candidate's own follow-up GET -- split out of
+        `_confirm_bola_write`'s loop so the whole sweep can run
+        concurrently. Returns `(cid, None)` when not confirmed (probe
+        failed, or the follow-up doesn't prove the write persisted)."""
+        probe_url = _set_query_param(endpoint.url, param, cid)
+        probe = await self._probe_get(context, probe_url)
+        if probe is None:
+            return cid, None
+        status, body = probe
+        if http_method == "DELETE":
+            decision = classify_response(status, body, min_content_length=self.config.min_content_length)
+            if status == 404 or decision == AuthorizationDecision.DENIED:
+                return cid, f"[{param}={cid}] DELETE returned {http_method} success; follow-up GET confirmed the object is now absent (HTTP {status})."
+            return cid, None
+        # PUT / PATCH
+        if marker and marker in body:
+            return cid, f"[{param}={cid}] {http_method} returned success; follow-up GET reflected the write's unique marker value, confirming the write persisted against this object."
+        return cid, None
 
     async def _technique_client_side_only_access_control(self, session_manager, session_pool, target_url) -> list[TestCaseResult]:
         test_id, tid, technique = "TC-050", "TC-050.4", "Client-side-only access control (hidden UI element still reachable via direct request)"
@@ -872,9 +940,14 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
         if not hidden_from_low_priv:
             return [self._result(test_id, tid, technique, vuln_type, PASS, "no navigation link was visible to the high-priv session but hidden from the low-priv session")]
 
-        results: list[TestCaseResult] = []
-        for link_url in hidden_from_low_priv[:5]:  # bounded sweep
-            probe = await self._probe_get(low_context, link_url)
+        bounded_links = hidden_from_low_priv[:5]
+        # Probed concurrently (previously stopped at the first hit,
+        # saving up to 4 requests on a bounded 5-item sweep) -- still
+        # reports the FIRST hit in the same original list order below,
+        # so the returned result is identical either way, just reached
+        # without waiting on each link's round-trip in turn.
+        probes = await asyncio.gather(*(self._probe_get(low_context, link_url) for link_url in bounded_links))
+        for link_url, probe in zip(bounded_links, probes, strict=True):
             if probe is None:
                 continue
             status, body = probe
@@ -887,10 +960,8 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
                     description=f"'{link_url}' is hidden from the UI for role '{self.low_priv_role}' (not in its rendered navigation) but still fully reachable via a direct request.",
                     recommendation="Enforce access control server-side for every route; hiding a link/button in the UI is not a substitute.",
                 )
-                results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=finding.endpoint, finding=finding))
-                return results
-        results.append(self._result(test_id, tid, technique, vuln_type, PASS, f"{len(hidden_from_low_priv[:5])} UI-hidden link(s) checked; all were also denied via direct request", role=self.low_priv_role))
-        return results
+                return [self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=finding.endpoint, finding=finding)]
+        return [self._result(test_id, tid, technique, vuln_type, PASS, f"{len(bounded_links)} UI-hidden link(s) checked; all were also denied via direct request", role=self.low_priv_role)]
 
     async def _visible_nav_links(self, context, target_url: str) -> set[str] | None:
         page = None
@@ -931,30 +1002,37 @@ class IdorTestsModule(VulnModule, BFLATechniquesMixin, RoleTechniquesMixin, Mass
 
         anon_context = await session_pool.new_anonymous_context()
         try:
-            results: list[TestCaseResult] = []
-            for endpoint in protected_endpoints:
-                probe = await self._probe_get(anon_context, endpoint.url)
-                if probe is None:
-                    results.append(self._result(test_id, tid, technique, vuln_type, "ERROR", "GET probe failed", endpoint=endpoint))
-                    continue
-                status, body = probe
-                decision = classify_response(status, body, min_content_length=self.config.min_content_length)
-                if decision == AuthorizationDecision.ALLOWED:
-                    finding = Finding(
-                        module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.1,
-                        endpoint=endpoint, user_role="unauthenticated",
-                        request_raw=f"GET {endpoint.url}\n(no session cookies/headers)",
-                        response_raw=f"HTTP {status}, {len(body)} bytes",
-                        description=f"'{endpoint.url}' is marked as requiring authentication, but an unauthenticated request received a full HTTP {status} response ({len(body)} bytes) instead of being denied.",
-                        recommendation="Enforce authentication server-side on every endpoint that requires it, independent of what the client-side router/UI shows.",
-                    )
-                    finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"bac-anon-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
-                    results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role="unauthenticated", endpoint=endpoint, finding=finding))
-                else:
-                    results.append(self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': unauthenticated request returned HTTP {status} -- denied", endpoint=endpoint))
-            return results
+            results = await asyncio.gather(*(
+                self._check_forced_browsing_candidate(anon_context, evidence, endpoint, test_id, tid, technique, vuln_type)
+                for endpoint in protected_endpoints
+            ))
         finally:
             await anon_context.close()
+        return list(results)
+
+    async def _check_forced_browsing_candidate(
+        self, anon_context, evidence, endpoint, test_id: str, tid: str, technique: str, vuln_type: str,
+    ) -> TestCaseResult:
+        """Per-endpoint probe-and-check body of
+        `_technique_forced_browsing_unauthenticated`'s loop, extracted
+        so that method drops to setup + orchestration only."""
+        probe = await self._probe_get(anon_context, endpoint.url)
+        if probe is None:
+            return self._result(test_id, tid, technique, vuln_type, "ERROR", "GET probe failed", endpoint=endpoint)
+        status, body = probe
+        decision = classify_response(status, body, min_content_length=self.config.min_content_length)
+        if decision == AuthorizationDecision.ALLOWED:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.1,
+                endpoint=endpoint, user_role="unauthenticated",
+                request_raw=f"GET {endpoint.url}\n(no session cookies/headers)",
+                response_raw=f"HTTP {status}, {len(body)} bytes",
+                description=f"'{endpoint.url}' is marked as requiring authentication, but an unauthenticated request received a full HTTP {status} response ({len(body)} bytes) instead of being denied.",
+                recommendation="Enforce authentication server-side on every endpoint that requires it, independent of what the client-side router/UI shows.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"bac-anon-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role="unauthenticated", endpoint=endpoint, finding=finding)
+        return self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': unauthenticated request returned HTTP {status} -- denied", endpoint=endpoint)
 
     async def _safe(self, coro) -> list[TestCaseResult]:
         """Run one technique coroutine, converting any unexpected bug in

@@ -38,11 +38,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 import venv
@@ -94,8 +97,14 @@ _CAPTURE_SCRIPT = f"""
     if (!el || !('value' in el)) return;
     const tag = el.tagName;
     if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT') return;
+    // A <select> needs Playwright's `select_option()`, not `fill()` --
+    // `fill()` only ever works on a text-enterable INPUT/TEXTAREA and
+    // hangs until its own timeout on anything else (confirmed live: a
+    // recorded dropdown pick made every later replay of that workflow
+    // time out on that one step, never actually failing the *element*,
+    // just waiting forever for it to become "fillable").
     window.{_BINDING_NAME}({{
-      type: 'fill',
+      type: tag === 'SELECT' ? 'select' : 'fill',
       selector: stofCssSelector(el),
       value: el.value,
       field_type: el.type || '',
@@ -158,6 +167,22 @@ def _ensure_venv_and_bootstrap(argv: list[str]) -> None:
 # ---------------------------------------------------------------------------
 
 
+# Internal browser pages a fresh (or mid-navigation) Chromium can sit on
+# that were never a real step the tester took -- a brand-new tab starts
+# on "chrome://new-tab-page/", not "about:blank", so excluding only
+# "about:blank" (the old check) let that internal URL slip through as a
+# spurious first `navigate` action. Replaying it later fails outright:
+# browsers refuse a `Page.goto()` to their own internal chrome:// pages
+# under automation (net::ERR_ABORTED, landing on
+# chrome-error://chromewebdata/) -- confirmed live, this was corrupting
+# every fresh recording's first step.
+_INTERNAL_URL_PREFIXES = ("chrome://", "chrome-error://", "chrome-extension://", "devtools://", "edge://", "about:")
+
+
+def _is_recordable_url(url: str) -> bool:
+    return bool(url) and not url.startswith(_INTERNAL_URL_PREFIXES)
+
+
 class EventHandler:
     def __init__(self) -> None:
         self.actions: list[dict[str, Any]] = []
@@ -168,7 +193,7 @@ class EventHandler:
         await page.expose_binding(_BINDING_NAME, self._on_browser_event)
         await page.add_init_script(_CAPTURE_SCRIPT)
         page.on("framenavigated", self._on_navigated)
-        if page.url and page.url != "about:blank":
+        if _is_recordable_url(page.url):
             self._record_navigate(page.url)
         print(f"[record] attached, initial url={page.url!r}")
 
@@ -181,9 +206,9 @@ class EventHandler:
     def _on_browser_event(self, source: Any, event: dict[str, Any]) -> None:
         if event.get("type") == "click":
             self.actions.append({"type": "click", "selector": event["selector"]})
-        elif event.get("type") == "fill":
+        elif event.get("type") in ("fill", "select"):
             self.actions.append({
-                "type": "fill", "selector": event["selector"],
+                "type": event["type"], "selector": event["selector"],
                 "value": event.get("value", ""), "field_type": event.get("field_type", ""),
             })
 
@@ -192,11 +217,30 @@ class EventHandler:
             self._record_navigate(frame.url)
 
     def _record_navigate(self, url: str) -> None:
-        if not url or url == "about:blank":
+        if not _is_recordable_url(url):
             return
         if self.actions and self.actions[-1] == {"type": "navigate", "url": url}:
             return
         self.actions.append({"type": "navigate", "url": url})
+
+
+def _read_line_in_daemon_thread(loop: asyncio.AbstractEventLoop, prompt: str) -> asyncio.Future:
+    """Like `loop.run_in_executor(None, input, prompt)`, but on a thread
+    that can never block `asyncio.run()`'s shutdown or interpreter exit
+    -- see the call site in `record()` for why that distinction matters
+    here specifically."""
+    future: asyncio.Future = loop.create_future()
+
+    def worker() -> None:
+        try:
+            line = input(prompt)
+        except EOFError:
+            line = ""
+        if not future.cancelled():
+            loop.call_soon_threadsafe(future.set_result, line)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return future
 
 
 def tokenize_credentials(
@@ -260,7 +304,10 @@ def _launch_debug_chromium(debug_port: int, user_data_dir: Path) -> subprocess.P
     raise SystemExit(f"Chromium started but its debug port never came up at localhost:{debug_port} within 30s.")
 
 
-async def record(cdp_endpoint: str, output_path: Path, username: str | None, password: str | None) -> Path:
+async def record(cdp_endpoint: str, output_path: Path, username: str | None, password: str | None) -> tuple[Path, bool]:
+    """Returns (output_path, browser_closed_early) -- the caller (`main`)
+    needs browser_closed_early to know whether it must hard-exit after
+    its own cleanup runs (see the comment on that flag below)."""
     from playwright.async_api import async_playwright
 
     async with async_playwright() as playwright:
@@ -280,11 +327,50 @@ async def record(cdp_endpoint: str, output_path: Path, username: str | None, pas
         handler = EventHandler()
         await handler.attach(page)
 
+        # Closing the browser window is a normal way to end a recording,
+        # not just pressing Enter in the terminal -- the tester's flow
+        # often IS "finish, then close the window". Without watching for
+        # `disconnected`, closing the window instead of pressing Enter
+        # left `input()` blocked forever with nothing ever saved (the
+        # bug reported live: actions were captured in `handler.actions`
+        # the whole time, but the script never reached the code that
+        # writes them out).
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, input, "Recording... walk through the workflow, then press Enter here to stop.\n")
+        disconnected: asyncio.Future[None] = loop.create_future()
+        browser.once("disconnected", lambda: not disconnected.done() and disconnected.set_result(None))
 
-        await handler.detach()
-        target_url = page.url
+        # Deliberately NOT `loop.run_in_executor(None, input, ...)`: that
+        # submits to the loop's DEFAULT executor, and `asyncio.run()`
+        # unconditionally waits for that executor to fully shut down
+        # before it returns -- which hangs forever here, since the
+        # `input()` call this thread is stuck on never gets data or EOF
+        # when the browser closes early instead of Enter being pressed
+        # (confirmed live: the file saves correctly, but the whole
+        # process then hangs indefinitely on process exit). A `daemon`
+        # thread we manage ourselves is invisible to that shutdown wait
+        # and is killed automatically at interpreter exit either way.
+        input_future = _read_line_in_daemon_thread(
+            loop, "Recording... walk through the workflow, then press Enter here to stop "
+            "(or just close the browser window).\n"
+        )
+        done, _pending = await asyncio.wait({input_future, disconnected}, return_when=asyncio.FIRST_COMPLETED)
+
+        browser_closed_early = disconnected in done and input_future not in done
+        target_url = None
+        if browser_closed_early:
+            print("\n[record] browser window closed -- stopping and saving what was captured so far.")
+            # page.url is a cached client-side property, not a live round
+            # trip -- safe to read even after the underlying connection
+            # dropped. Still guarded: fall back to the last recorded
+            # navigation rather than lose the whole recording over one
+            # unreadable property on a fully torn-down connection.
+            with contextlib.suppress(Exception):
+                target_url = page.url
+        else:
+            await handler.detach()
+            target_url = page.url
+        if not _is_recordable_url(target_url):
+            target_url = next((a["url"] for a in reversed(handler.actions) if a["type"] == "navigate"), "")
         # No browser.close(): whether this is the tester's own real
         # browser (--cdp-endpoint) or one this script launched itself,
         # closing it here would end the whole session out from under
@@ -302,7 +388,13 @@ async def record(cdp_endpoint: str, output_path: Path, username: str | None, pas
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(workflow, indent=2) + "\n", encoding="utf-8")
     print(f"[record] saved workflow -> {output_path} ({len(tokenized)} action(s))")
-    return output_path
+    # If the browser closed early, the `input()` executor thread from
+    # above is still blocked reading stdin (no clean, cross-platform way
+    # to interrupt a blocking read from here) -- left alone, the
+    # interpreter would hang on process exit waiting to join it, right
+    # back to the "looks stuck" symptom this whole branch exists to
+    # avoid. `main()` runs its own cleanup first, then hard-exits.
+    return output_path, browser_closed_early
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -314,7 +406,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-browser-open", action="store_true", help="leave the browser this script launched running after recording stops (ignored with --cdp-endpoint, which never closes a browser it didn't launch)")
     parser.add_argument("--username", default=None, help="value to tokenise as {{user.username}} wherever it's typed")
     parser.add_argument("--password", default=None, help="value to tokenise as {{user.password}} wherever it's typed")
+    parser.add_argument(
+        "--purge-env", action="store_true",
+        help="delete this script's own virtual environment (.stof_recorder_env) after the workflow is "
+        "saved, leaving no trace on this machine -- the next run pays the one-time setup cost again",
+    )
     return parser
+
+
+def _cleanup_after_recording(venv_dir: Path, *, purge_env: bool) -> None:
+    if purge_env and venv_dir.exists():
+        shutil.rmtree(venv_dir, ignore_errors=True)
+        print(f"[cleanup] removed {venv_dir}")
+
+
+def _exit_if_browser_closed_early(browser_closed_early: bool) -> None:
+    if browser_closed_early:
+        sys.stdout.flush()
+        os._exit(0)
 
 
 def main() -> None:
@@ -326,26 +435,38 @@ def main() -> None:
     argv = [a for a in argv if a != _BOOTSTRAP_FLAG]
     args = _build_parser().parse_args(argv)
     output_path = Path(args.output) if args.output else Path(f"{args.name}.json")
+    venv_dir = Path(__file__).resolve().parent / _VENV_DIR_NAME
 
     if args.cdp_endpoint:
-        asyncio.run(record(args.cdp_endpoint, output_path, args.username, args.password))
+        _, browser_closed_early = asyncio.run(record(args.cdp_endpoint, output_path, args.username, args.password))
+        _cleanup_after_recording(venv_dir, purge_env=args.purge_env)
+        _exit_if_browser_closed_early(browser_closed_early)
         return
 
     user_data_dir = Path(tempfile.gettempdir()) / "stof-chrome-debug"
     print("[record] launching a debuggable Chromium (a real, visible window should appear) ...")
     chrome_process = _launch_debug_chromium(args.debug_port, user_data_dir)
+    browser_closed_early = False
     try:
-        asyncio.run(record(f"http://localhost:{args.debug_port}", output_path, args.username, args.password))
+        _, browser_closed_early = asyncio.run(
+            record(f"http://localhost:{args.debug_port}", output_path, args.username, args.password)
+        )
     finally:
         if args.keep_browser_open:
             print("[record] leaving the browser open (--keep-browser-open)")
         else:
+            # A no-op if the tester already closed the window themselves
+            # (browser_closed_early) -- terminate()/wait() on an already-
+            # exited process just return immediately.
             chrome_process.terminate()
             try:
                 chrome_process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 chrome_process.kill()
             print("[record] closed the browser this script launched")
+            shutil.rmtree(user_data_dir, ignore_errors=True)
+    _cleanup_after_recording(venv_dir, purge_env=args.purge_env)
+    _exit_if_browser_closed_early(browser_closed_early)
 
 
 if __name__ == "__main__":

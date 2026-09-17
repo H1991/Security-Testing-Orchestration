@@ -69,6 +69,12 @@ class Orchestrator:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        # WAL + NORMAL sync: same reasoning as session_store.py/
+        # findings/store.py's identical pragmas -- shares this same
+        # data/stof.db file, so job-checkpoint writes here don't lock
+        # out readers/writers from the other two stores.
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
         return conn
 
     def _init_db(self) -> None:

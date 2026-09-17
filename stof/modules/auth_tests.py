@@ -26,6 +26,7 @@ configured one just gets that technique reported SKIPPED, exactly like
 """
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 import re
 import time
@@ -39,7 +40,7 @@ from stof.findings.models import Finding
 
 from ._injection_shared import looks_json_authenticated, placeholder_value, send_probe
 from ._probe_shared import control_fingerprint, sweep_paths
-from .base import _PASSWORD_FIELD_HINTS, _USERNAME_FIELD_HINTS, VulnModule, _is_transient_error, find_login_endpoint
+from .base import _PASSWORD_FIELD_HINTS, _USERNAME_FIELD_HINTS, VulnModule, _is_transient_error, find_login_endpoint, first_not_none
 from .results import FAIL, NOT_IMPLEMENTED, PASS, SKIPPED, TestCaseResult, extract_findings
 from .session_weakness_tests import SessionWeaknessTechniquesMixin
 
@@ -477,10 +478,10 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
         try:
             if login_endpoint is not None:
                 return await self._default_credentials_via_form(anon_context, login_endpoint, evidence, test_id, tid, technique, vuln_type)
-            for username, password in self.config.credential_pairs:
+            async def _try_pair(username: str, password: str) -> "Finding | None":
                 succeeded, status, preview = await _try_json_login(anon_context, self.config.login_json_endpoint, username, password)
                 if not succeeded:
-                    continue
+                    return None
                 finding = Finding(
                     module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.8,
                     endpoint=_synthetic_endpoint(self.config.login_json_endpoint, "POST"), user_role="unauthenticated",
@@ -506,6 +507,11 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                     recommendation="Remove every default/sample account before deployment, and enforce a password policy that rejects common passwords.",
                 )
                 finding.evidence_refs = await self._capture(evidence, finding)
+                return finding
+
+            attempts = await asyncio.gather(*(_try_pair(u, p) for u, p in self.config.credential_pairs))
+            finding = first_not_none(attempts)
+            if finding is not None:
                 return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
             return self._result(test_id, tid, technique, vuln_type, PASS, f"none of {len(self.config.credential_pairs)} common credential pairs were accepted")
         finally:
@@ -524,13 +530,13 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
             return self._result(test_id, tid, technique, vuln_type, "ERROR", "baseline login probe against the discovered HTML form failed")
         baseline_status, baseline_body, baseline_headers = baseline
 
-        for username, password in self.config.credential_pairs:
+        async def _try_pair(username: str, password: str) -> "Finding | None":
             succeeded, status, preview = await _try_form_login(
                 anon_context, login_endpoint, username_param, password_param, username, password,
                 baseline_status, baseline_body, baseline_headers,
             )
             if not succeeded:
-                continue
+                return None
             finding = Finding(
                 module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.8,
                 endpoint=login_endpoint, user_role="unauthenticated",
@@ -549,6 +555,11 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                 recommendation="Remove every default/sample account before deployment, and enforce a password policy that rejects common passwords.",
             )
             finding.evidence_refs = await self._capture(evidence, finding)
+            return finding
+
+        attempts = await asyncio.gather(*(_try_pair(u, p) for u, p in self.config.credential_pairs))
+        finding = first_not_none(attempts)
+        if finding is not None:
             return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
         return self._result(test_id, tid, technique, vuln_type, PASS,
                              f"none of {len(self.config.credential_pairs)} common credential pairs were accepted by the discovered HTML login form")
@@ -587,10 +598,10 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
             if not self.config.login_json_endpoint:
                 return self._result("TC-022", tid, technique, vuln_type, SKIPPED, f"fingerprinted '{matched_vendor}' but no login_json_endpoint configured to try its defaults against")
 
-            for username, password in matched_pairs:
+            async def _try_pair(username: str, password: str) -> "Finding | None":
                 succeeded, status, preview = await _try_json_login(anon_context, self.config.login_json_endpoint, username, password)
                 if not succeeded:
-                    continue
+                    return None
                 finding = Finding(
                     module_id=self.module_id, vuln_type=vuln_type, severity="Critical", cvss_score=9.8,
                     endpoint=_synthetic_endpoint(self.config.login_json_endpoint, "POST"), user_role="unauthenticated",
@@ -604,6 +615,11 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                     recommendation=f"Change '{matched_vendor}'s default credentials immediately, or disable the default account entirely.",
                 )
                 finding.evidence_refs = await self._capture(evidence, finding)
+                return finding
+
+            attempts = await asyncio.gather(*(_try_pair(u, p) for u, p in matched_pairs))
+            finding = first_not_none(attempts)
+            if finding is not None:
                 return self._result("TC-022", tid, technique, vuln_type, FAIL, finding.description, finding=finding)
             return self._result("TC-022", tid, technique, vuln_type, PASS, f"fingerprinted '{matched_vendor}' but none of its {len(matched_pairs)} known default credential pair(s) were accepted")
         finally:
@@ -630,7 +646,11 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
             if not reachable_admin_paths:
                 return self._result("TC-022", tid, technique, vuln_type, PASS, f"none of {len(_ADMIN_PANEL_LOGIN_PATHS)} common admin paths were reachable to test credentials against")
 
-            for admin_url in reachable_admin_paths:
+            async def _check_admin_url(admin_url: str) -> "Finding | None":
+                """One admin URL's own credential-pair sweep -- kept
+                sequential internally (early-exit-on-first-match, same
+                as before) while different admin URLs run concurrently
+                below."""
                 login_url = admin_url.rstrip("/") + "/login"
                 for username, password in self.config.credential_pairs:
                     succeeded, status, preview = await _try_json_login(anon_context, login_url, username, password)
@@ -648,7 +668,13 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                         recommendation="Remove default admin accounts and restrict admin interfaces to a trusted network.",
                     )
                     finding.evidence_refs = await self._capture(evidence, finding)
-                    return self._result("TC-022", tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+                    return finding
+                return None
+
+            findings = await asyncio.gather(*(_check_admin_url(url) for url in reachable_admin_paths))
+            finding = first_not_none(findings)
+            if finding is not None:
+                return self._result("TC-022", tid, technique, vuln_type, FAIL, finding.description, finding=finding)
             return self._result("TC-022", tid, technique, vuln_type, PASS, f"{len(reachable_admin_paths)} reachable admin path(s) found, but no default credential pair was accepted")
         finally:
             await anon_context.close()
@@ -663,24 +689,29 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
 
         anon_context = await session_pool.new_anonymous_context()
         try:
-            for path in _CONFIG_EXPOSURE_PATHS:
+            async def _check_config_path(path: str) -> "Finding | None":
                 url = f"{origin}{path}"
                 probe = await self._probe_get(anon_context, url)
                 if probe is None:
-                    continue
+                    return None
                 status, body = probe
                 if status != 200:
-                    continue
+                    return None
                 for pattern in _API_KEY_PATTERNS:
                     if re.search(pattern, body):
-                        finding = Finding(
+                        return Finding(
                             module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.5,
                             endpoint=_synthetic_endpoint(url, "GET"), user_role="unauthenticated",
                             request_raw=f"GET {url}", response_raw=f"HTTP {status}, API-key-shaped value found in response body",
                             description=f"'{url}' is publicly reachable and its response contains what looks like a live API key or secret.",
                             recommendation="Remove exposed config files from the web root, and rotate any credential that was ever publicly reachable.",
                         )
-                        return self._result("TC-022", tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+                return None
+
+            findings = await asyncio.gather(*(_check_config_path(path) for path in _CONFIG_EXPOSURE_PATHS))
+            finding = first_not_none(findings)
+            if finding is not None:
+                return self._result("TC-022", tid, technique, vuln_type, FAIL, finding.description, finding=finding)
             return self._result("TC-022", tid, technique, vuln_type, PASS, f"none of {len(_CONFIG_EXPOSURE_PATHS)} common config-exposure paths leaked an API-key-shaped value")
         finally:
             await anon_context.close()
@@ -1537,15 +1568,16 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
 
         anon_context = await session_pool.new_anonymous_context()
         try:
-            checked = 0
-            for endpoint in candidates:
+            async def _check_candidate(endpoint) -> "tuple[bool, Finding | None]":
+                """One endpoint's own baseline + shape-variant sweep --
+                split out so different endpoints can run concurrently.
+                Returns `(was_checked, finding_or_None)`."""
                 baseline = await self._probe_get(anon_context, endpoint.url)
                 if baseline is None:
-                    continue
+                    return False, None
                 baseline_status, baseline_body = baseline
                 if not _looks_anonymously_denied(baseline_status, baseline_body):
-                    continue  # already reachable anonymously as-is -- a forced-browsing/BFLA gap, not this technique's case
-                checked += 1
+                    return False, None  # already reachable anonymously as-is -- a forced-browsing/BFLA gap, not this technique's case
                 for label, variant_url in _schema_bypass_variants(endpoint.url):
                     variant_probe = await self._probe_get(anon_context, variant_url)
                     if variant_probe is None:
@@ -1572,7 +1604,14 @@ class AuthTestsModule(VulnModule, SessionWeaknessTechniquesMixin):
                         ),
                     )
                     finding.evidence_refs = await self._capture(evidence, finding)
-                    return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
+                    return True, finding
+                return True, None
+
+            results = await asyncio.gather(*(_check_candidate(endpoint) for endpoint in candidates))
+            checked = sum(1 for was_checked, _finding in results if was_checked)
+            finding = first_not_none(f for _was_checked, f in results)
+            if finding is not None:
+                return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, finding=finding)
 
             if checked == 0:
                 return self._result(test_id, tid, technique, vuln_type, SKIPPED,

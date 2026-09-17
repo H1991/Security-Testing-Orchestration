@@ -995,12 +995,20 @@ async def verify_auth_required(endpoints: list[Endpoint], anon_context: "Browser
     checks for at test time, just moved to where the fact actually
     belongs (Layer 7, the one place that should own it) instead of
     every consuming module re-deciding it under a wrong premise."""
-    for endpoint in endpoints:
-        if endpoint.method.upper() != "GET":
-            continue
-        try:
-            resp = await anon_context.request.get(endpoint.url, timeout=timeout_ms, max_redirects=0)
-        except Exception as exc:
-            _log.warning(f"auth-required probe failed for {endpoint.url}: {exc}")
-            continue
-        endpoint.auth_required = resp.status in (401, 403) or 300 <= resp.status < 400
+    await asyncio.gather(*(
+        _check_auth_required(endpoint, anon_context, timeout_ms)
+        for endpoint in endpoints if endpoint.method.upper() == "GET"
+    ))
+
+
+async def _check_auth_required(endpoint: Endpoint, anon_context: "BrowserContext", timeout_ms: int) -> None:
+    """One endpoint's own anonymous probe -- split out of
+    `verify_auth_required`'s loop so every GET endpoint can be probed
+    concurrently. Mutates only its own `endpoint.auth_required`, so
+    concurrent calls never contend over shared state."""
+    try:
+        resp = await anon_context.request.get(endpoint.url, timeout=timeout_ms, max_redirects=0)
+    except Exception as exc:
+        _log.warning(f"auth-required probe failed for {endpoint.url}: {exc}")
+        return
+    endpoint.auth_required = resp.status in (401, 403) or 300 <= resp.status < 400

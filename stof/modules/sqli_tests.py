@@ -87,6 +87,7 @@ INSERT) is ever constructed here.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -109,7 +110,7 @@ from ._injection_shared import (
     response_similarity,
     send_probe,
 )
-from .base import _PASSWORD_FIELD_HINTS, _USERNAME_FIELD_HINTS, VulnModule, find_login_endpoint
+from .base import _PASSWORD_FIELD_HINTS, _USERNAME_FIELD_HINTS, VulnModule, find_login_endpoint, first_not_none
 from .results import ERROR, FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
@@ -354,45 +355,68 @@ class SqliTestsModule(VulnModule):
 
         payloads = self._error_based_payloads()
         bounded = candidates[: self.config.max_probe_targets]
-        for endpoint, param, location in bounded:
-            # Baseline-absence check, once per candidate: a bare
-            # fingerprint match against the payload response ALONE is
-            # exactly the false-positive shape an external review
-            # flagged -- a crawled page that legitimately mentions
-            # database errors (a status page, a debug route already
-            # reachable without any payload) would otherwise fire on
-            # every probe. Requiring the SAME fingerprint to be absent
-            # from a benign baseline first turns this into a real
-            # differential, not a single-signal substring check.
-            baseline = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
-            baseline_fingerprint = looks_like_sql_error(baseline[1]) if baseline is not None else None
-            for payload_value in payloads:
-                probe = await send_probe(context, endpoint, build_params(endpoint, param, payload_value), location)
-                if probe is None:
-                    continue
-                status, body, _elapsed, _headers = probe
-                fingerprint = looks_like_sql_error(body)
-                if fingerprint is None or fingerprint == baseline_fingerprint:
-                    continue
-                description = (
-                    f"Injecting {payload_value!r} into parameter '{param}' ({location}) on "
-                    f"{endpoint.method} {endpoint.url} produced a database-error fingerprint "
-                    f"('{fingerprint}') in the response (HTTP {status}) that a benign baseline "
-                    "request to the same endpoint/parameter does not -- the injected value "
-                    "reached the SQL layer unsanitized. This is a candidate signal only: no "
-                    "data was extracted or altered."
-                )
-                finding = self._finding(
-                    endpoint, vuln_type, param, description,
-                    request_preview=f"{endpoint.method} {endpoint.url}\n{param}={payload_value!r}", response_preview=body,
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"sqli-error-{param}") if evidence else []
-                return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        # Parallelized across CANDIDATES (the dimension that dominates
+        # total request volume -- up to `max_probe_targets` of them),
+        # while each candidate's own payload sweep stays sequential
+        # with its original early-exit-on-first-match -- unchanged
+        # behavior there: once one payload confirms error-based SQLi at
+        # a given parameter, this codebase deliberately stops sending
+        # more payloads at that same point rather than hammering it.
+        findings = await asyncio.gather(*(
+            self._check_error_based_candidate(endpoint, param, location, context, payloads, vuln_type, evidence)
+            for endpoint, param, location in bounded
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(bounded)} parameter(s) probed with {len(payloads)} error-triggering payload(s) each, no DB error fingerprint observed",
             role=self.config.low_priv_role,
         )
+
+    async def _check_error_based_candidate(
+        self, endpoint: "Endpoint", param: str, location: str, context, payloads: list[str], vuln_type: str, evidence: "EvidenceCollector | None",
+    ) -> "Finding | None":
+        """One (endpoint, param, location)'s own baseline + payload
+        sweep -- split out of `_technique_error_based`'s loop so
+        different candidates can run concurrently. Payloads within THIS
+        one candidate stay sequential with early-exit-on-first-match
+        (see the caller's own comment for why)."""
+        # Baseline-absence check, once per candidate: a bare fingerprint
+        # match against the payload response ALONE is exactly the
+        # false-positive shape an external review flagged -- a crawled
+        # page that legitimately mentions database errors (a status
+        # page, a debug route already reachable without any payload)
+        # would otherwise fire on every probe. Requiring the SAME
+        # fingerprint to be absent from a benign baseline first turns
+        # this into a real differential, not a single-signal substring
+        # check.
+        baseline = await send_probe(context, endpoint, build_params(endpoint, param, placeholder_value(param)), location)
+        baseline_fingerprint = looks_like_sql_error(baseline[1]) if baseline is not None else None
+        for payload_value in payloads:
+            probe = await send_probe(context, endpoint, build_params(endpoint, param, payload_value), location)
+            if probe is None:
+                continue
+            status, body, _elapsed, _headers = probe
+            fingerprint = looks_like_sql_error(body)
+            if fingerprint is None or fingerprint == baseline_fingerprint:
+                continue
+            description = (
+                f"Injecting {payload_value!r} into parameter '{param}' ({location}) on "
+                f"{endpoint.method} {endpoint.url} produced a database-error fingerprint "
+                f"('{fingerprint}') in the response (HTTP {status}) that a benign baseline "
+                "request to the same endpoint/parameter does not -- the injected value "
+                "reached the SQL layer unsanitized. This is a candidate signal only: no "
+                "data was extracted or altered."
+            )
+            finding = self._finding(
+                endpoint, vuln_type, param, description,
+                request_preview=f"{endpoint.method} {endpoint.url}\n{param}={payload_value!r}", response_preview=body,
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"sqli-error-{param}") if evidence else []
+            return finding
+        return None
 
     async def _boolean_blind_candidate(self, endpoint: "Endpoint", param: str, location: str, context, true_payload: str, false_payload: str):
         """One (endpoint, param)'s baseline/true/false probe triple, plus
@@ -424,8 +448,11 @@ class SqliTestsModule(VulnModule):
 
         true_payload, false_payload = self._boolean_blind_payloads()
         bounded = candidates[: self.config.max_probe_targets]
-        for endpoint, param, location in bounded:
-            probed = await self._boolean_blind_candidate(endpoint, param, location, context, true_payload, false_payload)
+        probed_all = await asyncio.gather(*(
+            self._boolean_blind_candidate(endpoint, param, location, context, true_payload, false_payload)
+            for endpoint, param, location in bounded
+        ))
+        for (endpoint, param, location), probed in zip(bounded, probed_all, strict=True):
             if probed is None:
                 continue
             baseline_body, true_body, false_body, true_status, noise_floor = probed
@@ -491,6 +518,16 @@ class SqliTestsModule(VulnModule):
             return self._result(tid, technique, vuln_type, SKIPPED, "no query/body parameter discovered to probe")
 
         bounded = candidates[: self.config.max_time_based_targets]
+        # Deliberately NOT parallelized across candidates, unlike this
+        # module's other techniques -- this one measures real elapsed-
+        # time deltas (with a jitter floor) to detect an injected sleep.
+        # Running several of these concurrently would have them compete
+        # for the same target's connection pool/CPU, corrupting the
+        # very timing signal the technique depends on (server queuing
+        # under concurrent load can look identical to an injected
+        # sleep, or mask a real one). Bounded to `max_time_based_targets`
+        # candidates and capped at one bounded-duration payload each
+        # precisely so staying sequential here doesn't cost much.
         for endpoint, param, location in bounded:
             measured = await self._time_based_candidate(endpoint, param, location, context)
             if measured is None:
@@ -567,16 +604,16 @@ class SqliTestsModule(VulnModule):
                 return self._result(tid, technique, vuln_type, ERROR, "baseline login probe failed (network/request error) -- could not test", endpoint=login_endpoint)
             baseline_status, baseline_body, _elapsed, baseline_headers = baseline
 
-            for user_payload, pass_payload in _LOGIN_BYPASS_PAYLOADS:
+            async def _try_login_bypass(user_payload: str, pass_payload: str) -> "Finding | None":
                 params = {n: placeholder_value(n) for n in login_endpoint.parameters}
                 params[username_param] = user_payload
                 params[password_param] = pass_payload
                 probe = await send_probe(anon_context, login_endpoint, params, location)
                 if probe is None:
-                    continue
+                    return None
                 status, body, _elapsed, headers = probe
                 if not looks_authenticated(status, headers, body, baseline_status, baseline_headers, baseline_body):
-                    continue
+                    return None
                 description = (
                     f"POSTing the SQLi auth-bypass payload {user_payload!r} in field '{username_param}' "
                     f"(with {pass_payload!r} in '{password_param}') to {login_endpoint.url} produced an "
@@ -591,7 +628,12 @@ class SqliTestsModule(VulnModule):
                     response_preview=body, cvss_score=9.8,
                 )
                 finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label="sqli-login-bypass") if evidence else []
-                return self._result(tid, technique, vuln_type, FAIL, description, role="unauthenticated", endpoint=login_endpoint, finding=finding)
+                return finding
+
+            attempts = await asyncio.gather(*(_try_login_bypass(u, p) for u, p in _LOGIN_BYPASS_PAYLOADS))
+            finding = first_not_none(attempts)
+            if finding is not None:
+                return self._result(tid, technique, vuln_type, FAIL, finding.description, role="unauthenticated", endpoint=login_endpoint, finding=finding)
             return self._result(
                 tid, technique, vuln_type, PASS,
                 f"{len(_LOGIN_BYPASS_PAYLOADS)} SQLi auth-bypass payload(s) tried against the login form, none produced an authenticated-looking response",
@@ -610,37 +652,55 @@ class SqliTestsModule(VulnModule):
 
         payloads = self._error_based_payloads()
         bounded = endpoints[: self.config.max_header_probe_targets]
-        for endpoint in bounded:
-            params = {name: placeholder_value(name) for name in endpoint.parameters}
-            location = "query" if endpoint.method.upper() == "GET" else "body"
-            for header_name in _HEADER_INJECTION_CANDIDATES:
-                for payload_value in payloads:
-                    probe = await send_probe(context, endpoint, params, location, extra_headers={header_name: payload_value})
-                    if probe is None:
-                        continue
-                    status, body, _elapsed, _headers = probe
-                    fingerprint = looks_like_sql_error(body)
-                    if fingerprint is None:
-                        continue
-                    description = (
-                        f"Injecting {payload_value!r} into the '{header_name}' request header on "
-                        f"{endpoint.method} {endpoint.url} produced a database-error fingerprint "
-                        f"('{fingerprint}') in the response (HTTP {status}) -- the header value "
-                        "reached the SQL layer unsanitized (e.g. via request logging or geo/IP "
-                        "lookup). This is a candidate signal only: no data was extracted or altered."
-                    )
-                    finding = self._finding(
-                        endpoint, vuln_type, header_name, description,
-                        request_preview=f"{endpoint.method} {endpoint.url}\n{header_name}: {payload_value!r}", response_preview=body,
-                    )
-                    finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"sqli-header-{header_name}") if evidence else []
-                    return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        # Parallelized across ENDPOINTS (the dominant volume dimension);
+        # each endpoint's own header x payload sweep stays sequential
+        # with early-exit-on-first-match, same reasoning as
+        # `_check_error_based_candidate` above.
+        findings = await asyncio.gather(*(
+            self._check_header_based_candidate(endpoint, context, payloads, vuln_type, evidence)
+            for endpoint in bounded
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(bounded)} endpoint(s) probed with {len(_HEADER_INJECTION_CANDIDATES)} header(s) x "
             f"{len(payloads)} error-triggering payload(s) each, no DB error fingerprint observed",
             role=self.config.low_priv_role,
         )
+
+    async def _check_header_based_candidate(
+        self, endpoint: "Endpoint", context, payloads: list[str], vuln_type: str, evidence: "EvidenceCollector | None",
+    ) -> "Finding | None":
+        """One endpoint's own header x payload sweep -- split out of
+        `_technique_header_based`'s loop so different endpoints can run
+        concurrently."""
+        params = {name: placeholder_value(name) for name in endpoint.parameters}
+        location = "query" if endpoint.method.upper() == "GET" else "body"
+        for header_name in _HEADER_INJECTION_CANDIDATES:
+            for payload_value in payloads:
+                probe = await send_probe(context, endpoint, params, location, extra_headers={header_name: payload_value})
+                if probe is None:
+                    continue
+                status, body, _elapsed, _headers = probe
+                fingerprint = looks_like_sql_error(body)
+                if fingerprint is None:
+                    continue
+                description = (
+                    f"Injecting {payload_value!r} into the '{header_name}' request header on "
+                    f"{endpoint.method} {endpoint.url} produced a database-error fingerprint "
+                    f"('{fingerprint}') in the response (HTTP {status}) -- the header value "
+                    "reached the SQL layer unsanitized (e.g. via request logging or geo/IP "
+                    "lookup). This is a candidate signal only: no data was extracted or altered."
+                )
+                finding = self._finding(
+                    endpoint, vuln_type, header_name, description,
+                    request_preview=f"{endpoint.method} {endpoint.url}\n{header_name}: {payload_value!r}", response_preview=body,
+                )
+                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"sqli-header-{header_name}") if evidence else []
+                return finding
+        return None
 
     def _json_body_candidates(self, endpoints: "list[Endpoint]") -> "list[Endpoint]":
         """Discovered endpoints that look like a JSON API surface --
@@ -672,38 +732,56 @@ class SqliTestsModule(VulnModule):
 
         payloads = self._error_based_payloads()
         bounded = candidates[: self.config.max_json_probe_targets]
-        for endpoint in bounded:
-            for param in endpoint.parameters:
-                for payload_value in payloads:
-                    params = build_params(endpoint, param, payload_value)
-                    probe = await send_probe(context, endpoint, params, "body", json_body=True)
-                    if probe is None:
-                        continue
-                    status, body, _elapsed, _headers = probe
-                    fingerprint = looks_like_sql_error(body)
-                    if fingerprint is None:
-                        continue
-                    description = (
-                        f"Sending a JSON body with {payload_value!r} in field '{param}' to "
-                        f"{endpoint.method} {endpoint.url} (Content-Type: application/json) produced "
-                        f"a database-error fingerprint ('{fingerprint}') in the response (HTTP "
-                        f"{status}) -- the JSON field value reached the SQL layer unsanitized, the "
-                        "same as a form-encoded parameter would. This is a candidate signal only: no "
-                        "data was extracted or altered."
-                    )
-                    finding = self._finding(
-                        endpoint, vuln_type, param, description,
-                        request_preview=f"{endpoint.method} {endpoint.url}\nContent-Type: application/json\n{{\"{param}\": {payload_value!r}}}",
-                        response_preview=body,
-                    )
-                    finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"sqli-json-{param}") if evidence else []
-                    return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        # Parallelized across ENDPOINTS; each endpoint's own
+        # param x payload sweep stays sequential with
+        # early-exit-on-first-match, same reasoning as
+        # `_check_error_based_candidate` above.
+        findings = await asyncio.gather(*(
+            self._check_json_body_candidate(endpoint, context, payloads, vuln_type, evidence)
+            for endpoint in bounded
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(bounded)} JSON-API-shaped endpoint(s) probed with {len(payloads)} error-triggering "
             "payload(s) per parameter, no DB error fingerprint observed",
             role=self.config.low_priv_role,
         )
+
+    async def _check_json_body_candidate(
+        self, endpoint: "Endpoint", context, payloads: list[str], vuln_type: str, evidence: "EvidenceCollector | None",
+    ) -> "Finding | None":
+        """One endpoint's own param x payload sweep -- split out of
+        `_technique_json_body`'s loop so different endpoints can run
+        concurrently."""
+        for param in endpoint.parameters:
+            for payload_value in payloads:
+                params = build_params(endpoint, param, payload_value)
+                probe = await send_probe(context, endpoint, params, "body", json_body=True)
+                if probe is None:
+                    continue
+                status, body, _elapsed, _headers = probe
+                fingerprint = looks_like_sql_error(body)
+                if fingerprint is None:
+                    continue
+                description = (
+                    f"Sending a JSON body with {payload_value!r} in field '{param}' to "
+                    f"{endpoint.method} {endpoint.url} (Content-Type: application/json) produced "
+                    f"a database-error fingerprint ('{fingerprint}') in the response (HTTP "
+                    f"{status}) -- the JSON field value reached the SQL layer unsanitized, the "
+                    "same as a form-encoded parameter would. This is a candidate signal only: no "
+                    "data was extracted or altered."
+                )
+                finding = self._finding(
+                    endpoint, vuln_type, param, description,
+                    request_preview=f"{endpoint.method} {endpoint.url}\nContent-Type: application/json\n{{\"{param}\": {payload_value!r}}}",
+                    response_preview=body,
+                )
+                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"sqli-json-{param}") if evidence else []
+                return finding
+        return None
 
     async def _technique_cookie_based(
         self, endpoints: "list[Endpoint]", session, context, evidence: "EvidenceCollector | None",
@@ -725,39 +803,58 @@ class SqliTestsModule(VulnModule):
 
         payloads = self._error_based_payloads()
         bounded = endpoints[: self.config.max_cookie_probe_targets]
-        for endpoint in bounded:
-            params = {name: placeholder_value(name) for name in endpoint.parameters}
-            location = "query" if endpoint.method.upper() == "GET" else "body"
-            for cookie_name in controllable:
-                for payload_value in payloads:
-                    cookie_override = {**session.cookies, cookie_name: payload_value}
-                    probe = await send_probe(context, endpoint, params, location, extra_cookies=cookie_override)
-                    if probe is None:
-                        continue
-                    status, body, _elapsed, _headers = probe
-                    fingerprint = looks_like_sql_error(body)
-                    if fingerprint is None:
-                        continue
-                    description = (
-                        f"Injecting {payload_value!r} into the '{cookie_name}' cookie (a cookie this "
-                        f"role's own authenticated session already carries, not the session/auth "
-                        f"cookie itself) on {endpoint.method} {endpoint.url} produced a database-error "
-                        f"fingerprint ('{fingerprint}') in the response (HTTP {status}) -- the cookie "
-                        "value reached the SQL layer unsanitized. This is a candidate signal only: no "
-                        "data was extracted or altered."
-                    )
-                    finding = self._finding(
-                        endpoint, vuln_type, cookie_name, description,
-                        request_preview=f"{endpoint.method} {endpoint.url}\nCookie: {cookie_name}={payload_value!r}", response_preview=body,
-                    )
-                    finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"sqli-cookie-{cookie_name}") if evidence else []
-                    return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        # Parallelized across ENDPOINTS; each endpoint's own
+        # cookie x payload sweep stays sequential with
+        # early-exit-on-first-match, same reasoning as
+        # `_check_error_based_candidate` above.
+        findings = await asyncio.gather(*(
+            self._check_cookie_based_candidate(endpoint, session, context, controllable, payloads, vuln_type, evidence)
+            for endpoint in bounded
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(bounded)} endpoint(s) probed with {len(controllable)} authorized-controllable "
             f"cookie(s) x {len(payloads)} error-triggering payload(s) each, no DB error fingerprint observed",
             role=self.config.low_priv_role,
         )
+
+    async def _check_cookie_based_candidate(
+        self, endpoint: "Endpoint", session, context, controllable: list[str], payloads: list[str],
+        vuln_type: str, evidence: "EvidenceCollector | None",
+    ) -> "Finding | None":
+        """One endpoint's own cookie x payload sweep -- split out of
+        `_technique_cookie_based`'s loop so different endpoints can run
+        concurrently."""
+        params = {name: placeholder_value(name) for name in endpoint.parameters}
+        location = "query" if endpoint.method.upper() == "GET" else "body"
+        for cookie_name in controllable:
+            for payload_value in payloads:
+                cookie_override = {**session.cookies, cookie_name: payload_value}
+                probe = await send_probe(context, endpoint, params, location, extra_cookies=cookie_override)
+                if probe is None:
+                    continue
+                status, body, _elapsed, _headers = probe
+                fingerprint = looks_like_sql_error(body)
+                if fingerprint is None:
+                    continue
+                description = (
+                    f"Injecting {payload_value!r} into the '{cookie_name}' cookie (a cookie this "
+                    f"role's own authenticated session already carries, not the session/auth "
+                    f"cookie itself) on {endpoint.method} {endpoint.url} produced a database-error "
+                    f"fingerprint ('{fingerprint}') in the response (HTTP {status}) -- the cookie "
+                    "value reached the SQL layer unsanitized. This is a candidate signal only: no "
+                    "data was extracted or altered."
+                )
+                finding = self._finding(
+                    endpoint, vuln_type, cookie_name, description,
+                    request_preview=f"{endpoint.method} {endpoint.url}\nCookie: {cookie_name}={payload_value!r}", response_preview=body,
+                )
+                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"sqli-cookie-{cookie_name}") if evidence else []
+                return finding
+        return None
 
     async def _technique_second_order(
         self,

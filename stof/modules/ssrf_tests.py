@@ -95,6 +95,7 @@ fingerprint) -- never a claim of having exfiltrated real internal data.
 """
 from __future__ import annotations
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -103,7 +104,7 @@ from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
 from ._injection_shared import build_collaborator_callback_url, build_params, injectable_endpoints, response_similarity, send_probe
-from .base import VulnModule
+from .base import VulnModule, first_not_none
 from .results import FAIL, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
@@ -248,41 +249,53 @@ class SsrfTestsModule(VulnModule):
         if not candidates:
             return self._result(tid, technique, vuln_type, SKIPPED, "no URL-shaped parameter discovered to probe")
 
-        for endpoint, param, location in candidates:
-            baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
-            if baseline is None:
-                continue
-            baseline_body = baseline[1]
-            for internal_url, label in ((_AWS_METADATA_URL, "AWS instance metadata"), (_LOOPBACK_URL, "loopback (127.0.0.1)")):
-                probe = await send_probe(context, endpoint, build_params(endpoint, param, internal_url), location)
-                if probe is None:
-                    continue
-                probe_body = probe[1]
-                similarity = response_similarity(baseline_body, probe_body)
-                has_signature = any(sig in probe_body.lower() for sig in _METADATA_SIGNATURES)
-                meaningfully_different = similarity < 0.7 and len(probe_body.strip()) > 20
-                if not (has_signature or meaningfully_different):
-                    continue
-                description = (
-                    f"Injecting {label} URL ('{internal_url}') into parameter '{param}' ({location}) on "
-                    f"{endpoint.method} {endpoint.url} produced a response "
-                    f"{'carrying a recognizable metadata field name' if has_signature else 'meaningfully different from'} "
-                    f"a same-shaped request to a guaranteed-unreachable baseline URL ({similarity:.0%} similar) -- "
-                    "a signal consistent with the server actually fetching this internal/metadata destination "
-                    "server-side. This is a candidate signal only: no metadata content was extracted or reported."
-                )
-                finding = self._finding(
-                    endpoint, vuln_type, param, description,
-                    request_preview=f"{endpoint.method} {endpoint.url}\n{param}={internal_url!r}",
-                    response_preview=probe_body,
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-metadata-{param}") if evidence else []
-                return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(
+            self._check_metadata_fingerprint_candidate(context, evidence, endpoint, param, location, vuln_type)
+            for endpoint, param, location in candidates
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(candidates)} URL-shaped parameter(s) probed with cloud-metadata and loopback URLs, "
             "no response differential or metadata signature observed", role=self.config.low_priv_role,
         )
+
+    async def _check_metadata_fingerprint_candidate(self, context, evidence, endpoint, param: str, location: str, vuln_type: str) -> "Finding | None":
+        """One (endpoint, param, location)'s own baseline + internal-URL
+        sweep -- split out of `_technique_metadata_fingerprint`'s loop
+        so different candidates can run concurrently."""
+        baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
+        if baseline is None:
+            return None
+        baseline_body = baseline[1]
+        for internal_url, label in ((_AWS_METADATA_URL, "AWS instance metadata"), (_LOOPBACK_URL, "loopback (127.0.0.1)")):
+            probe = await send_probe(context, endpoint, build_params(endpoint, param, internal_url), location)
+            if probe is None:
+                continue
+            probe_body = probe[1]
+            similarity = response_similarity(baseline_body, probe_body)
+            has_signature = any(sig in probe_body.lower() for sig in _METADATA_SIGNATURES)
+            meaningfully_different = similarity < 0.7 and len(probe_body.strip()) > 20
+            if not (has_signature or meaningfully_different):
+                continue
+            description = (
+                f"Injecting {label} URL ('{internal_url}') into parameter '{param}' ({location}) on "
+                f"{endpoint.method} {endpoint.url} produced a response "
+                f"{'carrying a recognizable metadata field name' if has_signature else 'meaningfully different from'} "
+                f"a same-shaped request to a guaranteed-unreachable baseline URL ({similarity:.0%} similar) -- "
+                "a signal consistent with the server actually fetching this internal/metadata destination "
+                "server-side. This is a candidate signal only: no metadata content was extracted or reported."
+            )
+            finding = self._finding(
+                endpoint, vuln_type, param, description,
+                request_preview=f"{endpoint.method} {endpoint.url}\n{param}={internal_url!r}",
+                response_preview=probe_body,
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-metadata-{param}") if evidence else []
+            return finding
+        return None
 
     async def _timeout_delta(self, endpoint: "Endpoint", param: str, location: str, context) -> "float | None":
         baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
@@ -342,32 +355,43 @@ class SsrfTestsModule(VulnModule):
         if not candidates:
             return self._result(tid, technique, vuln_type, SKIPPED, "no URL-shaped parameter discovered to probe")
 
-        for endpoint, param, location in candidates:
-            baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
-            if baseline is None or _FILE_READ_SIGNATURE in baseline[1].lower():
-                continue  # can't tell a real hit from a baseline that already contains it
-            probe = await send_probe(context, endpoint, build_params(endpoint, param, _FILE_SCHEME_PAYLOAD), location)
-            if probe is None or _FILE_READ_SIGNATURE not in probe[1].lower():
-                continue
-            description = (
-                f"Injecting a 'file:///etc/passwd' payload into parameter '{param}' ({location}) on "
-                f"{endpoint.method} {endpoint.url} produced a response containing the 'root:x:0:0' passwd-file "
-                "fingerprint, absent from a same-shaped baseline request -- the URL fetcher honors the file:// "
-                "scheme and read a local file server-side, a materially more severe bug class than an "
-                "HTTP(S)-only SSRF (arbitrary local file disclosure, not just outbound request forgery)."
-            )
-            finding = self._finding(
-                endpoint, vuln_type, param, description,
-                request_preview=f"{endpoint.method} {endpoint.url}\n{param}={_FILE_SCHEME_PAYLOAD!r}",
-                response_preview=probe[1],
-            )
-            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-file-{param}") if evidence else []
-            return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(
+            self._check_file_scheme_candidate(context, evidence, endpoint, param, location, vuln_type)
+            for endpoint, param, location in candidates
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(candidates)} URL-shaped parameter(s) probed with a file:// payload, "
             "no local-file-read fingerprint observed", role=self.config.low_priv_role,
         )
+
+    async def _check_file_scheme_candidate(self, context, evidence, endpoint, param: str, location: str, vuln_type: str) -> "Finding | None":
+        """Per-candidate probe-and-check body of
+        `_technique_file_scheme`'s loop, extracted so different
+        candidates can run concurrently."""
+        baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
+        if baseline is None or _FILE_READ_SIGNATURE in baseline[1].lower():
+            return None  # can't tell a real hit from a baseline that already contains it
+        probe = await send_probe(context, endpoint, build_params(endpoint, param, _FILE_SCHEME_PAYLOAD), location)
+        if probe is None or _FILE_READ_SIGNATURE not in probe[1].lower():
+            return None
+        description = (
+            f"Injecting a 'file:///etc/passwd' payload into parameter '{param}' ({location}) on "
+            f"{endpoint.method} {endpoint.url} produced a response containing the 'root:x:0:0' passwd-file "
+            "fingerprint, absent from a same-shaped baseline request -- the URL fetcher honors the file:// "
+            "scheme and read a local file server-side, a materially more severe bug class than an "
+            "HTTP(S)-only SSRF (arbitrary local file disclosure, not just outbound request forgery)."
+        )
+        finding = self._finding(
+            endpoint, vuln_type, param, description,
+            request_preview=f"{endpoint.method} {endpoint.url}\n{param}={_FILE_SCHEME_PAYLOAD!r}",
+            response_preview=probe[1],
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-file-{param}") if evidence else []
+        return finding
 
     def _differs_from_baseline(self, baseline_body: str, probe_body: str) -> bool:
         """Shared oracle for TC-137.4/.5 (and the same shape TC-137.1
@@ -386,32 +410,14 @@ class SsrfTestsModule(VulnModule):
         if not candidates:
             return self._result(tid, technique, vuln_type, SKIPPED, "no URL-shaped parameter discovered to probe")
 
-        checked = 0
-        for endpoint, param, location in candidates:
-            baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
-            if baseline is None:
-                continue
-            for port in _INTERNAL_SERVICE_PORTS:
-                port_url = f"http://127.0.0.1:{port}/"
-                probe = await send_probe(context, endpoint, build_params(endpoint, param, port_url), location)
-                checked += 1
-                if probe is None or not self._differs_from_baseline(baseline[1], probe[1]):
-                    continue
-                description = (
-                    f"Injecting a loopback URL targeting port {port} ('{port_url}') into parameter '{param}' "
-                    f"({location}) on {endpoint.method} {endpoint.url} produced a response meaningfully "
-                    f"different from a same-shaped request to a guaranteed-unreachable baseline URL -- a signal "
-                    f"consistent with a real service listening on 127.0.0.1:{port} that this server can reach "
-                    "internally. This is a candidate signal only: no service banner or data was extracted."
-                )
-                finding = self._finding(
-                    endpoint, vuln_type, param, description,
-                    request_preview=f"{endpoint.method} {endpoint.url}\n{param}={port_url!r}",
-                    response_preview=probe[1],
-                    severity="High", cvss_score=7.5,
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-port-{param}-{port}") if evidence else []
-                return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        results = await asyncio.gather(*(
+            self._check_port_sweep_candidate(context, evidence, endpoint, param, location, vuln_type)
+            for endpoint, param, location in candidates
+        ))
+        checked = sum(ports_checked for ports_checked, _finding in results)
+        finding = first_not_none(f for _ports_checked, f in results)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding)
         if checked == 0:
             return self._result(tid, technique, vuln_type, SKIPPED, "baseline probe failed for every candidate parameter")
         return self._result(
@@ -419,6 +425,43 @@ class SsrfTestsModule(VulnModule):
             f"{len(_INTERNAL_SERVICE_PORTS)} common internal service port(s) probed via loopback across "
             f"{len(candidates)} URL-shaped parameter(s), no response differential observed", role=self.config.low_priv_role,
         )
+
+    async def _check_port_sweep_candidate(
+        self, context, evidence, endpoint, param: str, location: str, vuln_type: str,
+    ) -> tuple[int, "Finding | None"]:
+        """One (endpoint, param, location)'s own baseline + port sweep
+        -- split out of `_technique_internal_port_sweep`'s loop so
+        different candidates can run concurrently; the port sweep
+        itself stays sequential within one candidate. Returns `(ports_
+        checked, finding_or_None)` -- the caller sums the first value
+        across candidates to keep its own "how many ports were
+        actually probed" count accurate."""
+        baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
+        if baseline is None:
+            return 0, None
+        checked = 0
+        for port in _INTERNAL_SERVICE_PORTS:
+            port_url = f"http://127.0.0.1:{port}/"
+            probe = await send_probe(context, endpoint, build_params(endpoint, param, port_url), location)
+            checked += 1
+            if probe is None or not self._differs_from_baseline(baseline[1], probe[1]):
+                continue
+            description = (
+                f"Injecting a loopback URL targeting port {port} ('{port_url}') into parameter '{param}' "
+                f"({location}) on {endpoint.method} {endpoint.url} produced a response meaningfully "
+                f"different from a same-shaped request to a guaranteed-unreachable baseline URL -- a signal "
+                f"consistent with a real service listening on 127.0.0.1:{port} that this server can reach "
+                "internally. This is a candidate signal only: no service banner or data was extracted."
+            )
+            finding = self._finding(
+                endpoint, vuln_type, param, description,
+                request_preview=f"{endpoint.method} {endpoint.url}\n{param}={port_url!r}",
+                response_preview=probe[1],
+                severity="High", cvss_score=7.5,
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-port-{param}-{port}") if evidence else []
+            return checked, finding
+        return checked, None
 
     async def _technique_ip_parsing_bypass(
         self, candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
@@ -428,40 +471,55 @@ class SsrfTestsModule(VulnModule):
         if not candidates:
             return self._result(tid, technique, vuln_type, SKIPPED, "no URL-shaped parameter discovered to probe")
 
-        for endpoint, param, location in candidates:
-            baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
-            if baseline is None:
-                continue
-            plain = await send_probe(context, endpoint, build_params(endpoint, param, _LOOPBACK_URL), location)
-            if plain is not None and self._differs_from_baseline(baseline[1], plain[1]):
-                # The plain form already reaches loopback unrestricted --
-                # TC-137.1 already reports that; there's no "bypass" to
-                # demonstrate here since nothing was actually blocked.
-                continue
-            for variant_url, label in _IP_BYPASS_VARIANTS:
-                probe = await send_probe(context, endpoint, build_params(endpoint, param, variant_url), location)
-                if probe is None or not self._differs_from_baseline(baseline[1], probe[1]):
-                    continue
-                description = (
-                    f"Parameter '{param}' ({location}) on {endpoint.method} {endpoint.url} rejected or ignored "
-                    f"the plain loopback URL ('{_LOOPBACK_URL}') but injecting the SAME destination written as "
-                    f"{label} ('{variant_url}') produced a response meaningfully different from the unreachable "
-                    "baseline -- evidence that server-side validation checks the URL as a literal string rather "
-                    "than its resolved destination, letting an alternate encoding reach an address the plain "
-                    "form was blocked from."
-                )
-                finding = self._finding(
-                    endpoint, vuln_type, param, description,
-                    request_preview=f"{endpoint.method} {endpoint.url}\n{param}={variant_url!r}",
-                    response_preview=probe[1],
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-ipbypass-{param}") if evidence else []
-                return self._result(tid, technique, vuln_type, FAIL, description, role=self.config.low_priv_role, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(
+            self._check_ip_parsing_bypass_candidate(context, evidence, endpoint, param, location, vuln_type)
+            for endpoint, param, location in candidates
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, role=self.config.low_priv_role, endpoint=finding.endpoint, finding=finding)
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(_IP_BYPASS_VARIANTS)} alternate loopback representation(s) probed across {len(candidates)} "
             "URL-shaped parameter(s), no allowlist-parsing bypass observed", role=self.config.low_priv_role,
         )
+
+    async def _check_ip_parsing_bypass_candidate(
+        self, context, evidence, endpoint, param: str, location: str, vuln_type: str,
+    ) -> "Finding | None":
+        """Per-candidate probe-and-check body of
+        `_technique_ip_parsing_bypass`'s loop, extracted so different
+        candidates can run concurrently; the variant sweep within one
+        candidate stays sequential with early-exit-on-first-match."""
+        baseline = await send_probe(context, endpoint, build_params(endpoint, param, _UNREACHABLE_BASELINE_URL), location)
+        if baseline is None:
+            return None
+        plain = await send_probe(context, endpoint, build_params(endpoint, param, _LOOPBACK_URL), location)
+        if plain is not None and self._differs_from_baseline(baseline[1], plain[1]):
+            # The plain form already reaches loopback unrestricted --
+            # TC-137.1 already reports that; there's no "bypass" to
+            # demonstrate here since nothing was actually blocked.
+            return None
+        for variant_url, label in _IP_BYPASS_VARIANTS:
+            probe = await send_probe(context, endpoint, build_params(endpoint, param, variant_url), location)
+            if probe is None or not self._differs_from_baseline(baseline[1], probe[1]):
+                continue
+            description = (
+                f"Parameter '{param}' ({location}) on {endpoint.method} {endpoint.url} rejected or ignored "
+                f"the plain loopback URL ('{_LOOPBACK_URL}') but injecting the SAME destination written as "
+                f"{label} ('{variant_url}') produced a response meaningfully different from the unreachable "
+                "baseline -- evidence that server-side validation checks the URL as a literal string rather "
+                "than its resolved destination, letting an alternate encoding reach an address the plain "
+                "form was blocked from."
+            )
+            finding = self._finding(
+                endpoint, vuln_type, param, description,
+                request_preview=f"{endpoint.method} {endpoint.url}\n{param}={variant_url!r}",
+                response_preview=probe[1],
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"ssrf-ipbypass-{param}") if evidence else []
+            return finding
+        return None
 
     async def _technique_oob_callback(
         self, candidates: list[tuple["Endpoint", str, str]], context, evidence: "EvidenceCollector | None",
@@ -495,13 +553,14 @@ class SsrfTestsModule(VulnModule):
                 "config.json's burp.collaborator_url to enable this technique",
             )
 
-        sent: list[tuple[Endpoint, str, str]] = []
-        for endpoint, param, location in candidates:
+        async def _send_callback(endpoint, param: str, location: str) -> "tuple[Endpoint, str, str] | None":
             marker = f"stof-{uuid.uuid4().hex[:12]}"
             callback_url = build_collaborator_callback_url(self.config.collaborator_url, marker)
             probe = await send_probe(context, endpoint, build_params(endpoint, param, callback_url), location)
-            if probe is not None:
-                sent.append((endpoint, param, callback_url))
+            return (endpoint, param, callback_url) if probe is not None else None
+
+        attempted = await asyncio.gather(*(_send_callback(e, p, loc) for e, p, loc in candidates))
+        sent: list[tuple[Endpoint, str, str]] = [s for s in attempted if s is not None]
 
         if not sent:
             return self._result(tid, technique, vuln_type, SKIPPED, "every candidate probe request failed to send")
@@ -545,42 +604,54 @@ class SsrfTestsModule(VulnModule):
         if not candidates:
             return self._result(tid, technique, vuln_type, SKIPPED, "no URL-shaped parameter discovered to probe")
 
-        for endpoint, param, location in candidates:
-            marker_host = f"stof-redirect-{uuid.uuid4().hex[:10]}.invalid"
-            marker_url = f"https://{marker_host}/"
-            probe = await send_probe(context, endpoint, build_params(endpoint, param, marker_url), location)
-            if probe is None:
-                continue
-            status, _body, _elapsed, headers = probe
-            location_header = (headers or {}).get("location", "")
-            if 300 <= status < 400 and marker_host in location_header:
-                finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.1,
-                    endpoint=endpoint, user_role=self.config.low_priv_role,
-                    request_raw=f"{endpoint.method} {endpoint.url}\n{param}={marker_url!r}",
-                    response_raw=f"HTTP {status}\nLocation: {location_header}",
-                    description=(
-                        f"'{endpoint.url}' parameter '{param}' ({location}) accepted an external URL and "
-                        f"redirected the browser there (HTTP {status}, Location: {location_header}). An "
-                        "attacker can craft a link on this trusted domain that silently redirects a victim to "
-                        "an attacker-controlled site -- commonly abused for phishing (the URL bar shows the "
-                        "trusted domain right up until the redirect fires) or to bypass an OAuth/SSO "
-                        "redirect_uri allowlist that trusts this host."
-                    ),
-                    recommendation=(
-                        "Validate redirect targets against an explicit allowlist of same-origin/known-partner "
-                        "destinations server-side, or require an intermediate confirmation page for any "
-                        "off-site redirect."
-                    ),
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"open-redirect-{param}") if evidence else []
-                return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(
+            self._check_open_redirect_candidate(context, evidence, endpoint, param, location, vuln_type)
+            for endpoint, param, location in candidates
+        ))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, vuln_type, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
 
         return self._result(
             tid, technique, vuln_type, PASS,
             f"{len(candidates)} URL-shaped parameter(s) probed with an external marker URL, none redirected there",
             role=self.config.low_priv_role,
         )
+
+    async def _check_open_redirect_candidate(self, context, evidence, endpoint, param: str, location: str, vuln_type: str) -> "Finding | None":
+        """Per-candidate probe-and-check body of
+        `_technique_open_redirect`'s loop, extracted so different
+        candidates can run concurrently."""
+        marker_host = f"stof-redirect-{uuid.uuid4().hex[:10]}.invalid"
+        marker_url = f"https://{marker_host}/"
+        probe = await send_probe(context, endpoint, build_params(endpoint, param, marker_url), location)
+        if probe is None:
+            return None
+        status, _body, _elapsed, headers = probe
+        location_header = (headers or {}).get("location", "")
+        if not (300 <= status < 400 and marker_host in location_header):
+            return None
+        finding = Finding(
+            module_id=self.module_id, vuln_type=vuln_type, severity="Medium", cvss_score=6.1,
+            endpoint=endpoint, user_role=self.config.low_priv_role,
+            request_raw=f"{endpoint.method} {endpoint.url}\n{param}={marker_url!r}",
+            response_raw=f"HTTP {status}\nLocation: {location_header}",
+            description=(
+                f"'{endpoint.url}' parameter '{param}' ({location}) accepted an external URL and "
+                f"redirected the browser there (HTTP {status}, Location: {location_header}). An "
+                "attacker can craft a link on this trusted domain that silently redirects a victim to "
+                "an attacker-controlled site -- commonly abused for phishing (the URL bar shows the "
+                "trusted domain right up until the redirect fires) or to bypass an OAuth/SSO "
+                "redirect_uri allowlist that trusts this host."
+            ),
+            recommendation=(
+                "Validate redirect targets against an explicit allowlist of same-origin/known-partner "
+                "destinations server-side, or require an intermediate confirmation page for any "
+                "off-site redirect."
+            ),
+        )
+        finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"open-redirect-{param}") if evidence else []
+        return finding
 
     async def run_techniques(
         self,

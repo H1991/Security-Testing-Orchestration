@@ -31,6 +31,7 @@ the module itself.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -124,6 +125,12 @@ class TrafficGuard:
         self.allowed_origins = allowed_origins
         self.audit_path = audit_path
         self.total_requests = 0
+        self._dir_ready = False
+        # Fire-and-forget background writes (see `record()`) -- tracked
+        # here (mirrors `stof/ui/server.py`'s own `_BACKGROUND_TASKS`
+        # pattern) purely so a task isn't garbage-collected mid-write,
+        # not for anything awaited on the hot path.
+        self._pending_writes: set[asyncio.Task] = set()
 
     def check_scope(self, url: str) -> None:
         origin = _origin(url)
@@ -151,17 +158,56 @@ class TrafficGuard:
             error=error,
         )
 
-    def record(self, entry: AuditEntry) -> None:
+    def record(self, entry: AuditEntry) -> "asyncio.Future | None":
+        """Schedules the audit-log write and returns the in-flight task,
+        or `None` when it already completed synchronously (no running
+        loop to defer onto -- e.g. called from sync code/tests) or there
+        is no audit path configured. An async caller with a running loop
+        (every real request does) should `await` the returned task if it
+        needs the write to be guaranteed complete before proceeding
+        (`guarded_context.py` does, so the audit log stays trustworthy
+        for the exact request that just happened); nothing requires it,
+        since `aclose()` also catches anything left pending at scan end.
+
+        Every module's every request funnels through this -- opening,
+        writing, and closing the file SYNCHRONOUSLY used to block the
+        entire event loop (every other coroutine, every other module's
+        in-flight request) for the duration of that disk I/O, on every
+        single probe a scan sends. Handing the actual write to the
+        default executor keeps this call itself non-blocking for
+        everyone ELSE on the loop, even when the caller above chooses to
+        await its own copy of the result."""
         self.total_requests += 1
         if self.audit_path is None:
-            return
+            return None
+        line = entry.to_json_line() + "\n"
         try:
-            self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._write_line_sync(line)
+            return None
+        task = asyncio.ensure_future(loop.run_in_executor(None, self._write_line_sync, line))
+        self._pending_writes.add(task)
+        task.add_done_callback(self._pending_writes.discard)
+        return task
+
+    def _write_line_sync(self, line: str) -> None:
+        try:
+            if not self._dir_ready:
+                self.audit_path.parent.mkdir(parents=True, exist_ok=True)
+                self._dir_ready = True
             with self.audit_path.open("a", encoding="utf-8") as f:
-                f.write(entry.to_json_line() + "\n")
+                f.write(line)
         except OSError as exc:
             # A broken audit log must never abort the scan itself --
             # same "a probe failure must never take down the whole
             # module" resilience convention this codebase already
             # applies everywhere else, just at the audit-write step.
             _log.warning(f"could not write audit log entry to '{self.audit_path}': {exc}")
+
+    async def aclose(self) -> None:
+        """Awaits every in-flight background write -- call this once at
+        the end of a scan/crawl (before the process exits) so the audit
+        log is guaranteed complete on disk, not just "probably done"."""
+        if self._pending_writes:
+            await asyncio.gather(*self._pending_writes, return_exceptions=True)

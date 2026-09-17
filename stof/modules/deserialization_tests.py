@@ -23,6 +23,7 @@ deliberately never cross.
 """
 from __future__ import annotations
 
+import asyncio
 import json as json_module
 import re
 from dataclasses import dataclass
@@ -31,7 +32,7 @@ from typing import TYPE_CHECKING
 from stof.core.logger import get_logger
 from stof.findings.models import Finding
 
-from .base import VulnModule
+from .base import VulnModule, first_not_none
 from .results import FAIL, NOT_IMPLEMENTED, PASS, SKIPPED, TestCaseResult, extract_findings
 
 if TYPE_CHECKING:
@@ -202,11 +203,20 @@ class DeserializationTestsModule(VulnModule):
             _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
         except KeyError as exc:
             return self._result(tid, technique, SKIPPED, f"role not configured: {exc}")
-        for endpoint in candidates:
+        async def _check_endpoint(endpoint) -> "Finding | None":
+            """One endpoint's own marker sweep -- kept sequential
+            internally (early-exit-on-first-match) while different
+            endpoints run concurrently below."""
             for marker in _POLYMORPHIC_MARKERS:
                 finding = await self._check_polymorphic_marker(context, evidence, endpoint, marker)
                 if finding is not None:
-                    return self._result(tid, technique, FAIL, finding.description, endpoint=endpoint, finding=finding)
+                    return finding
+            return None
+
+        findings = await asyncio.gather(*(_check_endpoint(endpoint) for endpoint in candidates))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(tid, technique, PASS, f"{len(candidates)} endpoint(s) probed with {len(_POLYMORPHIC_MARKERS)} marker(s) each; no deserialization-shaped error observed")
 
     async def _check_polymorphic_marker(self, context, evidence, endpoint, marker: dict) -> Finding | None:
@@ -263,10 +273,10 @@ class DeserializationTestsModule(VulnModule):
             _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
         except KeyError as exc:
             return self._result(tid, technique, SKIPPED, f"role not configured: {exc}")
-        for endpoint in candidates:
-            finding = await self._check_viewstate_mac_disabled(context, evidence, endpoint)
-            if finding is not None:
-                return self._result(tid, technique, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(self._check_viewstate_mac_disabled(context, evidence, endpoint) for endpoint in candidates))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(tid, technique, PASS, f"no __VIEWSTATE-without-__VIEWSTATEMAC signature found across {len(candidates)} scanned page(s)")
 
     async def _check_viewstate_mac_disabled(self, context, evidence, endpoint) -> Finding | None:
@@ -346,10 +356,10 @@ class DeserializationTestsModule(VulnModule):
             _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
         except KeyError as exc:
             return self._result(tid, technique, SKIPPED, f"role not configured: {exc}")
-        for endpoint in candidates:
-            finding = await self._check_content_type_discovery(context, evidence, endpoint)
-            if finding is not None:
-                return self._result(tid, technique, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(self._check_content_type_discovery(context, evidence, endpoint) for endpoint in candidates))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(tid, technique, PASS, f"no serialized-object parameter value or response content-type observed across {len(candidates)} endpoint(s)")
 
     async def _check_content_type_discovery(self, context, evidence, endpoint) -> Finding | None:
@@ -389,10 +399,10 @@ class DeserializationTestsModule(VulnModule):
             _session, context = await self._authenticated_context(session_manager, session_pool, self.config.high_priv_role, target_url)
         except KeyError as exc:
             return self._result(tid, technique, SKIPPED, f"role not configured: {exc}")
-        for endpoint in candidates:
-            finding = await self._check_library_fingerprint(context, evidence, endpoint)
-            if finding is not None:
-                return self._result(tid, technique, FAIL, finding.description, endpoint=endpoint, finding=finding)
+        findings = await asyncio.gather(*(self._check_library_fingerprint(context, evidence, endpoint) for endpoint in candidates))
+        finding = first_not_none(findings)
+        if finding is not None:
+            return self._result(tid, technique, FAIL, finding.description, endpoint=finding.endpoint, finding=finding)
         return self._result(tid, technique, PASS, f"no serialization-library version banner observed across {len(candidates)} endpoint(s)")
 
     async def _check_library_fingerprint(self, context, evidence, endpoint) -> Finding | None:

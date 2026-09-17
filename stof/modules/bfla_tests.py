@@ -99,42 +99,52 @@ class BFLATechniquesMixin:
 
         session, context = await self._authenticated_context(session_manager, session_pool, self.low_priv_role, target_url)
 
-        findings: list[Finding] = []
-        for endpoint in privileged_endpoints:
-            probe = await self._probe_get(context, endpoint.url)
-            if probe is None:
-                continue
-            status, body = probe
-            decision = classify_response(status, body, min_content_length=self.config.min_content_length)
-            self.authorization_matrix.record(endpoint, self.low_priv_role, decision)
-            if decision == AuthorizationDecision.ALLOWED:
-                finding = Finding(
-                    module_id=self.module_id,
-                    vuln_type="Vertical Privilege Escalation / Broken Function Level Authorization",
-                    severity="High",
-                    cvss_score=8.8,
-                    endpoint=endpoint,
-                    user_role=self.low_priv_role,
-                    request_raw=f"GET {endpoint.url}",
-                    response_raw=f"HTTP {status}, {len(body)} bytes",
-                    description=(
-                        f"A low-privileged, authenticated session (role '{self.low_priv_role}') "
-                        f"was able to fully access '{endpoint.url}', a path that pattern-matches "
-                        f"a privileged/administrative function, receiving HTTP {status} and "
-                        f"{len(body)} bytes of content instead of being denied."
-                    ),
-                    recommendation=(
-                        "Enforce function-level authorization server-side on every privileged "
-                        "endpoint: verify the authenticated user's role/permissions grant access "
-                        "to this specific function before executing it, independent of whether "
-                        "the endpoint happens to be unlinked from the UI that role can see -- "
-                        "hiding a link is not access control."
-                    ),
-                )
-                finding.evidence_refs = await self._capture_evidence(
-                    evidence, context, session, endpoint.url, label=f"privesc-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)
-                findings.append(finding)
-        return findings
+        checked = await asyncio.gather(*(
+            self._check_vertical_privesc_candidate(context, session, evidence, endpoint) for endpoint in privileged_endpoints
+        ))
+        return [finding for finding in checked if finding is not None]
+
+    async def _check_vertical_privesc_candidate(self, context, session, evidence, endpoint) -> "Finding | None":
+        """Per-endpoint probe-and-check body of
+        `_test_vertical_privilege_escalation`'s loop, extracted so
+        different endpoints can run concurrently. `self.authorization_
+        matrix.record()` is a plain in-memory write with no `await`
+        inside it, so concurrent calls are safe under asyncio's
+        single-threaded cooperative scheduling."""
+        probe = await self._probe_get(context, endpoint.url)
+        if probe is None:
+            return None
+        status, body = probe
+        decision = classify_response(status, body, min_content_length=self.config.min_content_length)
+        self.authorization_matrix.record(endpoint, self.low_priv_role, decision)
+        if decision != AuthorizationDecision.ALLOWED:
+            return None
+        finding = Finding(
+            module_id=self.module_id,
+            vuln_type="Vertical Privilege Escalation / Broken Function Level Authorization",
+            severity="High",
+            cvss_score=8.8,
+            endpoint=endpoint,
+            user_role=self.low_priv_role,
+            request_raw=f"GET {endpoint.url}",
+            response_raw=f"HTTP {status}, {len(body)} bytes",
+            description=(
+                f"A low-privileged, authenticated session (role '{self.low_priv_role}') "
+                f"was able to fully access '{endpoint.url}', a path that pattern-matches "
+                f"a privileged/administrative function, receiving HTTP {status} and "
+                f"{len(body)} bytes of content instead of being denied."
+            ),
+            recommendation=(
+                "Enforce function-level authorization server-side on every privileged "
+                "endpoint: verify the authenticated user's role/permissions grant access "
+                "to this specific function before executing it, independent of whether "
+                "the endpoint happens to be unlinked from the UI that role can see -- "
+                "hiding a link is not access control."
+            ),
+        )
+        finding.evidence_refs = await self._capture_evidence(
+            evidence, context, session, endpoint.url, label=f"privesc-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)
+        return finding
 
     async def _technique_bfla_state_changing(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
         test_id, tid, technique = "TC-055", "TC-055.2", "Calling a privileged operation (state-changing) with a normal-user session"
@@ -167,26 +177,34 @@ class BFLATechniquesMixin:
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
-        results: list[TestCaseResult] = []
-        for endpoint in privileged_write_endpoints:
-            try:
-                resp = await _method_request_fn(context, endpoint.method.upper())(endpoint.url, max_redirects=0)
-            except Exception as exc:
-                results.append(self._result(test_id, tid, technique, vuln_type, "ERROR", f"probe failed: {exc}", role=self.low_priv_role, endpoint=endpoint))
-                continue
-            if resp.status in (200, 201, 204):
-                finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.8,
-                    endpoint=endpoint, user_role=self.low_priv_role,
-                    request_raw=f"{endpoint.method} {endpoint.url}", response_raw=f"HTTP {resp.status}",
-                    description=f"A low-privileged session (role '{self.low_priv_role}') successfully invoked the privileged operation '{endpoint.url}' ({endpoint.method}), receiving HTTP {resp.status}.",
-                    recommendation="Enforce function-level authorization server-side on every state-changing privileged endpoint.",
-                )
-                finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"bfla-write-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
-                results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding))
-            else:
-                results.append(self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': {endpoint.method} returned HTTP {resp.status} -- denied", role=self.low_priv_role, endpoint=endpoint))
-        return results
+        return list(await asyncio.gather(*(
+            self._check_bfla_state_changing_candidate(context, evidence, endpoint, test_id, tid, technique, vuln_type)
+            for endpoint in privileged_write_endpoints
+        )))
+
+    async def _check_bfla_state_changing_candidate(
+        self, context, evidence, endpoint, test_id: str, tid: str, technique: str, vuln_type: str,
+    ) -> TestCaseResult:
+        """Per-endpoint write-and-check body of
+        `_technique_bfla_state_changing`'s loop, extracted so different
+        endpoints can run concurrently -- each writes to its OWN,
+        independent endpoint, so concurrent execution never contends
+        over shared state."""
+        try:
+            resp = await _method_request_fn(context, endpoint.method.upper())(endpoint.url, max_redirects=0)
+        except Exception as exc:
+            return self._result(test_id, tid, technique, vuln_type, "ERROR", f"probe failed: {exc}", role=self.low_priv_role, endpoint=endpoint)
+        if resp.status in (200, 201, 204):
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=8.8,
+                endpoint=endpoint, user_role=self.low_priv_role,
+                request_raw=f"{endpoint.method} {endpoint.url}", response_raw=f"HTTP {resp.status}",
+                description=f"A low-privileged session (role '{self.low_priv_role}') successfully invoked the privileged operation '{endpoint.url}' ({endpoint.method}), receiving HTTP {resp.status}.",
+                recommendation="Enforce function-level authorization server-side on every state-changing privileged endpoint.",
+            )
+            finding.evidence_refs = await evidence.capture_raw(finding.request_raw, finding.response_raw, label=f"bfla-write-{endpoint.url.rsplit('/', 1)[-1]}") if evidence else []
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding)
+        return self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': {endpoint.method} returned HTTP {resp.status} -- denied", role=self.low_priv_role, endpoint=endpoint)
 
     async def _technique_bfla_verb_tampering(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
         test_id, tid, technique = "TC-055", "TC-055.3", "HTTP verb tampering to bypass a method-scoped authorization check"
@@ -207,32 +225,38 @@ class BFLATechniquesMixin:
         except KeyError as exc:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, f"role not configured: {exc}")]
 
-        results: list[TestCaseResult] = []
-        for endpoint in privileged_write_endpoints:
-            probe = await self._probe_get(context, endpoint.url)
-            if probe is None:
-                results.append(self._result(test_id, tid, technique, vuln_type, "ERROR", "GET probe failed", role=self.low_priv_role, endpoint=endpoint))
-                continue
-            status, body = probe
-            decision = classify_response(status, body, min_content_length=self.config.min_content_length)
-            self.authorization_matrix.record(endpoint, self.low_priv_role, decision)
-            if decision == AuthorizationDecision.ALLOWED:
-                finding = Finding(
-                    module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.7,
-                    endpoint=endpoint, user_role=self.low_priv_role,
-                    request_raw=f"GET {endpoint.url}", response_raw=f"HTTP {status}, {len(body)} bytes",
-                    description=(
-                        f"'{endpoint.url}' was discovered as a privileged {endpoint.method} endpoint, but "
-                        f"a low-privileged session (role '{self.low_priv_role}') downgrading the verb to "
-                        f"GET received HTTP {status} with {len(body)} bytes instead of a denial."
-                    ),
-                    recommendation="Apply the same authorization middleware to every HTTP verb a privileged route accepts.",
-                )
-                finding.evidence_refs = await self._capture_evidence(evidence, context, session, endpoint.url, label=f"bfla-verb-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)
-                results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding))
-            else:
-                results.append(self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': GET returned HTTP {status} -- denied", role=self.low_priv_role, endpoint=endpoint))
-        return results
+        return list(await asyncio.gather(*(
+            self._check_verb_tampering_candidate(context, session, evidence, endpoint, test_id, tid, technique, vuln_type)
+            for endpoint in privileged_write_endpoints
+        )))
+
+    async def _check_verb_tampering_candidate(
+        self, context, session, evidence, endpoint, test_id: str, tid: str, technique: str, vuln_type: str,
+    ) -> TestCaseResult:
+        """Per-endpoint probe-and-check body of
+        `_technique_bfla_verb_tampering`'s loop, extracted so different
+        endpoints can run concurrently."""
+        probe = await self._probe_get(context, endpoint.url)
+        if probe is None:
+            return self._result(test_id, tid, technique, vuln_type, "ERROR", "GET probe failed", role=self.low_priv_role, endpoint=endpoint)
+        status, body = probe
+        decision = classify_response(status, body, min_content_length=self.config.min_content_length)
+        self.authorization_matrix.record(endpoint, self.low_priv_role, decision)
+        if decision == AuthorizationDecision.ALLOWED:
+            finding = Finding(
+                module_id=self.module_id, vuln_type=vuln_type, severity="High", cvss_score=7.7,
+                endpoint=endpoint, user_role=self.low_priv_role,
+                request_raw=f"GET {endpoint.url}", response_raw=f"HTTP {status}, {len(body)} bytes",
+                description=(
+                    f"'{endpoint.url}' was discovered as a privileged {endpoint.method} endpoint, but "
+                    f"a low-privileged session (role '{self.low_priv_role}') downgrading the verb to "
+                    f"GET received HTTP {status} with {len(body)} bytes instead of a denial."
+                ),
+                recommendation="Apply the same authorization middleware to every HTTP verb a privileged route accepts.",
+            )
+            finding.evidence_refs = await self._capture_evidence(evidence, context, session, endpoint.url, label=f"bfla-verb-{endpoint.url.rsplit('/', 1)[-1]}", finding=finding)
+            return self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding)
+        return self._result(test_id, tid, technique, vuln_type, PASS, f"'{endpoint.url}': GET returned HTTP {status} -- denied", role=self.low_priv_role, endpoint=endpoint)
 
     async def _technique_hidden_endpoint_discovery(self, endpoints, session_manager, session_pool, target_url, evidence) -> list[TestCaseResult]:
         test_id, tid, technique = "TC-055", "TC-055.4", "Hidden/undocumented endpoint discovery and access"
@@ -312,16 +336,18 @@ class BFLATechniquesMixin:
         if not candidates:
             return [self._result(test_id, tid, technique, vuln_type, SKIPPED, "no non-obviously-privileged GET endpoint discovered to matrix-test")]
 
-        results: list[TestCaseResult] = []
         anon_context = await session_pool.new_anonymous_context()
         try:
-            for endpoint in candidates:
-                finding = await self._check_role_differential_candidate(
-                    anon_context, low_context, high_context, low_session, vuln_type, evidence, endpoint)
-                if finding is not None:
-                    results.append(self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding))
+            checked = await asyncio.gather(*(
+                self._check_role_differential_candidate(anon_context, low_context, high_context, low_session, vuln_type, evidence, endpoint)
+                for endpoint in candidates
+            ))
         finally:
             await anon_context.close()
+        results: list[TestCaseResult] = [
+            self._result(test_id, tid, technique, vuln_type, FAIL, finding.description, role=self.low_priv_role, endpoint=endpoint, finding=finding)
+            for endpoint, finding in zip(candidates, checked, strict=True) if finding is not None
+        ]
 
         if not results:
             results.append(self._result(

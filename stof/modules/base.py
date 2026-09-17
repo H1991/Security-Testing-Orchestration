@@ -93,6 +93,17 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(marker in message for marker in _TRANSIENT_ERROR_MARKERS)
 
 
+def first_not_none(items):
+    """Returns the first non-`None` item, or `None` if every item is.
+    The common "gather a candidate sweep concurrently, then report the
+    first hit in original list order" shape every technique converted
+    to `asyncio.gather()` needs (order is preserved: `gather()` returns
+    results in the SAME order as the coroutines were given, not
+    completion order, so this still reports the same candidate a
+    sequential early-exit loop would have)."""
+    return next((item for item in items if item is not None), None)
+
+
 # Field-name hints for spotting a real HTML login form among discovered
 # endpoints, regardless of a target's own field naming (`uid`/`passw`,
 # `username`/`password`, ...). Originally `sqli_tests.py`-only (built

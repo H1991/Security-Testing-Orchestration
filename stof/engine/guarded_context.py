@@ -81,17 +81,31 @@ class GuardedRequestContext:
         if response is not None:
             response_status = response.status
             response_headers = dict(response.headers)
-            try:
-                response_body_len = len(await response.body())
-            except Exception:
-                response_body_len = None  # best-effort only -- never worth failing the scan over
+            # Prefer the server's own Content-Length header over forcing
+            # the full response body to be read/buffered just to measure
+            # it -- across a scan's thousands of probes, that read was
+            # the single most repeated piece of work this wrapper added
+            # on every request, most of it for bodies no module even
+            # needed materialized at that point. Only falls back to a
+            # real body read (chunked/unknown-length responses) when the
+            # header is absent.
+            content_length = response_headers.get("content-length")
+            if content_length is not None and content_length.isdigit():
+                response_body_len = int(content_length)
+            else:
+                try:
+                    response_body_len = len(await response.body())
+                except Exception:
+                    response_body_len = None  # best-effort only -- never worth failing the scan over
         entry = self._guard.build_entry(
             method=method, url=url, role=self._role,
             request_headers=kwargs.get("headers"), request_body=self._request_body(kwargs),
             response_status=response_status, response_headers=response_headers,
             response_body_len=response_body_len, latency_ms=latency_ms, error=error,
         )
-        self._guard.record(entry)
+        write_task = self._guard.record(entry)
+        if write_task is not None:
+            await write_task
 
     async def _issue(self, method: str, real_method: Any, url: str, **kwargs: Any) -> "APIResponse":
         self._guard.check_scope(url)
